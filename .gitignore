@@ -1,0 +1,5 @@
+.playwright-cli/
+output/
+.env
+.env.*
+!.env.example
