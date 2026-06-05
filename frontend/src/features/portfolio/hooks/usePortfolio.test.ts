@@ -81,4 +81,38 @@ describe('usePortfolio', () => {
 
     expect(FakeWebSocket.sockets).toHaveLength(2)
   })
+
+  it('leaves loading state when the initial stream errors before a snapshot', () => {
+    const { result } = renderHook(() => usePortfolio())
+
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => {
+      FakeWebSocket.sockets[0].onerror?.()
+    })
+
+    expect(result.current.portfolio).toBeNull()
+    expect(result.current.error).toBe('Portfolio stream disconnected.')
+    expect(result.current.isLoading).toBe(false)
+  })
+
+  it('leaves loading state and reconnects when the initial stream closes before a snapshot', () => {
+    const { result } = renderHook(() => usePortfolio())
+
+    expect(result.current.isLoading).toBe(true)
+
+    act(() => {
+      FakeWebSocket.sockets[0].onclose?.()
+    })
+
+    expect(result.current.portfolio).toBeNull()
+    expect(result.current.error).toBe('Portfolio stream disconnected.')
+    expect(result.current.isLoading).toBe(false)
+
+    act(() => {
+      vi.advanceTimersByTime(1_000)
+    })
+
+    expect(FakeWebSocket.sockets).toHaveLength(2)
+  })
 })

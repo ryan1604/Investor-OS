@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { renderHook, waitFor } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type {
   OptionChainResponse,
+  OptionQuote,
   OptionsAnalysisResponse,
 } from '@/api/options'
 import { useOptionChain } from '@/features/options/hooks/useOptionChain'
@@ -22,6 +23,12 @@ class FakeWebSocket {
 
   close() {
     this.closed = true
+  }
+
+  receive(data: unknown) {
+    this.onmessage?.(
+      new MessageEvent('message', { data: JSON.stringify(data) }),
+    )
   }
 }
 
@@ -51,10 +58,44 @@ const chain: OptionChainResponse = {
   message: null,
 }
 
+function quote(overrides: Partial<OptionQuote>): OptionQuote {
+  return {
+    local_symbol: null,
+    delta: null,
+    bid: null,
+    bid_size: null,
+    ask: null,
+    ask_size: null,
+    mid: null,
+    last: null,
+    close: null,
+    model_price: null,
+    change_percent: null,
+    volume: null,
+    open_interest: null,
+    gamma: null,
+    theta: null,
+    implied_volatility_percent: null,
+    breakeven: null,
+    ...overrides,
+  }
+}
+
 describe('useOptionChain', () => {
+  let animationFrameCallbacks: FrameRequestCallback[] = []
+
   beforeEach(() => {
     FakeWebSocket.sockets = []
+    animationFrameCallbacks = []
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal(
+      'requestAnimationFrame',
+      vi.fn((callback: FrameRequestCallback) => {
+        animationFrameCallbacks.push(callback)
+        return animationFrameCallbacks.length
+      }),
+    )
+    vi.stubGlobal('cancelAnimationFrame', vi.fn())
     vi.stubGlobal(
       'fetch',
       vi.fn(async () => ({
@@ -93,5 +134,80 @@ describe('useOptionChain', () => {
 
     unmount()
     expect(FakeWebSocket.sockets[0].closed).toBe(true)
+  })
+
+  it('batches live row updates until the next animation frame', async () => {
+    const chainWithRows: OptionChainResponse = {
+      ...chain,
+      rows: [
+        { strike: 100, call: null, put: null },
+        { strike: 105, call: null, put: null },
+      ],
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        json: async () => chainWithRows,
+      })),
+    )
+
+    const { result } = renderHook(() =>
+      useOptionChain(analysis, '2026-06-19', false),
+    )
+
+    await waitFor(() => {
+      expect(result.current.chain?.rows).toHaveLength(2)
+    })
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        row: {
+          strike: 100,
+          call: quote({ local_symbol: 'AAPL 100C', bid: 1 }),
+          put: null,
+        },
+      })
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        row: {
+          strike: 105,
+          call: null,
+          put: quote({ local_symbol: 'AAPL 105P', bid: 2 }),
+        },
+      })
+    })
+
+    expect(result.current.chain?.rows[0].call).toBeNull()
+    expect(animationFrameCallbacks).toHaveLength(1)
+
+    act(() => {
+      animationFrameCallbacks.splice(0).forEach((callback) => callback(0))
+    })
+
+    expect(result.current.chain?.rows[0].call?.bid).toBe(1)
+    expect(result.current.chain?.rows[1].put?.bid).toBe(2)
+  })
+
+  it('aborts an in-flight chain request on cleanup', async () => {
+    const { unmount } = renderHook(() =>
+      useOptionChain(analysis, '2026-06-19', false),
+    )
+
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledTimes(1)
+    })
+
+    const requestSignal = vi.mocked(fetch).mock.calls[0][1]?.signal
+    expect(requestSignal?.aborted).toBe(false)
+
+    unmount()
+
+    expect(requestSignal?.aborted).toBe(true)
   })
 })

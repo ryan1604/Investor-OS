@@ -1,84 +1,13 @@
-import threading
-
 from fastapi.testclient import TestClient
 
-from app.main import create_app, get_portfolio_response
-from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
-
-
-class FakePortfolioClient:
-    def __init__(self, connected: bool, *, block_refresh: bool = False) -> None:
-        self.connected = connected
-        self.started = False
-        self.stopped = False
-        self.positions_requests = 0
-        self.account_summary_refreshes = 0
-        self.block_refresh = block_refresh
-        self.refresh_started = threading.Event()
-        self.allow_refresh = threading.Event()
-
-    def start(self) -> None:
-        self.started = True
-
-    def stop(self) -> None:
-        self.stopped = True
-
-    def get_status(self) -> IbStatus:
-        return IbStatus(
-            connected=self.connected,
-            host="127.0.0.1",
-            port=7497,
-            client_id=1,
-        )
-
-    def get_positions(self) -> list[PortfolioPosition]:
-        self.positions_requests += 1
-        self.refresh_started.set()
-
-        if self.block_refresh:
-            self.allow_refresh.wait(timeout=1)
-
-        return [
-            PortfolioPosition(
-                account="DU1234567",
-                symbol="AAPL",
-                sec_type="STK",
-                exchange="NASDAQ",
-                currency="USD",
-                quantity=100,
-                average_cost=182.5,
-            )
-        ]
-
-    def get_account_summaries(
-        self,
-        positions: list[PortfolioPosition],
-    ) -> list[PortfolioAccountSummary]:
-        return [
-            PortfolioAccountSummary(
-                account="DU1234567",
-                net_liquidation=125_000,
-                daily_pnl=450,
-                daily_pnl_percent=0.36,
-                unrealized_pnl=2_400,
-                market_value=18_250,
-                maintenance_margin=8_000,
-                excess_liquidity=117_000,
-                buying_power=468_000,
-                cash_total_sgd=10_000,
-                cash_total_usd=20_000,
-                cash_total=35_000,
-            )
-        ]
-
-    def refresh_account_summaries(self) -> None:
-        self.account_summary_refreshes += 1
+from app.portfolio.service import get_portfolio_response
+from conftest import FakePortfolioClient, make_api
 
 
 def test_portfolio_snapshot_log_contains_counts_without_sensitive_values(caplog):
     portfolio_client = FakePortfolioClient(connected=True)
 
-    with caplog.at_level("INFO", logger="app.main"):
+    with caplog.at_level("INFO", logger="app.portfolio.service"):
         response = get_portfolio_response(portfolio_client)
 
     assert response.positions[0].symbol == "AAPL"
@@ -90,7 +19,7 @@ def test_portfolio_snapshot_log_contains_counts_without_sensitive_values(caplog)
 
 def test_portfolio_returns_empty_cached_snapshot_before_first_refresh():
     portfolio_client = FakePortfolioClient(connected=True, block_refresh=True)
-    api = create_app(lambda _settings: portfolio_client)
+    api = make_api(portfolio_client)
 
     with TestClient(api) as client:
         assert portfolio_client.refresh_started.wait(timeout=1)
@@ -111,7 +40,7 @@ def test_portfolio_returns_empty_cached_snapshot_before_first_refresh():
 
 
 def test_portfolio_returns_empty_state_when_disconnected():
-    api = create_app(lambda _settings: FakePortfolioClient(connected=False))
+    api = make_api(FakePortfolioClient(connected=False))
 
     with TestClient(api) as client:
         response = client.get("/portfolio")
@@ -125,7 +54,7 @@ def test_portfolio_returns_empty_state_when_disconnected():
 
 def test_portfolio_websocket_streams_positions_when_connected():
     portfolio_client = FakePortfolioClient(connected=True, block_refresh=True)
-    api = create_app(lambda _settings: portfolio_client)
+    api = make_api(portfolio_client)
 
     with TestClient(api) as client:
         with client.websocket_connect("/portfolio/ws") as websocket:
@@ -147,7 +76,7 @@ def test_portfolio_websocket_streams_positions_when_connected():
 
 def test_portfolio_returns_cached_websocket_refresh():
     portfolio_client = FakePortfolioClient(connected=True, block_refresh=True)
-    api = create_app(lambda _settings: portfolio_client)
+    api = make_api(portfolio_client)
 
     with TestClient(api) as client:
         with client.websocket_connect("/portfolio/ws") as websocket:
@@ -167,7 +96,7 @@ def test_portfolio_returns_cached_websocket_refresh():
 
 def test_portfolio_websockets_share_one_refresh_loop():
     portfolio_client = FakePortfolioClient(connected=True, block_refresh=True)
-    api = create_app(lambda _settings: portfolio_client)
+    api = make_api(portfolio_client)
 
     with TestClient(api) as client:
         with (

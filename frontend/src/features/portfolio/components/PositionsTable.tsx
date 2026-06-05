@@ -16,6 +16,7 @@ import type {
   SortKey,
   SortState,
 } from '@/features/portfolio/lib/positions'
+import { positionKeys } from '@/features/portfolio/lib/positions'
 import { POSITIONS_TABLE_COLUMNS } from '@/features/portfolio/lib/tableColumns'
 import {
   formatNumber,
@@ -81,24 +82,6 @@ type PositionsTableProps = {
   onSort: (key: SortKey) => void
 }
 
-function positionKey(position: DisplayPosition, index: number) {
-  return [
-    position.account,
-    position.symbol,
-    position.sec_type,
-    position.expiry,
-    position.strike,
-    position.right,
-    position.exchange,
-    position.currency,
-    position.quantity,
-    position.average_cost,
-    position.instrumentTitle,
-    position.instrumentDetail,
-    index,
-  ].join('-')
-}
-
 export function PositionsTable({
   error,
   isConnected,
@@ -107,6 +90,8 @@ export function PositionsTable({
   sort,
   onSort,
 }: PositionsTableProps) {
+  const stablePositionKeys = positionKeys(positions)
+
   return (
     <Card className="mt-6">
       <CardContent className="pt-0">
@@ -149,7 +134,7 @@ export function PositionsTable({
               ))
             ) : positions.length ? (
               positions.map((position, index) => (
-                <TableRow key={positionKey(position, index)}>
+                <TableRow key={stablePositionKeys[index]}>
                   <TableCell className="min-w-56 font-medium">
                     <div className="flex flex-col gap-0.5">
                       <span>{position.instrumentTitle}</span>

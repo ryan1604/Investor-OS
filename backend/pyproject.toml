@@ -5,11 +5,9 @@ description = "FastAPI backend for the Investor OS local portfolio and options d
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "alembic>=1.18.4",
     "fastapi>=0.136.3",
     "ibapi>=9.81.1.post1",
     "pydantic>=2.13.4",
-    "sqlalchemy>=2.0.50",
     "tzdata>=2026.2",
     "uvicorn>=0.48.0",
     "websockets>=15.0.1",
@@ -23,3 +21,8 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
+
+[tool.investor_os.performance_baseline]
+iterations = 10
+portfolio_positions = 250
+option_chain_rows = 120

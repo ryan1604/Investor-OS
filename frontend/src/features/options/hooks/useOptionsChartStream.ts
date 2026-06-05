@@ -9,10 +9,10 @@ import {
 export function useOptionsChartStream(
   analysis: OptionsAnalysisResponse | null,
 ) {
-  const [liveAnalysis, setLiveAnalysis] =
-    useState<OptionsAnalysisResponse | null>(null)
-  const [latestUpdate, setLatestUpdate] =
-    useState<OptionsChartLiveMessage | null>(null)
+  const [liveState, setLiveState] = useState<{
+    baseline: OptionsAnalysisResponse
+    latestUpdate: OptionsChartLiveMessage
+  } | null>(null)
   const [error, setError] = useState<{ ticker: string; message: string } | null>(
     null,
   )
@@ -24,6 +24,7 @@ export function useOptionsChartStream(
 
     const activeTicker = analysis.ticker
     const socket = new WebSocket(getOptionsChartWsUrl(activeTicker))
+    let isCleaningUp = false
 
     socket.onmessage = (event) => {
       const update = JSON.parse(event.data as string) as OptionsChartLiveMessage
@@ -34,16 +35,18 @@ export function useOptionsChartStream(
         return
       }
 
-      setLatestUpdate(update)
-      setLiveAnalysis((currentAnalysis) =>
-        currentAnalysis?.ticker === activeTicker
-          ? mergeOptionsChartUpdate(currentAnalysis, update)
-          : mergeOptionsChartUpdate(analysis, update),
-      )
+      setLiveState({
+        baseline: analysis,
+        latestUpdate: update,
+      })
       setError(null)
     }
 
     socket.onerror = () => {
+      if (isCleaningUp) {
+        return
+      }
+
       setError({
         ticker: activeTicker,
         message: 'Options chart stream disconnected.',
@@ -51,6 +54,10 @@ export function useOptionsChartStream(
     }
 
     socket.onclose = () => {
+      if (isCleaningUp) {
+        return
+      }
+
       setError({
         ticker: activeTicker,
         message: 'Options chart stream disconnected.',
@@ -58,16 +65,23 @@ export function useOptionsChartStream(
     }
 
     return () => {
+      isCleaningUp = true
       socket.close()
     }
   }, [analysis])
 
+  const activeLiveState = liveState?.baseline === analysis ? liveState : null
+  const liveAnalysis: OptionsAnalysisResponse | null = analysis && activeLiveState
+    ? {
+        ...analysis,
+        underlying_price: activeLiveState.latestUpdate.candle.close,
+      }
+    : analysis
+
   return {
-    analysis:
-      liveAnalysis?.ticker === analysis?.ticker ? liveAnalysis : analysis,
+    analysis: liveAnalysis,
     error: error?.ticker === analysis?.ticker ? (error?.message ?? null) : null,
-    latestUpdate:
-      latestUpdate?.ticker === analysis?.ticker ? latestUpdate : null,
+    latestUpdate: activeLiveState?.latestUpdate ?? null,
   }
 }
 

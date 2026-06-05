@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from app.tickers import normalize_ticker
+
 
 @dataclass(frozen=True)
 class CompletedDailyBar:
@@ -150,7 +152,3 @@ class OptionsDailyBarStore:
         connection = sqlite3.connect(self.database_path)
         connection.row_factory = sqlite3.Row
         return connection
-
-
-def normalize_ticker(ticker: str) -> str:
-    return ticker.strip().upper()

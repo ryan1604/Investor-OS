@@ -59,6 +59,7 @@ class FakeIbApp:
         self.cancelled_positions = 0
         self.positions_requests = 0
         self.disconnects = 0
+        self.ib_calls_inside_lock: list[str] = []
 
     def isConnected(self) -> bool:
         return True
@@ -72,10 +73,14 @@ class FakeIbApp:
         regulatory_snapshot: bool,
         mkt_data_options: list,
     ) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("reqMktData")
         self.market_requests.append((req_id, contract))
         self.market_data_ready.set()
 
     def cancelMktData(self, req_id: int) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("cancelMktData")
         self.cancelled_market_requests.append(req_id)
 
     def reqPositions(self) -> None:
@@ -99,17 +104,25 @@ class FakeIbApp:
         model_code: str,
         con_id: int,
     ) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("reqPnLSingle")
         self.pnl_requests.append((req_id, account, model_code, con_id))
         self.pnl_ready.set()
 
     def cancelPnLSingle(self, req_id: int) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("cancelPnLSingle")
         self.cancelled_pnl_requests.append(req_id)
 
     def reqPnL(self, req_id: int, account: str, model_code: str) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("reqPnL")
         self.account_pnl_requests.append((req_id, account, model_code))
         self.account_pnl_ready.set()
 
     def cancelPnL(self, req_id: int) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("cancelPnL")
         self.cancelled_account_pnl_requests.append(req_id)
 
     def reqAccountSummary(
@@ -183,6 +196,7 @@ def test_subscribe_market_data_requests_streaming_data_for_positions():
     client._subscribe_market_data()
 
     assert [request[1].secType for request in app.market_requests] == ["OPT", "STK"]
+    assert app.ib_calls_inside_lock == []
 
 
 def test_get_positions_uses_raw_position_feed_without_account_updates(caplog):
@@ -480,6 +494,7 @@ def test_subscribe_pnl_requests_single_position_pnl():
     )
 
     assert app.pnl_requests == [(30_000, "DU1234567", "", 123)]
+    assert app.ib_calls_inside_lock == []
 
 
 def test_subscribe_account_pnl_requests_each_active_account():
@@ -494,6 +509,7 @@ def test_subscribe_account_pnl_requests_each_active_account():
         "U19793128",
         "U6985190",
     ]
+    assert app.ib_calls_inside_lock == []
 
 
 def test_new_pnl_stream_populates_position_asynchronously():
@@ -541,6 +557,7 @@ def test_subscribe_pnl_cancels_stale_position_stream():
     assert app.pnl_req_to_position_key == {}
     assert app.pnl_data == {}
     assert app.cancelled_pnl_requests == [30_000]
+    assert app.ib_calls_inside_lock == []
 
 
 def test_subscribe_account_pnl_cancels_stale_account_stream():
@@ -557,6 +574,7 @@ def test_subscribe_account_pnl_cancels_stale_account_stream():
     assert app.account_pnl_req_to_account == {}
     assert app.account_pnl_data == {}
     assert app.cancelled_account_pnl_requests == [50_000]
+    assert app.ib_calls_inside_lock == []
 
 
 def test_merge_market_data_prefers_ib_single_position_pnl():
@@ -956,3 +974,153 @@ def test_register_market_contracts_cancels_stale_streams():
     assert app.market_req_to_con_id == {}
     assert app.market_data == {}
     assert app.cancelled_market_requests == [10_000]
+    assert app.ib_calls_inside_lock == []
+
+
+def test_order_callbacks_forward_normalized_status_payloads():
+    app = IbPortfolioApp()
+    updates = []
+    app.add_order_status_listener(
+        lambda order_id, status, **values: updates.append(
+            (order_id, status, values),
+        ),
+    )
+
+    app.nextValidId(900)
+    app.orderStatus(
+        900,
+        "Submitted",
+        2,
+        3,
+        1.25,
+        12345,
+        0,
+        1.25,
+        1,
+        "",
+        0,
+    )
+
+    assert app.next_order_id == 900
+    assert updates == [
+        (
+            900,
+            "Submitted",
+            {
+                "filled": 2,
+                "remaining": 3,
+                "avg_fill_price": 1.25,
+                "perm_id": 12345,
+                "parent_order_id": None,
+                "rejection_message": None,
+            },
+        )
+    ]
+
+
+def test_registered_order_error_forwards_rejection_message(caplog):
+    app = IbPortfolioApp()
+    updates = []
+    app.add_order_status_listener(
+        lambda order_id, status, **values: updates.append(
+            (order_id, status, values),
+        ),
+    )
+    app.register_submitted_order(901)
+
+    with caplog.at_level("WARNING", logger="app.ib.app"):
+        app.error(901, 201, "Order rejected")
+
+    assert updates == [
+        (
+            901,
+            "Inactive",
+            {
+                "filled": None,
+                "remaining": None,
+                "avg_fill_price": None,
+                "perm_id": None,
+                "parent_order_id": None,
+                "rejection_message": "Order rejected",
+            },
+        )
+    ]
+    assert "Order rejected" in caplog.text
+
+
+def test_open_order_callback_forwards_account_and_parent_id():
+    app = IbPortfolioApp()
+    updates = []
+    app.add_order_status_listener(
+        lambda order_id, status, **values: updates.append(
+            (order_id, status, values),
+        ),
+    )
+    order = type(
+        "Order",
+        (),
+        {
+            "account": "DU1234567",
+            "totalQuantity": 2,
+            "permId": 123,
+            "parentId": 900,
+        },
+    )()
+    order_state = type("OrderState", (), {"status": "Submitted"})()
+
+    app.openOrder(901, contract(901, "AAPL", "OPT"), order, order_state)
+
+    assert updates == [
+        (
+            901,
+            "Submitted",
+            {
+                "filled": 0,
+                "remaining": 2,
+                "avg_fill_price": None,
+                "perm_id": 123,
+                "parent_order_id": 900,
+                "rejection_message": None,
+                "account": "DU1234567",
+            },
+        )
+    ]
+
+
+def test_exec_details_callback_forwards_filled_order_payload():
+    app = IbPortfolioApp()
+    updates = []
+    app.add_order_status_listener(
+        lambda order_id, status, **values: updates.append(
+            (order_id, status, values),
+        ),
+    )
+    execution = type(
+        "Execution",
+        (),
+        {
+            "orderId": 902,
+            "shares": 3,
+            "price": 1.25,
+            "permId": 456,
+            "acctNumber": "DU1234567",
+        },
+    )()
+
+    app.execDetails(90_000, contract(902, "AAPL", "OPT"), execution)
+
+    assert updates == [
+        (
+            902,
+            "Filled",
+            {
+                "filled": 3,
+                "remaining": 0,
+                "avg_fill_price": 1.25,
+                "perm_id": 456,
+                "parent_order_id": None,
+                "rejection_message": None,
+                "account": "DU1234567",
+            },
+        )
+    ]

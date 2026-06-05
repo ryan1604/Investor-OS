@@ -1,0 +1,1 @@
+"""Stock analysis persistence package."""

@@ -19,6 +19,10 @@ export function encodePathSegment(value: string, emptyMessage: string) {
   return encodeURIComponent(normalizedValue)
 }
 
+export function tickerPathSegment(ticker: string) {
+  return encodePathSegment(ticker.trim().toUpperCase(), 'Ticker is required.')
+}
+
 export async function responseErrorMessage(response: Response, label: string) {
   try {
     const payload = (await response.json()) as { detail?: unknown }
@@ -31,4 +35,8 @@ export async function responseErrorMessage(response: Response, label: string) {
   }
 
   return `${label} request failed: ${response.status}`
+}
+
+export function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
 }

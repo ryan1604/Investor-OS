@@ -3,8 +3,10 @@ import { useEffect, useMemo, useRef } from 'react'
 import {
   CandlestickSeries,
   LineSeries,
+  LineStyle,
   type CandlestickData,
   type IChartApi,
+  type IPriceLine,
   type ISeriesApi,
   type Time,
 } from 'lightweight-charts'
@@ -18,16 +20,22 @@ import {
   nullableLineData,
   setupOptionsChart,
 } from '@/features/options/lib/chartHelpers'
+import type {
+  ChartOptionOverlaySource,
+  ChartOverlay,
+} from '@/features/options/lib/chartOverlays'
 
 type OptionsChartProps = {
   analysis: OptionsAnalysisResponse
   latestUpdate: OptionsChartLiveMessage | null
+  overlays?: ChartOverlay[]
   onChartReady?: (chart: IChartApi | null) => void
 }
 
 export function OptionsChart({
   analysis,
   latestUpdate,
+  overlays = [],
   onChartReady,
 }: OptionsChartProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
@@ -35,6 +43,7 @@ export function OptionsChart({
   const upperBandRef = useRef<ISeriesApi<'Line'> | null>(null)
   const middleBandRef = useRef<ISeriesApi<'Line'> | null>(null)
   const lowerBandRef = useRef<ISeriesApi<'Line'> | null>(null)
+  const overlayLinesRef = useRef<Map<string, IPriceLine>>(new Map())
 
   const currentBands = useMemo(() => {
     if (
@@ -134,6 +143,7 @@ export function OptionsChart({
     middleBand.setData(middleBandData)
     lowerBand.setData(lowerBandData)
     chart.timeScale().fitContent()
+    const overlayLines = overlayLinesRef.current
     candlesRef.current = candles
     upperBandRef.current = upperBand
     middleBandRef.current = middleBand
@@ -145,6 +155,7 @@ export function OptionsChart({
       upperBandRef.current = null
       middleBandRef.current = null
       lowerBandRef.current = null
+      overlayLines.clear()
       onChartReady?.(null)
       cleanup()
     }
@@ -182,6 +193,33 @@ export function OptionsChart({
     }
   }, [analysis.ticker, latestUpdate])
 
+  useEffect(() => {
+    const candles = candlesRef.current
+    if (!candles) {
+      return
+    }
+
+    const nextKeys = new Set(overlays.map((overlay) => overlay.key))
+    for (const [key, line] of overlayLinesRef.current) {
+      if (!nextKeys.has(key)) {
+        candles.removePriceLine(line)
+        overlayLinesRef.current.delete(key)
+      }
+    }
+
+    for (const overlay of overlays) {
+      const options = overlayPriceLineOptions(overlay)
+      const existingLine = overlayLinesRef.current.get(overlay.key)
+
+      if (existingLine) {
+        existingLine.applyOptions(options)
+        continue
+      }
+
+      overlayLinesRef.current.set(overlay.key, candles.createPriceLine(options))
+    }
+  }, [overlays])
+
   return (
     <Card>
       <CardHeader>
@@ -215,4 +253,44 @@ export function OptionsChart({
       </CardContent>
     </Card>
   )
+}
+
+function overlayPriceLineOptions(overlay: ChartOverlay) {
+  if (overlay.type === 'stock-cost-basis') {
+    return {
+      price: overlay.price,
+      color: '#ffffff',
+      lineWidth: 1 as const,
+      lineStyle: LineStyle.Dotted,
+      axisLabelVisible: true,
+      title: overlay.label,
+    }
+  }
+
+  return {
+    price: overlay.strike,
+    color: overlay.right === 'CALL' ? '#22c55e' : '#ef4444',
+    lineWidth: optionOverlayLineWidth(overlay.sources),
+    lineStyle: LineStyle.Dashed,
+    axisLabelVisible: true,
+    title: `${overlay.label} ${overlaySourceLabel(overlay.sources)}`,
+  }
+}
+
+function optionOverlayLineWidth(sources: ChartOptionOverlaySource[]) {
+  if (sources.includes('held')) {
+    return 3 as const
+  }
+  if (sources.includes('working')) {
+    return 2 as const
+  }
+  return 1 as const
+}
+
+function overlaySourceLabel(sources: ChartOptionOverlaySource[]) {
+  return sources
+    .map((source) =>
+      source === 'draft' ? 'draft' : source === 'working' ? 'working' : 'held',
+    )
+    .join('/')
 }

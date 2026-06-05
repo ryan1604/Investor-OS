@@ -1,12 +1,11 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 
-from app.main import create_app
 from app.options.client import OptionsDataUnavailable
 from app.schemas import (
     BollingerBandPoint,
-    IbStatus,
     OptionChainLiveMessage,
     OptionChainResponse,
     OptionChainRow,
@@ -18,25 +17,7 @@ from app.schemas import (
     OptionsChartLiveMessage,
     RsiPoint,
 )
-
-
-class FakePortfolioClient:
-    def start(self) -> None:
-        return None
-
-    def stop(self) -> None:
-        return None
-
-    def get_status(self) -> IbStatus:
-        return IbStatus(
-            connected=False,
-            host="127.0.0.1",
-            port=7497,
-            client_id=1,
-        )
-
-    def refresh_account_summaries(self) -> None:
-        return None
+from conftest import make_api
 
 
 class FakeOptionsAnalysisClient:
@@ -154,6 +135,24 @@ class FakeOptionsAnalysisClient:
         )
 
 
+class BlockingOptionsAnalysisClient(FakeOptionsAnalysisClient):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.active = 0
+        self.lock = threading.Lock()
+
+    def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
+        with self.lock:
+            self.active += 1
+            if self.active == 2:
+                self.started.set()
+
+        self.release.wait(timeout=2)
+        return super().get_analysis(ticker)
+
+
 class QuietOptionsAnalysisClient(FakeOptionsAnalysisClient):
     def __init__(self) -> None:
         super().__init__()
@@ -186,10 +185,7 @@ class QuietOptionsAnalysisClient(FakeOptionsAnalysisClient):
 
 
 def test_options_analysis_returns_chart_ready_payload():
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: FakeOptionsAnalysisClient(),
-    )
+    api = make_api(options_client=FakeOptionsAnalysisClient())
 
     with TestClient(api) as client:
         response = client.get("/options/aapl/analysis")
@@ -222,10 +218,7 @@ def test_options_analysis_returns_chart_ready_payload():
 
 
 def test_option_expirations_returns_selection_payload():
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: FakeOptionsAnalysisClient(),
-    )
+    api = make_api(options_client=FakeOptionsAnalysisClient())
 
     with TestClient(api) as client:
         response = client.get("/options/aapl/expirations")
@@ -240,10 +233,7 @@ def test_option_expirations_returns_selection_payload():
 
 
 def test_options_analysis_returns_clear_error_for_unknown_ticker():
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: FakeOptionsAnalysisClient(),
-    )
+    api = make_api(options_client=FakeOptionsAnalysisClient())
 
     with TestClient(api) as client:
         response = client.get("/options/missing/analysis")
@@ -253,7 +243,7 @@ def test_options_analysis_returns_clear_error_for_unknown_ticker():
 
 
 def test_options_analysis_returns_clear_error_without_provider_wiring():
-    api = create_app(lambda _settings: FakePortfolioClient())
+    api = make_api()
 
     with TestClient(api) as client:
         response = client.get("/options/aapl/analysis")
@@ -264,11 +254,31 @@ def test_options_analysis_returns_clear_error_without_provider_wiring():
     }
 
 
+def test_options_analysis_returns_busy_when_request_limit_is_saturated():
+    fake_options_client = BlockingOptionsAnalysisClient()
+    api = make_api(options_client=fake_options_client)
+
+    with TestClient(api) as client:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            blocked_requests = [
+                executor.submit(client.get, "/options/aapl/analysis")
+                for _ in range(2)
+            ]
+            assert fake_options_client.started.wait(timeout=1)
+
+            busy_response = client.get("/options/aapl/analysis")
+            fake_options_client.release.set()
+            completed_responses = [future.result(timeout=1) for future in blocked_requests]
+
+    assert busy_response.status_code == 503
+    assert busy_response.json() == {
+        "detail": "options analysis capacity is temporarily exhausted.",
+    }
+    assert [response.status_code for response in completed_responses] == [200, 200]
+
+
 def test_option_chain_returns_quote_rows_for_selected_expiration():
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: FakeOptionsAnalysisClient(),
-    )
+    api = make_api(options_client=FakeOptionsAnalysisClient())
 
     with TestClient(api) as client:
         response = client.get("/options/msft/chain?expiration=2026-06-19")
@@ -327,10 +337,7 @@ def test_option_chain_returns_quote_rows_for_selected_expiration():
 
 def test_option_chain_websocket_streams_snapshot_and_updates():
     fake_options_client = FakeOptionsAnalysisClient()
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: fake_options_client,
-    )
+    api = make_api(options_client=fake_options_client)
 
     with TestClient(api) as client:
         with client.websocket_connect(
@@ -381,10 +388,7 @@ def test_option_chain_websocket_streams_snapshot_and_updates():
 
 def test_options_chart_websocket_streams_candle_and_indicator_update():
     fake_options_client = FakeOptionsAnalysisClient()
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: fake_options_client,
-    )
+    api = make_api(options_client=fake_options_client)
 
     with TestClient(api) as client:
         with client.websocket_connect("/options/aapl/chart/ws") as websocket:
@@ -414,10 +418,7 @@ def test_options_chart_websocket_streams_candle_and_indicator_update():
 
 def test_quiet_option_chain_websocket_disconnect_stops_stream():
     fake_options_client = QuietOptionsAnalysisClient()
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: fake_options_client,
-    )
+    api = make_api(options_client=fake_options_client)
 
     with TestClient(api) as client:
         with client.websocket_connect(
@@ -431,10 +432,7 @@ def test_quiet_option_chain_websocket_disconnect_stops_stream():
 
 def test_quiet_options_chart_websocket_disconnect_stops_stream():
     fake_options_client = QuietOptionsAnalysisClient()
-    api = create_app(
-        lambda _settings: FakePortfolioClient(),
-        lambda _settings, _client: fake_options_client,
-    )
+    api = make_api(options_client=fake_options_client)
 
     with TestClient(api) as client:
         with client.websocket_connect("/options/aapl/chart/ws"):

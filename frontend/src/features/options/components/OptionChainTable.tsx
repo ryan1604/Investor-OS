@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef } from 'react'
+import { memo, useLayoutEffect, useMemo, useRef } from 'react'
 
 import type {
   OptionChainResponse,
   OptionQuote,
   OptionsAnalysisResponse,
 } from '@/api/options'
+import type { OptionQuoteSelection } from '@/features/options/lib/strategyLegs'
 import { Alert } from '@/components/ui/alert'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -21,12 +22,14 @@ import {
   formatOptionalPrice,
   signedValueClassName,
 } from '@/lib/format'
+import { optionReturnPercent } from '@/features/options/lib/optionReturns'
 
 type OptionChainTableProps = {
   analysis: OptionsAnalysisResponse
   chain: OptionChainResponse | null
   error: string | null
   isLoading: boolean
+  onQuoteClick?: (selection: OptionQuoteSelection) => void
   selectedExpiration: string
 }
 
@@ -37,7 +40,7 @@ type NumericQuoteFieldKey = {
 }[keyof OptionQuote]
 
 type QuoteField = {
-  key: NumericQuoteFieldKey
+  key: NumericQuoteFieldKey | 'return_percent'
   label: string
   format: (value: number | null) => string
   sizeKey?: 'bid_size' | 'ask_size'
@@ -49,6 +52,7 @@ const quoteFields: QuoteField[] = [
   { key: 'bid', label: 'Bid', format: formatOptionalPrice, sizeKey: 'bid_size' },
   { key: 'ask', label: 'Ask', format: formatOptionalPrice, sizeKey: 'ask_size' },
   { key: 'mid', label: 'Mid', format: formatOptionalPrice },
+  { key: 'return_percent', label: 'Return %', format: formatOptionalPercent },
   { key: 'last', label: 'Last', format: formatOptionalPrice },
   { key: 'close', label: 'Close', format: formatOptionalPrice },
   { key: 'model_price', label: 'Model', format: formatOptionalPrice },
@@ -81,6 +85,7 @@ export function OptionChainTable({
   chain,
   error,
   isLoading,
+  onQuoteClick,
   selectedExpiration,
 }: OptionChainTableProps) {
   const underlyingPrice =
@@ -88,36 +93,10 @@ export function OptionChainTable({
   const callScrollerRef = useRef<HTMLDivElement>(null)
   const putScrollerRef = useRef<HTMLDivElement>(null)
   const isSyncingScrollRef = useRef(false)
-  const displayRows = chain?.rows.length
-    ? chain.rows.flatMap<ChainDisplayRow>((row, index) => {
-        const nextRow = chain.rows[index + 1]
-        const shouldShowUnderlyingPrice =
-          underlyingPrice !== null &&
-          underlyingPrice > row.strike &&
-          (!nextRow || underlyingPrice <= nextRow.strike)
-
-        return shouldShowUnderlyingPrice
-          ? [
-              { type: 'quote', row },
-              {
-                type: 'underlying',
-                key: `${analysis.ticker}-underlying-price`,
-              },
-            ]
-          : [{ type: 'quote', row }]
-      })
-    : []
-
-  if (
-    chain?.rows.length &&
-    underlyingPrice !== null &&
-    underlyingPrice <= chain.rows[0].strike
-  ) {
-    displayRows.unshift({
-      type: 'underlying',
-      key: `${analysis.ticker}-underlying-price`,
-    })
-  }
+  const displayRows = useMemo(
+    () => buildDisplayRows(chain, analysis.ticker, underlyingPrice),
+    [analysis.ticker, chain, underlyingPrice],
+  )
 
   useLayoutEffect(() => {
     const callScroller = callScrollerRef.current
@@ -126,8 +105,8 @@ export function OptionChainTable({
       return
     }
 
+    callScroller.scrollLeft = 0
     putScroller.scrollLeft = 0
-    callScroller.scrollLeft = callScroller.scrollWidth - callScroller.clientWidth
   }, [chain?.expiration, displayRows.length])
 
   function syncScroller(source: 'call' | 'put') {
@@ -143,15 +122,9 @@ export function OptionChainTable({
 
     isSyncingScrollRef.current = true
     if (source === 'call') {
-      putScroller.scrollLeft =
-        callScroller.scrollWidth -
-        callScroller.clientWidth -
-        callScroller.scrollLeft
+      putScroller.scrollLeft = Math.abs(callScroller.scrollLeft)
     } else {
-      callScroller.scrollLeft =
-        callScroller.scrollWidth -
-        callScroller.clientWidth -
-        putScroller.scrollLeft
+      callScroller.scrollLeft = -putScroller.scrollLeft
     }
     requestAnimationFrame(() => {
       isSyncingScrollRef.current = false
@@ -181,6 +154,7 @@ export function OptionChainTable({
           <div className="grid grid-cols-[minmax(0,1fr)_6rem_minmax(0,1fr)]">
             <div
               ref={callScrollerRef}
+              dir="rtl"
               className="overflow-x-auto overscroll-x-contain"
               onScroll={() => syncScroller('call')}
             >
@@ -188,6 +162,10 @@ export function OptionChainTable({
                 fields={callQuoteFields}
                 rows={displayRows}
                 side="call"
+                ticker={analysis.ticker}
+                expiration={chain.expiration}
+                underlyingPrice={underlyingPrice}
+                onQuoteClick={onQuoteClick}
               />
             </div>
             <StrikePane
@@ -200,7 +178,15 @@ export function OptionChainTable({
               className="overflow-x-auto overscroll-x-contain"
               onScroll={() => syncScroller('put')}
             >
-              <QuotePane fields={quoteFields} rows={displayRows} side="put" />
+              <QuotePane
+                fields={quoteFields}
+                rows={displayRows}
+                side="put"
+                ticker={analysis.ticker}
+                expiration={chain.expiration}
+                underlyingPrice={underlyingPrice}
+                onQuoteClick={onQuoteClick}
+              />
             </div>
           </div>
         ) : (
@@ -212,16 +198,24 @@ export function OptionChainTable({
 }
 
 function QuotePane({
+  expiration,
   fields,
+  onQuoteClick,
   rows,
   side,
+  ticker,
+  underlyingPrice,
 }: {
+  expiration: string
   fields: QuoteField[]
+  onQuoteClick?: (selection: OptionQuoteSelection) => void
   rows: ChainDisplayRow[]
   side: 'call' | 'put'
+  ticker: string
+  underlyingPrice: number | null
 }) {
   return (
-    <table className="w-[1120px] table-fixed text-xs">
+    <table dir="ltr" className="w-[1120px] table-fixed text-xs">
       <colgroup>
         {fields.map((field) => (
           <col key={`${side}-${field.key}`} style={{ width: quoteColumnWidth }} />
@@ -259,7 +253,13 @@ function QuotePane({
                 <QuoteCell
                   key={`${side}-${displayRow.row.strike}-${field.key}`}
                   field={field}
+                  expiration={expiration}
+                  onQuoteClick={onQuoteClick}
                   quote={displayRow.row[side]}
+                  side={side}
+                  strike={displayRow.row.strike}
+                  ticker={ticker}
+                  underlyingPrice={underlyingPrice}
                 />
               ))}
             </TableRow>
@@ -332,15 +332,38 @@ function ChainMessage({ children }: { children: string }) {
   )
 }
 
-function QuoteCell({
+const QuoteCell = memo(function QuoteCell({
+  expiration,
   field,
+  onQuoteClick,
   quote,
+  side,
+  strike,
+  ticker,
+  underlyingPrice,
 }: {
+  expiration: string
   field: QuoteField
+  onQuoteClick?: (selection: OptionQuoteSelection) => void
   quote: OptionQuote | null
+  side: 'call' | 'put'
+  strike: number
+  ticker: string
+  underlyingPrice: number | null
 }) {
-  const value = quote ? quote[field.key] : null
+  const value =
+    field.key === 'return_percent'
+      ? optionReturnPercent(side, quote?.mid ?? null, strike, underlyingPrice)
+      : quote
+        ? quote[field.key]
+        : null
   const size = field.sizeKey && quote ? quote[field.sizeKey] : null
+  const isInteractiveQuote =
+    onQuoteClick !== undefined &&
+    quote !== null &&
+    value !== null &&
+    (field.key === 'bid' || field.key === 'ask')
+  const displayValue = field.format(value)
 
   return (
     <TableCell
@@ -349,7 +372,28 @@ function QuoteCell({
         field.className ? field.className(value).replace('text-right', '') : '',
       ].join(' ')}
     >
-      <span className="block">{field.format(value)}</span>
+      {isInteractiveQuote ? (
+        <button
+          type="button"
+          className="mx-auto block rounded-md px-1.5 py-0.5 text-foreground underline-offset-2 transition hover:bg-muted hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() =>
+            onQuoteClick({
+              ticker,
+              expiration,
+              right: side === 'call' ? 'CALL' : 'PUT',
+              strike,
+              action: field.key === 'ask' ? 'BUY' : 'SELL',
+              quote: value,
+              bid: quote.bid,
+              ask: quote.ask,
+            })
+          }
+        >
+          {displayValue}
+        </button>
+      ) : (
+        <span className="block">{displayValue}</span>
+      )}
       {field.sizeKey ? (
         <span className="block text-[10px] text-muted-foreground">
           {size === null ? '-' : `x${formatOptionalInteger(size)}`}
@@ -357,4 +401,41 @@ function QuoteCell({
       ) : null}
     </TableCell>
   )
+})
+
+function buildDisplayRows(
+  chain: OptionChainResponse | null,
+  ticker: string,
+  underlyingPrice: number | null,
+) {
+  if (!chain?.rows.length) {
+    return []
+  }
+
+  const displayRows = chain.rows.flatMap<ChainDisplayRow>((row, index) => {
+    const nextRow = chain.rows[index + 1]
+    const shouldShowUnderlyingPrice =
+      underlyingPrice !== null &&
+      underlyingPrice > row.strike &&
+      (!nextRow || underlyingPrice <= nextRow.strike)
+
+    return shouldShowUnderlyingPrice
+      ? [
+          { type: 'quote', row },
+          {
+            type: 'underlying',
+            key: `${ticker}-underlying-price`,
+          },
+        ]
+      : [{ type: 'quote', row }]
+  })
+
+  if (underlyingPrice !== null && underlyingPrice <= chain.rows[0].strike) {
+    displayRows.unshift({
+      type: 'underlying',
+      key: `${ticker}-underlying-price`,
+    })
+  }
+
+  return displayRows
 }

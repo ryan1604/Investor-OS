@@ -1,8 +1,8 @@
 import {
   apiUrl,
   apiWebSocketUrl,
-  encodePathSegment,
   responseErrorMessage,
+  tickerPathSegment,
 } from '@/api/client'
 
 export type OptionDailyCandle = {
@@ -98,17 +98,10 @@ export type OptionsChartLiveMessage = {
   rsi: RsiPoint
 }
 
-function normalizeTicker(ticker: string) {
-  return ticker.trim().toUpperCase()
-}
-
-function encodedTicker(ticker: string) {
-  return encodePathSegment(normalizeTicker(ticker), 'Ticker is required.')
-}
-
-export async function fetchOptionsAnalysis(ticker: string) {
+export async function fetchOptionsAnalysis(ticker: string, signal?: AbortSignal) {
   const response = await fetch(
-    apiUrl(`/options/${encodedTicker(ticker)}/analysis`),
+    apiUrl(`/options/${tickerPathSegment(ticker)}/analysis`),
+    { signal },
   )
 
   if (!response.ok) {
@@ -118,10 +111,15 @@ export async function fetchOptionsAnalysis(ticker: string) {
   return response.json() as Promise<OptionsAnalysisResponse>
 }
 
-export async function fetchOptionChain(ticker: string, expiration: string) {
+export async function fetchOptionChain(
+  ticker: string,
+  expiration: string,
+  signal?: AbortSignal,
+) {
   const params = new URLSearchParams({ expiration })
   const response = await fetch(
-    apiUrl(`/options/${encodedTicker(ticker)}/chain?${params}`),
+    apiUrl(`/options/${tickerPathSegment(ticker)}/chain?${params}`),
+    { signal },
   )
 
   if (!response.ok) {
@@ -131,9 +129,10 @@ export async function fetchOptionChain(ticker: string, expiration: string) {
   return response.json() as Promise<OptionChainResponse>
 }
 
-export async function fetchOptionExpirations(ticker: string) {
+export async function fetchOptionExpirations(ticker: string, signal?: AbortSignal) {
   const response = await fetch(
-    apiUrl(`/options/${encodedTicker(ticker)}/expirations`),
+    apiUrl(`/options/${tickerPathSegment(ticker)}/expirations`),
+    { signal },
   )
 
   if (!response.ok) {
@@ -147,10 +146,10 @@ export function getOptionChainWsUrl(ticker: string, expiration: string) {
   const params = new URLSearchParams({ expiration })
 
   return apiWebSocketUrl(
-    `/options/${encodedTicker(ticker)}/chain/ws?${params}`,
+    `/options/${tickerPathSegment(ticker)}/chain/ws?${params}`,
   )
 }
 
 export function getOptionsChartWsUrl(ticker: string) {
-  return apiWebSocketUrl(`/options/${encodedTicker(ticker)}/chart/ws`)
+  return apiWebSocketUrl(`/options/${tickerPathSegment(ticker)}/chart/ws`)
 }

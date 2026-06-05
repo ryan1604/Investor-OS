@@ -1,32 +1,71 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
-  useEffect,
-  useRef,
+  useMemo,
   useState,
-  type WheelEvent,
 } from 'react'
 
-import { LoaderCircle, Search } from 'lucide-react'
-import type { IChartApi, LogicalRange } from 'lightweight-charts'
+import { LoaderCircle, Search, Tickets } from 'lucide-react'
+import type { IChartApi } from 'lightweight-charts'
 
+import type { OrderRecord } from '@/api/orders'
+import type { PortfolioResponse } from '@/api/portfolio'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
+import { ExpirationTabs } from '@/features/options/components/ExpirationTabs'
 import { OptionChainTable } from '@/features/options/components/OptionChainTable'
-import { OptionsChart } from '@/features/options/components/OptionsChart'
-import { RsiChart } from '@/features/options/components/RsiChart'
 import { useOptionChain } from '@/features/options/hooks/useOptionChain'
 import { useOptionsChartStream } from '@/features/options/hooks/useOptionsChartStream'
+import { useSyncedChartRange } from '@/features/options/hooks/useSyncedChartRange'
 import {
   hasAnalysisPriceData,
   useOptionsAnalysis,
 } from '@/features/options/hooks/useOptionsAnalysis'
+import {
+  mergeOptionQuoteSelection,
+  type DraftOptionLeg,
+  type OptionQuoteSelection,
+} from '@/features/options/lib/strategyLegs'
+import { chartOverlays } from '@/features/options/lib/chartOverlays'
 
-export function OptionsPage() {
-  const expirationsListRef = useRef<HTMLDivElement | null>(null)
+const OptionStrategyTicket = lazy(() =>
+  import('@/features/options/components/OptionStrategyTicket').then((module) => ({
+    default: module.OptionStrategyTicket,
+  })),
+)
+const OptionsChart = lazy(() =>
+  import('@/features/options/components/OptionsChart').then((module) => ({
+    default: module.OptionsChart,
+  })),
+)
+const RsiChart = lazy(() =>
+  import('@/features/options/components/RsiChart').then((module) => ({
+    default: module.RsiChart,
+  })),
+)
+const StockTradeTicket = lazy(() =>
+  import('@/features/options/components/StockTradeTicket').then((module) => ({
+    default: module.StockTradeTicket,
+  })),
+)
+
+type OptionsPageProps = {
+  orders: OrderRecord[]
+  portfolio: PortfolioResponse | null
+  selectedAccount: string | null
+}
+
+export function OptionsPage({
+  orders,
+  portfolio,
+  selectedAccount,
+}: OptionsPageProps) {
   const [priceChart, setPriceChart] = useState<IChartApi | null>(null)
   const [rsiChart, setRsiChart] = useState<IChartApi | null>(null)
+  const [draftOptionLegs, setDraftOptionLegs] = useState<DraftOptionLeg[]>([])
+  const [isStrategyTicketOpen, setIsStrategyTicketOpen] = useState(false)
   const {
     analysis: initialAnalysis,
     error,
@@ -50,68 +89,42 @@ export function OptionsPage() {
     selectedExpiration,
     isLoading,
   )
+  const overlays = useMemo(() => {
+    if (!analysis) {
+      return []
+    }
+
+    return chartOverlays({
+      draftLegs: draftOptionLegs,
+      orders,
+      portfolio,
+      selectedAccount,
+      ticker: analysis.ticker,
+    })
+  }, [analysis, draftOptionLegs, orders, portfolio, selectedAccount])
   const handlePriceChartReady = useCallback((chart: IChartApi | null) => {
     setPriceChart(chart)
   }, [])
   const handleRsiChartReady = useCallback((chart: IChartApi | null) => {
     setRsiChart(chart)
   }, [])
-  const handleExpirationWheel = useCallback(
-    (event: WheelEvent<HTMLDivElement>) => {
-      const expirationsList = expirationsListRef.current
-
-      if (!expirationsList) {
-        return
+  const handleDraftOptionLegsChange = useCallback((legs: DraftOptionLeg[]) => {
+    setDraftOptionLegs(legs)
+    if (!legs.length) {
+      setIsStrategyTicketOpen(false)
+    }
+  }, [])
+  const handleQuoteClick = useCallback((selection: OptionQuoteSelection) => {
+    setDraftOptionLegs((currentLegs) => {
+      const nextLegs = mergeOptionQuoteSelection(currentLegs, selection)
+      if (!nextLegs.length) {
+        setIsStrategyTicketOpen(false)
       }
+      return nextLegs
+    })
+  }, [])
 
-      const maxScrollLeft =
-        expirationsList.scrollWidth - expirationsList.clientWidth
-
-      if (maxScrollLeft <= 0) {
-        return
-      }
-
-      event.preventDefault()
-      expirationsList.scrollLeft += event.deltaY || event.deltaX
-    },
-    [],
-  )
-
-  useEffect(() => {
-    if (!priceChart || !rsiChart) {
-      return
-    }
-
-    let isSyncing = false
-    const syncRange = (targetChart: IChartApi, range: LogicalRange | null) => {
-      if (isSyncing || !range) {
-        return
-      }
-
-      isSyncing = true
-      targetChart.timeScale().setVisibleLogicalRange(range)
-      isSyncing = false
-    }
-    const syncRsiToPrice = (range: LogicalRange | null) => {
-      syncRange(rsiChart, range)
-    }
-    const syncPriceToRsi = (range: LogicalRange | null) => {
-      syncRange(priceChart, range)
-    }
-
-    priceChart.timeScale().subscribeVisibleLogicalRangeChange(syncRsiToPrice)
-    rsiChart.timeScale().subscribeVisibleLogicalRangeChange(syncPriceToRsi)
-
-    const currentPriceRange = priceChart.timeScale().getVisibleLogicalRange()
-    if (currentPriceRange) {
-      rsiChart.timeScale().setVisibleLogicalRange(currentPriceRange)
-    }
-
-    return () => {
-      priceChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncRsiToPrice)
-      rsiChart.timeScale().unsubscribeVisibleLogicalRangeChange(syncPriceToRsi)
-    }
-  }, [priceChart, rsiChart])
+  useSyncedChartRange(priceChart, rsiChart)
 
   return (
     <main className="flex min-w-0 w-full flex-col gap-6">
@@ -120,34 +133,62 @@ export function OptionsPage() {
           Options
         </h1>
 
-        <form
-          className="flex w-full items-center gap-2 sm:max-w-sm"
-          onSubmit={handleSubmit}
-        >
-          <Input
-            aria-label="Ticker"
-            autoCapitalize="characters"
-            autoComplete="off"
-            className="h-9 uppercase"
-            disabled={isLoading}
-            maxLength={12}
-            placeholder="AAPL"
-            value={ticker}
-            onChange={(event) => setTicker(event.target.value.toUpperCase())}
-          />
-          <Button
-            type="submit"
-            className="cursor-pointer active:cursor-pointer"
-            disabled={isLoading}
+        <div className="flex w-full items-center gap-2 sm:max-w-xl sm:justify-end">
+          <form
+            className="flex min-w-0 flex-1 items-center gap-2 sm:max-w-sm"
+            onSubmit={handleSubmit}
           >
-            {isLoading ? (
-              <LoaderCircle className="animate-spin" data-icon="inline-start" />
-            ) : (
-              <Search data-icon="inline-start" />
-            )}
-            Search
-          </Button>
-        </form>
+            <Input
+              aria-label="Ticker"
+              autoCapitalize="characters"
+              autoComplete="off"
+              className="h-9 uppercase"
+              disabled={isLoading}
+              maxLength={12}
+              placeholder="AAPL"
+              value={ticker}
+              onChange={(event) => setTicker(event.target.value.toUpperCase())}
+            />
+            <Button
+              type="submit"
+              className="cursor-pointer active:cursor-pointer"
+              disabled={isLoading}
+            >
+              {isLoading ? (
+                <LoaderCircle
+                  className="animate-spin"
+                  data-icon="inline-start"
+                />
+              ) : (
+                <Search data-icon="inline-start" />
+              )}
+              Search
+            </Button>
+          </form>
+          {analysis && hasAnalysisPriceData(analysis) ? (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={!draftOptionLegs.length}
+                onClick={() => setIsStrategyTicketOpen(true)}
+                className="cursor-pointer active:cursor-pointer disabled:cursor-not-allowed"
+              >
+                <Tickets data-icon="inline-start" />
+                Strategy
+                {draftOptionLegs.length ? ` (${draftOptionLegs.length})` : ''}
+              </Button>
+              <Suspense fallback={null}>
+                <StockTradeTicket
+                  ticker={analysis.ticker}
+                  latestPrice={analysis.underlying_price}
+                  portfolio={portfolio}
+                  selectedAccount={selectedAccount}
+                />
+              </Suspense>
+            </>
+          ) : null}
+        </div>
       </header>
 
       {error ? (
@@ -160,16 +201,19 @@ export function OptionsPage() {
         <div className="flex min-w-0 flex-col gap-4">
           {hasAnalysisPriceData(analysis) ? (
             <>
-              <OptionsChart
-                analysis={initialAnalysis ?? analysis}
-                latestUpdate={latestChartUpdate}
-                onChartReady={handlePriceChartReady}
-              />
-              <RsiChart
-                analysis={initialAnalysis ?? analysis}
-                latestUpdate={latestChartUpdate}
-                onChartReady={handleRsiChartReady}
-              />
+              <Suspense fallback={<OptionsPanelLoading />}>
+                <OptionsChart
+                  analysis={initialAnalysis ?? analysis}
+                  latestUpdate={latestChartUpdate}
+                  overlays={overlays}
+                  onChartReady={handlePriceChartReady}
+                />
+                <RsiChart
+                  analysis={initialAnalysis ?? analysis}
+                  latestUpdate={latestChartUpdate}
+                  onChartReady={handleRsiChartReady}
+                />
+              </Suspense>
               {chartStreamError ? (
                 <Alert>{chartStreamError} Showing the latest available chart.</Alert>
               ) : null}
@@ -183,30 +227,11 @@ export function OptionsPage() {
                 <Alert variant="destructive">{expirationsError}</Alert>
               ) : null}
               {expirations.length ? (
-                <Tabs
-                  value={selectedExpiration}
-                  onValueChange={setSelectedExpiration}
-                  className="min-w-0"
-                >
-                  <TabsList
-                    ref={expirationsListRef}
-                    className="no-scrollbar max-w-full justify-start overflow-x-auto overscroll-x-contain"
-                    onWheel={handleExpirationWheel}
-                  >
-                    {expirations.map((expiration) => (
-                      <TabsTrigger
-                        key={expiration.date}
-                        value={expiration.date}
-                        className="cursor-pointer active:cursor-pointer"
-                      >
-                        {expiration.date}
-                        {expiration.days_to_expiration !== null
-                          ? ` (${expiration.days_to_expiration}D)`
-                          : ''}
-                      </TabsTrigger>
-                    ))}
-                  </TabsList>
-                </Tabs>
+                <ExpirationTabs
+                  expirations={expirations}
+                  selectedExpiration={selectedExpiration}
+                  onSelectedExpirationChange={setSelectedExpiration}
+                />
               ) : null}
               {!isExpirationsLoading &&
               !expirationsError &&
@@ -219,6 +244,7 @@ export function OptionsPage() {
                   chain={chain}
                   error={chainError}
                   isLoading={isChainLoading}
+                  onQuoteClick={handleQuoteClick}
                   selectedExpiration={selectedExpiration}
                 />
               ) : null}
@@ -231,6 +257,27 @@ export function OptionsPage() {
           )}
         </div>
       ) : null}
+      {draftOptionLegs.length ? (
+        <Suspense fallback={null}>
+          <OptionStrategyTicket
+            legs={draftOptionLegs}
+            open={isStrategyTicketOpen}
+            portfolio={portfolio}
+            selectedAccount={selectedAccount}
+            onLegsChange={handleDraftOptionLegsChange}
+            onOpenChange={setIsStrategyTicketOpen}
+          />
+        </Suspense>
+      ) : null}
     </main>
+  )
+}
+
+function OptionsPanelLoading() {
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+      <LoaderCircle className="size-4 animate-spin" />
+      Loading charts...
+    </div>
   )
 }

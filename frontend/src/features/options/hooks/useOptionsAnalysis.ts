@@ -1,5 +1,6 @@
-import { useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 
+import { isAbortError } from '@/api/client'
 import {
   fetchOptionExpirations,
   fetchOptionsAnalysis,
@@ -25,12 +26,22 @@ export function useOptionsAnalysis() {
   const [error, setError] = useState<string | null>(null)
   const [expirationsError, setExpirationsError] = useState<string | null>(null)
   const analysisRequestIdRef = useRef(0)
+  const activeRequestControllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    return () => {
+      activeRequestControllerRef.current?.abort()
+    }
+  }, [])
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
     const normalizedTicker = ticker.trim().toUpperCase()
     const requestId = analysisRequestIdRef.current + 1
+    activeRequestControllerRef.current?.abort()
+    const requestController = new AbortController()
+    activeRequestControllerRef.current = requestController
     analysisRequestIdRef.current = requestId
     setTicker(normalizedTicker)
     setAnalysis(null)
@@ -48,13 +59,20 @@ export function useOptionsAnalysis() {
     setError(null)
 
     try {
-      const nextAnalysis = await fetchOptionsAnalysis(normalizedTicker)
+      const nextAnalysis = await fetchOptionsAnalysis(
+        normalizedTicker,
+        requestController.signal,
+      )
       if (analysisRequestIdRef.current !== requestId) {
         return
       }
 
       setAnalysis(nextAnalysis)
     } catch (nextError) {
+      if (isAbortError(nextError)) {
+        return
+      }
+
       if (analysisRequestIdRef.current !== requestId) {
         return
       }
@@ -75,7 +93,10 @@ export function useOptionsAnalysis() {
     setIsExpirationsLoading(true)
 
     try {
-      const nextExpirations = await fetchOptionExpirations(normalizedTicker)
+      const nextExpirations = await fetchOptionExpirations(
+        normalizedTicker,
+        requestController.signal,
+      )
       if (analysisRequestIdRef.current !== requestId) {
         return
       }
@@ -87,6 +108,10 @@ export function useOptionsAnalysis() {
           '',
       )
     } catch (nextError) {
+      if (isAbortError(nextError)) {
+        return
+      }
+
       if (analysisRequestIdRef.current === requestId) {
         setExpirationsError(errorMessage(nextError))
       }

@@ -1,4 +1,9 @@
-import { BriefcaseBusiness, ChartCandlestick } from 'lucide-react'
+import {
+  BriefcaseBusiness,
+  ChartCandlestick,
+  ChartNoAxesCombined,
+  ListChecks,
+} from 'lucide-react'
 
 import type { AppPage } from '@/App'
 import {
@@ -32,6 +37,16 @@ const navigationItems: {
     page: 'options',
     label: 'Options',
     icon: ChartCandlestick,
+  },
+  {
+    page: 'orders',
+    label: 'Orders',
+    icon: ListChecks,
+  },
+  {
+    page: 'stock-analysis',
+    label: 'Stock analysis',
+    icon: ChartNoAxesCombined,
   },
 ]
 

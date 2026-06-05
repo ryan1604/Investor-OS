@@ -1,5 +1,58 @@
 import type { OptionChainResponse, OptionChainRow } from '@/api/options'
 
+export function mergeLiveChainRows(
+  chain: OptionChainResponse | null,
+  ticker: string,
+  expiration: string,
+  rows: OptionChainRow[],
+  message: string | null,
+): OptionChainResponse {
+  if (!rows.length) {
+    return {
+      ticker,
+      expiration,
+      underlying_price: chain?.underlying_price ?? null,
+      rows: chain?.rows ?? [],
+      message: message ?? chain?.message ?? null,
+    }
+  }
+
+  const currentRows = chain?.rows ?? []
+  const nextRows = [...currentRows]
+  const rowIndexes = createStrikeIndex(nextRows)
+  let didAppendRow = false
+
+  for (const row of rows) {
+    const rowIndex = rowIndexes.get(row.strike)
+
+    if (rowIndex === undefined) {
+      rowIndexes.set(row.strike, nextRows.length)
+      nextRows.push(row)
+      didAppendRow = true
+      continue
+    }
+
+    const currentRow = nextRows[rowIndex]
+    nextRows[rowIndex] = {
+      ...currentRow,
+      call: row.call ?? currentRow.call,
+      put: row.put ?? currentRow.put,
+    }
+  }
+
+  if (didAppendRow) {
+    nextRows.sort((first, second) => first.strike - second.strike)
+  }
+
+  return {
+    ticker,
+    expiration,
+    underlying_price: chain?.underlying_price ?? null,
+    rows: nextRows,
+    message: message ?? chain?.message ?? null,
+  }
+}
+
 export function mergeLiveChainSnapshot(
   chain: OptionChainResponse | null,
   ticker: string,
@@ -17,11 +70,7 @@ export function mergeLiveChainSnapshot(
     }
   }
 
-  return rows.reduce(
-    (nextChain, row) =>
-      mergeLiveChainRow(nextChain, ticker, expiration, row, message),
-    chain,
-  )
+  return mergeLiveChainRows(chain, ticker, expiration, rows, message)
 }
 
 export function mergeLiveChainRow(
@@ -31,28 +80,9 @@ export function mergeLiveChainRow(
   row: OptionChainRow,
   message: string | null,
 ): OptionChainResponse {
-  const currentRows = chain?.rows ?? []
-  const rowIndex = currentRows.findIndex(
-    (currentRow) => currentRow.strike === row.strike,
-  )
-  const rows =
-    rowIndex >= 0
-      ? currentRows.map((currentRow, index) =>
-          index === rowIndex
-            ? {
-                ...currentRow,
-                call: row.call ?? currentRow.call,
-                put: row.put ?? currentRow.put,
-              }
-            : currentRow,
-        )
-      : [...currentRows, row].sort((first, second) => first.strike - second.strike)
+  return mergeLiveChainRows(chain, ticker, expiration, [row], message)
+}
 
-  return {
-    ticker,
-    expiration,
-    underlying_price: chain?.underlying_price ?? null,
-    rows,
-    message: message ?? chain?.message ?? null,
-  }
+function createStrikeIndex(rows: OptionChainRow[]) {
+  return new Map(rows.map((row, index) => [row.strike, index]))
 }

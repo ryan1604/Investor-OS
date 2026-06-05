@@ -156,7 +156,7 @@ class IbPortfolioClient:
                 return
 
             with self.app.lock:
-                self.app.positions = {}
+                self.app.positions.clear()
                 self.app.positions_ready.clear()
 
             self.app.reqPositions()
@@ -244,6 +244,7 @@ class IbPortfolioClient:
             position.con_id for position in positions if position.con_id is not None
         }
 
+        stale_req_ids = []
         with self.app.lock:
             stale_con_ids = [
                 con_id
@@ -258,7 +259,7 @@ class IbPortfolioClient:
 
                 if req_id is not None:
                     self.app.market_req_to_con_id.pop(req_id, None)
-                    self.app.cancelMktData(req_id)
+                    stale_req_ids.append(req_id)
 
             for position in positions:
                 if position.con_id is None:
@@ -279,7 +280,11 @@ class IbPortfolioClient:
                     contract,
                 )
 
+        for req_id in stale_req_ids:
+            self.app.cancelMktData(req_id)
+
     def _subscribe_market_data(self) -> None:
+        requests = []
         with self.app.lock:
             contracts = [
                 contract
@@ -292,7 +297,10 @@ class IbPortfolioClient:
                 self.app.market_req_ids[contract.conId] = req_id
                 self.app.market_req_to_con_id[req_id] = contract.conId
 
-                self.app.reqMktData(req_id, contract, "", False, False, [])
+                requests.append((req_id, contract))
+
+        for req_id, contract in requests:
+            self.app.reqMktData(req_id, contract, "", False, False, [])
 
     def _subscribe_pnl(self, positions: list[PortfolioPosition]) -> None:
         active_position_keys = {
@@ -301,6 +309,8 @@ class IbPortfolioClient:
             if position.con_id is not None
         }
 
+        stale_req_ids = []
+        requests = []
         with self.app.lock:
             stale_position_keys = [
                 position_key
@@ -312,7 +322,7 @@ class IbPortfolioClient:
                 req_id = self.app.pnl_req_ids.pop(position_key)
                 self.app.pnl_req_to_position_key.pop(req_id, None)
                 self.app.pnl_data.pop(position_key, None)
-                self.app.cancelPnLSingle(req_id)
+                stale_req_ids.append(req_id)
 
             for account, con_id in active_position_keys:
                 position_key = (account, con_id)
@@ -323,11 +333,19 @@ class IbPortfolioClient:
                 self.app.next_pnl_req_id += 1
                 self.app.pnl_req_ids[position_key] = req_id
                 self.app.pnl_req_to_position_key[req_id] = position_key
-                self.app.reqPnLSingle(req_id, account, "", con_id)
+                requests.append((req_id, account, con_id))
+
+        for req_id in stale_req_ids:
+            self.app.cancelPnLSingle(req_id)
+
+        for req_id, account, con_id in requests:
+            self.app.reqPnLSingle(req_id, account, "", con_id)
 
     def _subscribe_account_pnl(self, accounts: list[str]) -> None:
         active_accounts = set(accounts)
 
+        stale_req_ids = []
+        requests = []
         with self.app.lock:
             stale_accounts = [
                 account
@@ -339,7 +357,7 @@ class IbPortfolioClient:
                 req_id = self.app.account_pnl_req_ids.pop(account)
                 self.app.account_pnl_req_to_account.pop(req_id, None)
                 self.app.account_pnl_data.pop(account, None)
-                self.app.cancelPnL(req_id)
+                stale_req_ids.append(req_id)
 
             for account in active_accounts:
                 if account in self.app.account_pnl_req_ids:
@@ -349,7 +367,13 @@ class IbPortfolioClient:
                 self.app.next_account_pnl_req_id += 1
                 self.app.account_pnl_req_ids[account] = req_id
                 self.app.account_pnl_req_to_account[req_id] = account
-                self.app.reqPnL(req_id, account, "")
+                requests.append((req_id, account))
+
+        for req_id in stale_req_ids:
+            self.app.cancelPnL(req_id)
+
+        for req_id, account in requests:
+            self.app.reqPnL(req_id, account, "")
 
     def _merge_market_data(
         self,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
+import logging
 from threading import Event
+from time import perf_counter
 
 from ibapi.contract import Contract
 
@@ -10,11 +12,13 @@ from app.ib.app import IB_INVALID_CONTRACT_CODES, US_MARKET_TIME_ZONE, IbPortfol
 from app.ib.contracts import us_equity_contract, us_option_contract
 from app.options.client import OptionsDataUnavailable
 from app.options.domain import OptionMetadata, to_option_quote
-from app.options.store import CompletedDailyBar, normalize_ticker
+from app.options.store import CompletedDailyBar
+from app.tickers import normalize_ticker
 from app.schemas import OptionQuote
 
 OPTION_MARKET_DATA_GENERIC_TICKS = "100,101,104,106"
 OPTION_RIGHTS = ("C", "P")
+logger = logging.getLogger(__name__)
 
 
 def raise_invalid_ticker_if_needed(app, req_id: int, ticker: str) -> None:
@@ -400,6 +404,7 @@ class IbOptionChainStreamProvider:
                 if not self.app.option_market_data_ready.wait(self.wait_seconds):
                     continue
 
+                updates_started_at = perf_counter()
                 changed_quotes: list[tuple[tuple[float, str], OptionQuote]] = []
                 for key, current_values in subscriptions.changed_values(
                     latest_values
@@ -417,6 +422,14 @@ class IbOptionChainStreamProvider:
                     )
 
                 yield from changed_quotes
+                logger.info(
+                    "Option chain stream updates ticker=%s expiration=%s "
+                    "changed_quotes=%s update_ms=%.1f",
+                    normalized_ticker,
+                    expiration,
+                    len(changed_quotes),
+                    elapsed_ms(updates_started_at),
+                )
         finally:
             subscriptions.close()
 
@@ -439,6 +452,8 @@ class OptionMarketDataSubscriptions:
         self.req_ids: list[int] = []
 
     def open(self) -> None:
+        started_at = perf_counter()
+        requests = []
         with self.app.lock:
             self.app.option_market_data_ready.clear()
 
@@ -450,19 +465,34 @@ class OptionMarketDataSubscriptions:
                     self.app.option_market_req_to_key[req_id] = option_key
                     self.app.option_market_data[req_id] = {}
                     self.req_ids.append(req_id)
-                    self.app.reqMktData(
-                        req_id,
-                        us_option_contract(
-                            self.ticker,
-                            expiration=self.expiration,
-                            strike=strike,
-                            right=right,
-                        ),
-                        OPTION_MARKET_DATA_GENERIC_TICKS,
-                        self.snapshot,
-                        False,
-                        [],
+                    requests.append(
+                        (
+                            req_id,
+                            us_option_contract(
+                                self.ticker,
+                                expiration=self.expiration,
+                                strike=strike,
+                                right=right,
+                            ),
+                            OPTION_MARKET_DATA_GENERIC_TICKS,
+                            self.snapshot,
+                            False,
+                            [],
+                        )
                     )
+
+        for request in requests:
+            self.app.reqMktData(*request)
+
+        logger.info(
+            "Option chain market-data subscriptions opened ticker=%s "
+            "expiration=%s strikes=%s subscriptions=%s open_ms=%.1f",
+            self.ticker,
+            self.expiration,
+            len(self.strikes),
+            len(requests),
+            elapsed_ms(started_at),
+        )
 
     def snapshot_values(self) -> dict[tuple[float, str], dict[str, float | int | None]]:
         with self.app.lock:
@@ -495,9 +525,35 @@ class OptionMarketDataSubscriptions:
                 yield key, current_values
 
     def close(self) -> None:
+        started_at = perf_counter()
         with self.app.lock:
+            req_ids_to_cancel = list(self.req_ids)
             for req_id in self.req_ids:
                 option_key = self.app.option_market_req_to_key.pop(req_id, None)
                 if option_key is not None:
                     self.app.option_market_data.pop(req_id, None)
-                self.app.cancelMktData(req_id)
+
+        for req_id in req_ids_to_cancel:
+            self.app.cancelMktData(req_id)
+
+        logger.info(
+            "Option chain market-data subscriptions closed ticker=%s "
+            "expiration=%s subscriptions=%s request_errors=%s close_ms=%.1f",
+            self.ticker,
+            self.expiration,
+            len(req_ids_to_cancel),
+            self.request_error_count(req_ids_to_cancel),
+            elapsed_ms(started_at),
+        )
+
+    def request_error_count(self, req_ids: list[int]) -> int:
+        request_errors = getattr(self.app, "request_errors_by_req_id", None)
+        if request_errors is None:
+            return 0
+
+        with self.app.lock:
+            return sum(1 for req_id in req_ids if req_id in request_errors)
+
+
+def elapsed_ms(started_at: float) -> float:
+    return (perf_counter() - started_at) * 1_000

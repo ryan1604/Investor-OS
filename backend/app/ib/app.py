@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
-from ibapi.contract import ContractDetails
+from ibapi.contract import Contract, ContractDetails
 from ibapi.wrapper import EWrapper
 
 from app.ib.contracts import (
@@ -64,54 +66,151 @@ def completed_daily_bar(ticker: str, bar) -> CompletedDailyBar | None:
     )
 
 
+@dataclass
+class IbPortfolioState:
+    positions: dict[tuple[str, int, str], PortfolioPosition] = field(
+        default_factory=dict
+    )
+    market_data: dict[int, dict[str, float]] = field(default_factory=dict)
+    market_contracts: dict[int, Contract] = field(default_factory=dict)
+    market_req_ids: dict[int, int] = field(default_factory=dict)
+    market_req_to_con_id: dict[int, int] = field(default_factory=dict)
+    pnl_req_ids: dict[tuple[str, int], int] = field(default_factory=dict)
+    pnl_req_to_position_key: dict[int, tuple[str, int]] = field(default_factory=dict)
+    pnl_data: dict[tuple[str, int], dict[str, float | None]] = field(
+        default_factory=dict
+    )
+    account_pnl_req_ids: dict[str, int] = field(default_factory=dict)
+    account_pnl_req_to_account: dict[int, str] = field(default_factory=dict)
+    account_pnl_data: dict[str, dict[str, float | None]] = field(
+        default_factory=dict
+    )
+    next_market_req_id: int = 10_000
+    next_pnl_req_id: int = 30_000
+    next_account_pnl_req_id: int = 50_000
+
+
+@dataclass
+class IbAccountSummaryState:
+    values: dict[tuple[str, str, str], float] = field(default_factory=dict)
+    pending_values: dict[int, dict[tuple[str, str, str], float]] = field(
+        default_factory=dict
+    )
+    ready_by_req_id: dict[int, threading.Event] = field(default_factory=dict)
+    tag_aliases_by_req_id: dict[int, dict[str, str]] = field(default_factory=dict)
+    active_req_id: int | None = None
+    next_req_id: int = 40_000
+
+
+@dataclass
+class IbHistoricalState:
+    bars: dict[int, list[CompletedDailyBar]] = field(default_factory=dict)
+    req_tickers: dict[int, str] = field(default_factory=dict)
+    ready_by_req_id: dict[int, threading.Event] = field(default_factory=dict)
+    update_req_tickers: dict[int, str] = field(default_factory=dict)
+    updates_by_req_id: dict[int, list[CompletedDailyBar]] = field(default_factory=dict)
+    update_ready_by_req_id: dict[int, threading.Event] = field(default_factory=dict)
+    chart_market_req_tickers: dict[int, str] = field(default_factory=dict)
+    chart_market_updates_by_req_id: dict[int, list[CompletedDailyBar]] = field(
+        default_factory=dict
+    )
+    chart_market_ready_by_req_id: dict[int, threading.Event] = field(
+        default_factory=dict
+    )
+    contract_details: dict[int, list[ContractDetails]] = field(default_factory=dict)
+    contract_details_ready_by_req_id: dict[int, threading.Event] = field(
+        default_factory=dict
+    )
+    request_errors_by_req_id: dict[int, tuple[int, str]] = field(default_factory=dict)
+    next_historical_req_id: int = 60_000
+    next_chart_market_req_id: int = 110_000
+    next_contract_details_req_id: int = 70_000
+
+
+@dataclass
+class IbOptionMarketState:
+    metadata: dict[int, OptionMetadata] = field(default_factory=dict)
+    metadata_ready_by_req_id: dict[int, threading.Event] = field(default_factory=dict)
+    market_req_to_key: dict[int, tuple[float, str]] = field(default_factory=dict)
+    market_data: dict[int, dict[str, float | int | None]] = field(
+        default_factory=dict
+    )
+    next_params_req_id: int = 80_000
+    next_market_req_id: int = 90_000
+
+
+@dataclass
+class IbOrderState:
+    next_order_id: int | None = None
+    next_execution_req_id: int = 90_000
+    status_listeners: list[Callable[..., None]] = field(default_factory=list)
+    submitted_order_ids: set[int] = field(default_factory=set)
+
+
 class IbPortfolioApp(EWrapper, EClient):
     def __init__(self) -> None:
         EClient.__init__(self, self)
-        self.positions: dict[tuple[str, int, str], PortfolioPosition] = {}
-        self.account_summary_values: dict[tuple[str, str, str], float] = {}
-        self.pending_account_summary_values: dict[
-            int,
-            dict[tuple[str, str, str], float],
-        ] = {}
-        self.account_summary_ready_by_req_id: dict[int, threading.Event] = {}
-        self.account_summary_tag_aliases_by_req_id: dict[int, dict[str, str]] = {}
-        self.active_account_summary_req_id: int | None = None
-        self.market_data: dict[int, dict[str, float]] = {}
-        self.market_contracts: dict[int, Contract] = {}
-        self.market_req_ids: dict[int, int] = {}
-        self.market_req_to_con_id: dict[int, int] = {}
-        self.pnl_req_ids: dict[tuple[str, int], int] = {}
-        self.pnl_req_to_position_key: dict[int, tuple[str, int]] = {}
-        self.pnl_data: dict[tuple[str, int], dict[str, float | None]] = {}
-        self.account_pnl_req_ids: dict[str, int] = {}
-        self.account_pnl_req_to_account: dict[int, str] = {}
-        self.account_pnl_data: dict[str, dict[str, float | None]] = {}
-        self.next_market_req_id = 10_000
-        self.next_pnl_req_id = 30_000
-        self.next_account_summary_req_id = 40_000
-        self.next_account_pnl_req_id = 50_000
-        self.next_historical_req_id = 60_000
-        self.next_chart_market_req_id = 110_000
-        self.next_contract_details_req_id = 70_000
-        self.next_option_params_req_id = 80_000
-        self.next_option_market_req_id = 90_000
+        self.portfolio_state = IbPortfolioState()
+        self.account_summary_state = IbAccountSummaryState()
+        self.historical_state = IbHistoricalState()
+        self.option_state = IbOptionMarketState()
+        self.order_state = IbOrderState()
+        self.positions = self.portfolio_state.positions
+        self.account_summary_values = self.account_summary_state.values
+        self.pending_account_summary_values = (
+            self.account_summary_state.pending_values
+        )
+        self.account_summary_ready_by_req_id = (
+            self.account_summary_state.ready_by_req_id
+        )
+        self.account_summary_tag_aliases_by_req_id = (
+            self.account_summary_state.tag_aliases_by_req_id
+        )
+        self.market_data = self.portfolio_state.market_data
+        self.market_contracts = self.portfolio_state.market_contracts
+        self.market_req_ids = self.portfolio_state.market_req_ids
+        self.market_req_to_con_id = self.portfolio_state.market_req_to_con_id
+        self.pnl_req_ids = self.portfolio_state.pnl_req_ids
+        self.pnl_req_to_position_key = self.portfolio_state.pnl_req_to_position_key
+        self.pnl_data = self.portfolio_state.pnl_data
+        self.account_pnl_req_ids = self.portfolio_state.account_pnl_req_ids
+        self.account_pnl_req_to_account = (
+            self.portfolio_state.account_pnl_req_to_account
+        )
+        self.account_pnl_data = self.portfolio_state.account_pnl_data
+        self.request_errors_by_req_id = self.historical_state.request_errors_by_req_id
+        self.historical_bars = self.historical_state.bars
+        self.historical_req_tickers = self.historical_state.req_tickers
+        self.historical_data_ready_by_req_id = self.historical_state.ready_by_req_id
+        self.historical_update_req_tickers = (
+            self.historical_state.update_req_tickers
+        )
+        self.historical_updates_by_req_id = self.historical_state.updates_by_req_id
+        self.historical_update_ready_by_req_id = (
+            self.historical_state.update_ready_by_req_id
+        )
+        self.chart_market_req_tickers = (
+            self.historical_state.chart_market_req_tickers
+        )
+        self.chart_market_updates_by_req_id = (
+            self.historical_state.chart_market_updates_by_req_id
+        )
+        self.chart_market_ready_by_req_id = (
+            self.historical_state.chart_market_ready_by_req_id
+        )
+        self.contract_details = self.historical_state.contract_details
+        self.contract_details_ready_by_req_id = (
+            self.historical_state.contract_details_ready_by_req_id
+        )
+        self.option_metadata = self.option_state.metadata
+        self.option_metadata_ready_by_req_id = (
+            self.option_state.metadata_ready_by_req_id
+        )
+        self.option_market_req_to_key = self.option_state.market_req_to_key
+        self.option_market_data = self.option_state.market_data
+        self.order_status_listeners = self.order_state.status_listeners
+        self.submitted_order_ids = self.order_state.submitted_order_ids
         self.logged_warnings: set[tuple[int, int]] = set()
-        self.request_errors_by_req_id: dict[int, tuple[int, str]] = {}
-        self.historical_bars: dict[int, list[CompletedDailyBar]] = {}
-        self.historical_req_tickers: dict[int, str] = {}
-        self.historical_data_ready_by_req_id: dict[int, threading.Event] = {}
-        self.historical_update_req_tickers: dict[int, str] = {}
-        self.historical_updates_by_req_id: dict[int, list[CompletedDailyBar]] = {}
-        self.historical_update_ready_by_req_id: dict[int, threading.Event] = {}
-        self.chart_market_req_tickers: dict[int, str] = {}
-        self.chart_market_updates_by_req_id: dict[int, list[CompletedDailyBar]] = {}
-        self.chart_market_ready_by_req_id: dict[int, threading.Event] = {}
-        self.contract_details: dict[int, list[ContractDetails]] = {}
-        self.contract_details_ready_by_req_id: dict[int, threading.Event] = {}
-        self.option_metadata: dict[int, OptionMetadata] = {}
-        self.option_metadata_ready_by_req_id: dict[int, threading.Event] = {}
-        self.option_market_req_to_key: dict[int, tuple[float, str]] = {}
-        self.option_market_data: dict[int, dict[str, float | int | None]] = {}
         self.positions_ready = threading.Event()
         self.market_data_ready = threading.Event()
         self.pnl_ready = threading.Event()
@@ -120,8 +219,190 @@ class IbPortfolioApp(EWrapper, EClient):
         self.connected_ready = threading.Event()
         self.lock = threading.Lock()
 
+    @property
+    def active_account_summary_req_id(self) -> int | None:
+        return self.account_summary_state.active_req_id
+
+    @active_account_summary_req_id.setter
+    def active_account_summary_req_id(self, value: int | None) -> None:
+        self.account_summary_state.active_req_id = value
+
+    @property
+    def next_market_req_id(self) -> int:
+        return self.portfolio_state.next_market_req_id
+
+    @next_market_req_id.setter
+    def next_market_req_id(self, value: int) -> None:
+        self.portfolio_state.next_market_req_id = value
+
+    @property
+    def next_pnl_req_id(self) -> int:
+        return self.portfolio_state.next_pnl_req_id
+
+    @next_pnl_req_id.setter
+    def next_pnl_req_id(self, value: int) -> None:
+        self.portfolio_state.next_pnl_req_id = value
+
+    @property
+    def next_account_summary_req_id(self) -> int:
+        return self.account_summary_state.next_req_id
+
+    @next_account_summary_req_id.setter
+    def next_account_summary_req_id(self, value: int) -> None:
+        self.account_summary_state.next_req_id = value
+
+    @property
+    def next_account_pnl_req_id(self) -> int:
+        return self.portfolio_state.next_account_pnl_req_id
+
+    @next_account_pnl_req_id.setter
+    def next_account_pnl_req_id(self, value: int) -> None:
+        self.portfolio_state.next_account_pnl_req_id = value
+
+    @property
+    def next_order_id(self) -> int | None:
+        return self.order_state.next_order_id
+
+    @next_order_id.setter
+    def next_order_id(self, value: int | None) -> None:
+        self.order_state.next_order_id = value
+
+    @property
+    def next_execution_req_id(self) -> int:
+        return self.order_state.next_execution_req_id
+
+    @next_execution_req_id.setter
+    def next_execution_req_id(self, value: int) -> None:
+        self.order_state.next_execution_req_id = value
+
+    @property
+    def next_historical_req_id(self) -> int:
+        return self.historical_state.next_historical_req_id
+
+    @next_historical_req_id.setter
+    def next_historical_req_id(self, value: int) -> None:
+        self.historical_state.next_historical_req_id = value
+
+    @property
+    def next_chart_market_req_id(self) -> int:
+        return self.historical_state.next_chart_market_req_id
+
+    @next_chart_market_req_id.setter
+    def next_chart_market_req_id(self, value: int) -> None:
+        self.historical_state.next_chart_market_req_id = value
+
+    @property
+    def next_contract_details_req_id(self) -> int:
+        return self.historical_state.next_contract_details_req_id
+
+    @next_contract_details_req_id.setter
+    def next_contract_details_req_id(self, value: int) -> None:
+        self.historical_state.next_contract_details_req_id = value
+
+    @property
+    def next_option_params_req_id(self) -> int:
+        return self.option_state.next_params_req_id
+
+    @next_option_params_req_id.setter
+    def next_option_params_req_id(self, value: int) -> None:
+        self.option_state.next_params_req_id = value
+
+    @property
+    def next_option_market_req_id(self) -> int:
+        return self.option_state.next_market_req_id
+
+    @next_option_market_req_id.setter
+    def next_option_market_req_id(self, value: int) -> None:
+        self.option_state.next_market_req_id = value
+
     def nextValidId(self, orderId: int) -> None:
+        with self.lock:
+            self.next_order_id = orderId
         self.connected_ready.set()
+
+    def add_order_status_listener(self, listener: Callable[..., None]) -> None:
+        with self.lock:
+            self.order_status_listeners.append(listener)
+
+    def register_submitted_order(self, order_id: int) -> None:
+        with self.lock:
+            self.submitted_order_ids.add(order_id)
+
+    def orderStatus(
+        self,
+        orderId: int,
+        status: str,
+        filled: float,
+        remaining: float,
+        avgFillPrice: float,
+        permId: int,
+        parentId: int,
+        lastFillPrice: float,
+        clientId: int,
+        whyHeld: str,
+        mktCapPrice: float,
+    ) -> None:
+        self._notify_order_status(
+            orderId,
+            status,
+            filled=clean_ib_float(filled),
+            remaining=clean_ib_float(remaining),
+            avg_fill_price=clean_ib_price(avgFillPrice),
+            perm_id=permId or None,
+            parent_order_id=parentId or None,
+        )
+
+    def openOrder(self, orderId: int, contract: Contract, order, orderState) -> None:
+        self._notify_order_status(
+            orderId,
+            getattr(orderState, "status", "") or "Submitted",
+            filled=0,
+            remaining=clean_ib_float(getattr(order, "totalQuantity", 0)),
+            perm_id=getattr(order, "permId", 0) or None,
+            parent_order_id=getattr(order, "parentId", 0) or None,
+            account=getattr(order, "account", "") or None,
+        )
+
+    def execDetails(self, reqId: int, contract: Contract, execution) -> None:
+        self._notify_order_status(
+            getattr(execution, "orderId", 0),
+            "Filled",
+            filled=clean_ib_float(getattr(execution, "shares", None)),
+            remaining=0,
+            avg_fill_price=clean_ib_price(getattr(execution, "price", None)),
+            perm_id=getattr(execution, "permId", 0) or None,
+            account=getattr(execution, "acctNumber", "") or None,
+        )
+
+    def _notify_order_status(
+        self,
+        order_id: int,
+        status: str,
+        *,
+        filled: float | None = None,
+        remaining: float | None = None,
+        avg_fill_price: float | None = None,
+        perm_id: int | None = None,
+        parent_order_id: int | None = None,
+        rejection_message: str | None = None,
+        account: str | None = None,
+    ) -> None:
+        with self.lock:
+            listeners = list(self.order_status_listeners)
+
+        payload = {
+            "filled": filled,
+            "remaining": remaining,
+            "avg_fill_price": avg_fill_price,
+            "perm_id": perm_id,
+            "parent_order_id": parent_order_id,
+            "rejection_message": rejection_message,
+        }
+        if account is not None:
+            payload["account"] = account
+
+        for listener in listeners:
+            listener(order_id, status, **payload)
 
     def position(
         self,
@@ -535,6 +816,15 @@ class IbPortfolioApp(EWrapper, EClient):
                 ready = self.historical_data_ready_by_req_id.get(reqId)
             if ready is not None:
                 ready.set()
+
+        with self.lock:
+            is_order_error = reqId in self.submitted_order_ids
+        if is_order_error:
+            self._notify_order_status(
+                reqId,
+                "Inactive",
+                rejection_message=errorString,
+            )
 
         logger.warning(
             "IB API error reqId=%s code=%s message=%s",

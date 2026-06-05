@@ -2,7 +2,7 @@ from datetime import date
 
 from ibapi.contract import Contract
 
-from app.options.store import normalize_ticker
+from app.tickers import normalize_ticker
 
 
 def clean_ib_float(value: float | None) -> float | None:

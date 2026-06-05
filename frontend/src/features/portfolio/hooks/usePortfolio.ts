@@ -43,6 +43,7 @@ export function usePortfolio() {
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let socket: WebSocket | null = null
+    let hasSnapshot = false
 
     const connect = () => {
       socket = new WebSocket(PORTFOLIO_WS_URL)
@@ -56,6 +57,7 @@ export function usePortfolio() {
           return
         }
 
+        hasSnapshot = true
         setPortfolio(JSON.parse(event.data) as PortfolioResponse)
         setError(null)
         setIsLoading(false)
@@ -64,6 +66,9 @@ export function usePortfolio() {
       socket.onerror = () => {
         if (!ignore) {
           setError('Portfolio stream disconnected.')
+          if (!hasSnapshot) {
+            setIsLoading(false)
+          }
         }
       }
 
@@ -73,6 +78,9 @@ export function usePortfolio() {
         }
 
         setError('Portfolio stream disconnected.')
+        if (!hasSnapshot) {
+          setIsLoading(false)
+        }
         reconnectTimer = setTimeout(connect, reconnectDelay)
         reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
       }

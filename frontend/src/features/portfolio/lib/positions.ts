@@ -32,6 +32,36 @@ export const DEFAULT_SORT: SortState = {
   direction: 'desc',
 }
 
+function positionIdentityKey(position: DisplayPosition) {
+  return [
+    position.account,
+    position.symbol,
+    position.sec_type,
+    position.local_symbol,
+    position.expiry,
+    position.strike,
+    position.right,
+    position.multiplier,
+    position.exchange,
+    position.currency,
+    position.instrumentTitle,
+    position.instrumentDetail,
+  ].join('-')
+}
+
+export function positionKeys(positions: DisplayPosition[]) {
+  const identityCounts = new Map<string, number>()
+
+  return positions.map((position) => {
+    const identityKey = positionIdentityKey(position)
+    const count = identityCounts.get(identityKey) ?? 0
+
+    identityCounts.set(identityKey, count + 1)
+
+    return count === 0 ? identityKey : `${identityKey}-${count}`
+  })
+}
+
 function cleanDisplayPrice(value: number | null) {
   if (value === null || value <= 0) {
     return null

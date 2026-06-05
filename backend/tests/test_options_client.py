@@ -260,6 +260,7 @@ def make_client(
     chain_stream_provider=None,
     historical_stream_provider=None,
     current_date_provider=date.today,
+    chain_context_workers=2,
 ):
     store = OptionsDailyBarStore(tmp_path / "options.sqlite3")
     explicit_metadata_provider = metadata_provider or FakeMetadataProvider()
@@ -277,6 +278,7 @@ def make_client(
             explicit_chain_stream_provider,
             explicit_historical_stream_provider,
             current_date_provider=current_date_provider,
+            chain_context_workers=chain_context_workers,
         ),
         store,
     )
@@ -302,6 +304,12 @@ def test_first_ticker_load_hydrates_ten_year_daily_bar_window(tmp_path):
         (end_date - start_date).days < 365
         for _ticker, start_date, end_date in provider.requests
     )
+    assert result.metrics is not None
+    assert result.metrics.cache_state == "cold"
+    assert result.metrics.history_chunk_count == len(provider.requests)
+    assert result.metrics.ib_wait_ms >= 0
+    assert result.metrics.cache_hit_ratio == 0
+    assert result.metrics.payload_bytes > 0
 
 
 def test_repeat_ticker_load_refreshes_latest_cached_completed_bar(tmp_path):
@@ -436,6 +444,42 @@ def test_stream_chart_replaces_current_candle_and_recalculates_indicators(tmp_pa
     assert messages[0].rsi.date == "2026-05-30"
     assert messages[0].rsi.value == 100
     assert stored_current_bars == []
+
+
+def test_stream_chart_reuses_completed_window_for_same_day_ticks(tmp_path):
+    provider = FakeHistoricalProvider()
+    historical_stream_provider = FakeHistoricalStreamProvider(
+        [
+            CompletedDailyBar("AAPL", "2026-05-30", 100, 121, 99, 120, 2_000),
+            CompletedDailyBar("AAPL", "2026-05-30", 100, 122, 99, 121, 2_100),
+        ]
+    )
+    client, store = make_client(
+        tmp_path,
+        provider,
+        historical_stream_provider=historical_stream_provider,
+    )
+    client.load_daily_bars("AAPL", current_date=date(2026, 5, 30), years=1)
+    original_get_completed_bars = store.get_completed_bars
+    read_count = 0
+
+    def counted_get_completed_bars(*args, **kwargs):
+        nonlocal read_count
+        read_count += 1
+        return original_get_completed_bars(*args, **kwargs)
+
+    store.get_completed_bars = counted_get_completed_bars
+
+    messages = list(
+        client.stream_chart(
+            "aapl",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert [message.candle.close for message in messages] == [120, 121]
+    assert read_count == 1
 
 
 def test_stream_chart_ignores_prior_day_initial_snapshot(tmp_path):
@@ -666,6 +710,28 @@ def test_get_chain_overlaps_daily_bar_and_metadata_fallback_requests(tmp_path):
     assert metadata_provider.requests == ["AAPL"]
 
 
+def test_get_chain_uses_bounded_shared_chain_context_executor(tmp_path):
+    barrier = threading.Barrier(2)
+    provider = OverlapHistoricalProvider(barrier)
+    metadata_provider = OverlapMetadataProvider(barrier)
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_context_workers=2,
+    )
+    executor = client.chain_context_executor
+
+    response = client.get_chain(
+        "AAPL",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+
+    assert response.underlying_price == 100
+    assert client.chain_context_executor is executor
+
+
 def test_get_chain_does_not_cache_failed_metadata_refresh(tmp_path):
     barrier = threading.Barrier(2)
     provider = OverlapHistoricalProvider(barrier)
@@ -876,6 +942,40 @@ def test_stream_chain_yields_snapshot_then_row_updates(tmp_path):
     assert messages[2].row.put is not None
     assert chain_stream_provider.requests == [
         ("MSFT", "2026-06-19", [90, 100, 110]),
+    ]
+
+
+def test_stream_chain_caps_streamed_strikes(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100, 105, 110])
+    chain_stream_provider = FakeChainStreamProvider(
+        [
+            ((90, "C"), OptionQuote(bid=1)),
+            ((95, "C"), OptionQuote(bid=2)),
+            ((100, "C"), OptionQuote(bid=3)),
+        ]
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_stream_provider=chain_stream_provider,
+    )
+    client.max_chain_stream_strikes = 2
+
+    messages = list(
+        client.stream_chain(
+            "msft",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert messages[0].message == "Streaming 2 strike(s) for MSFT 2026-06-19."
+    assert [row.strike for row in messages[0].rows or []] == [90, 95]
+    assert chain_stream_provider.requests == [
+        ("MSFT", "2026-06-19", [90, 95]),
     ]
 
 
@@ -1445,6 +1545,7 @@ class FakeOptionChainIbApp:
         self.option_market_data_ready = threading.Event()
         self.market_data_requests = []
         self.cancelled_market_data = []
+        self.ib_calls_inside_lock: list[str] = []
 
     def isConnected(self) -> bool:
         return True
@@ -1458,6 +1559,8 @@ class FakeOptionChainIbApp:
         regulatory_snapshot,
         mkt_data_options,
     ) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("reqMktData")
         self.market_data_requests.append(
             (
                 req_id,
@@ -1481,6 +1584,8 @@ class FakeOptionChainIbApp:
         self.option_market_data_ready.set()
 
     def cancelMktData(self, req_id) -> None:
+        if self.lock.locked():
+            self.ib_calls_inside_lock.append("cancelMktData")
         self.cancelled_market_data.append(req_id)
 
 
@@ -1536,6 +1641,7 @@ def test_ib_chain_provider_quotes_only_requested_expiration_and_strikes():
     assert all(contract.secType == "OPT" for contract in requested_contracts)
     assert all(request[3] is False for request in app.market_data_requests)
     assert app.cancelled_market_data == [90_000, 90_001, 90_002, 90_003]
+    assert app.ib_calls_inside_lock == []
     assert quotes[(95, "C")].mid == 1.2
     assert quotes[(95, "C")].breakeven == 96.4
 
