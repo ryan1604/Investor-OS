@@ -6,6 +6,7 @@ from fastapi import FastAPI
 
 from app.config import Settings
 from app.main import create_app
+from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
 from app.stock_analysis.store import StockAnalysisStore
 
@@ -151,6 +152,7 @@ def make_api(
     *,
     options_client=None,
     stock_analysis_database_path: str | Path | None = None,
+    portfolio_chart_values_database_path: str | Path | None = None,
 ) -> FastAPI:
     explicit_portfolio_client = portfolio_client or FakePortfolioClient()
 
@@ -158,6 +160,12 @@ def make_api(
     if stock_analysis_database_path is not None:
         stock_analysis_store_factory = lambda _settings: StockAnalysisStore(
             stock_analysis_database_path,
+        )
+
+    portfolio_chart_values_store_factory = None
+    if portfolio_chart_values_database_path is not None:
+        portfolio_chart_values_store_factory = lambda _settings: PortfolioChartValuesStore(
+            portfolio_chart_values_database_path,
         )
 
     return create_app(
@@ -168,5 +176,5 @@ def make_api(
             else None
         ),
         stock_analysis_store_factory=stock_analysis_store_factory,
+        portfolio_chart_values_store_factory=portfolio_chart_values_store_factory,
     )
-

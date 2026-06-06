@@ -1,3 +1,5 @@
+import math
+import re
 from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
@@ -61,6 +63,66 @@ class PortfolioResponse(BaseModel):
     accounts: list[PortfolioAccountSummary] = Field(default_factory=list)
     positions: list[PortfolioPosition]
     message: str | None = None
+
+
+MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+class PortfolioChartValueRequest(BaseModel):
+    month: str
+    portfolio_value: float | None = None
+    amount_invested: float | None = None
+
+    @field_validator("month")
+    @classmethod
+    def valid_month_key(cls, value: str) -> str:
+        normalized_value = value.strip()
+        if not MONTH_KEY_PATTERN.fullmatch(normalized_value):
+            raise ValueError("month must use YYYY-MM format.")
+        return normalized_value
+
+    @field_validator("portfolio_value", "amount_invested")
+    @classmethod
+    def finite_number(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("numeric values must be finite.")
+        return value
+
+    @model_validator(mode="after")
+    def reject_blank_row(self):
+        if self.portfolio_value is None and self.amount_invested is None:
+            raise ValueError(
+                "portfolio_value or amount_invested is required for each row."
+            )
+        return self
+
+
+class PortfolioChartValuesRequest(BaseModel):
+    rows: list[PortfolioChartValueRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def reject_duplicate_months(self):
+        months = [row.month for row in self.rows]
+        duplicate_months = sorted(
+            {month for month in months if months.count(month) > 1}
+        )
+        if duplicate_months:
+            raise ValueError(
+                f"Duplicate month values are not allowed: {', '.join(duplicate_months)}."
+            )
+        return self
+
+
+class PortfolioChartValueResponse(BaseModel):
+    month: str
+    portfolio_value: float | None = None
+    amount_invested: float | None = None
+    updated_at: str
+
+
+class PortfolioChartValuesResponse(BaseModel):
+    account: str
+    rows: list[PortfolioChartValueResponse] = Field(default_factory=list)
 
 
 class OptionDailyBar(BaseModel):

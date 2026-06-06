@@ -1,8 +1,10 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import { AccountSummaryCard } from '@/features/portfolio/components/AccountSummaryCard'
+import { PortfolioChartSection } from '@/features/portfolio/components/PortfolioChartSection'
 import { PortfolioHeader } from '@/features/portfolio/components/PortfolioHeader'
 import { PositionsTable } from '@/features/portfolio/components/PositionsTable'
+import { usePortfolioChartValues } from '@/features/portfolio/hooks/usePortfolioChartValues'
 import {
   DEFAULT_SORT,
   comparePositions,
@@ -33,6 +35,7 @@ export function PortfolioPage({
     accountPositions,
     activeAccountSummary,
   } = useSelectedAccount(portfolio, selectedAccount)
+  const chartValues = usePortfolioChartValues(activeAccount)
 
   const displayRows = useMemo(() => {
     return groupDisplayPositions(accountPositions)
@@ -74,6 +77,16 @@ export function PortfolioPage({
         positions={displayedPositions}
         sort={sort}
         onSort={handleSort}
+      />
+
+      <PortfolioChartSection
+        account={activeAccount}
+        currency={activeAccountSummary?.currency ?? 'USD'}
+        error={chartValues.error}
+        isLoading={chartValues.isLoading}
+        isSaving={chartValues.isSaving}
+        onSaveRows={chartValues.saveRows}
+        rows={chartValues.rows}
       />
     </>
   )

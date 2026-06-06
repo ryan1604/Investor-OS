@@ -3,6 +3,7 @@ from fastapi import Request, WebSocket
 from app.ib.portfolio import PortfolioClient
 from app.options.factory import OptionsAnalysisClient
 from app.orders.service import OrderService
+from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.portfolio.service import PortfolioRefreshService, PortfolioSnapshotCache
 from app.request_limits import RequestLimiter
 from app.stock_analysis.store import StockAnalysisStore
@@ -26,6 +27,10 @@ def get_portfolio_cache(request: Request) -> PortfolioSnapshotCache:
 
 def get_portfolio_refresh_service(websocket: WebSocket) -> PortfolioRefreshService:
     return websocket.app.state.portfolio_refresh_service
+
+
+def get_portfolio_chart_values_store(request: Request) -> PortfolioChartValuesStore:
+    return request.app.state.portfolio_chart_values_store
 
 
 def get_stock_analysis_store(request: Request) -> StockAnalysisStore:

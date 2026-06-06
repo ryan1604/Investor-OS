@@ -11,6 +11,7 @@ class Settings(BaseModel):
     ib_client_id: int = 1
     options_database_path: str = "data/options.sqlite3"
     stock_analysis_database_path: str = "data/stock_analysis.sqlite3"
+    portfolio_chart_values_database_path: str = "data/portfolio_chart_values.sqlite3"
     ib_request_queue_timeout_seconds: float = 0.25
     max_concurrent_options_analysis: int = 2
     max_concurrent_option_chains: int = 2

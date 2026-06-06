@@ -15,6 +15,7 @@ from app.orders.service import (
     OrderServiceUnavailable,
     OrderServiceValidationError,
 )
+from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.portfolio.routes import router as portfolio_router
 from app.portfolio.service import (
     PortfolioRefreshService,
@@ -36,6 +37,11 @@ def create_app(
     | None = None,
     stock_analysis_store_factory: Callable[[Settings], StockAnalysisStore]
     | None = None,
+    portfolio_chart_values_store_factory: Callable[
+        [Settings],
+        PortfolioChartValuesStore,
+    ]
+    | None = None,
 ) -> FastAPI:
     settings = get_settings()
 
@@ -53,6 +59,13 @@ def create_app(
             stock_analysis_store_factory(settings)
             if stock_analysis_store_factory
             else StockAnalysisStore(settings.stock_analysis_database_path)
+        )
+        app.state.portfolio_chart_values_store = (
+            portfolio_chart_values_store_factory(settings)
+            if portfolio_chart_values_store_factory
+            else PortfolioChartValuesStore(
+                settings.portfolio_chart_values_database_path
+            )
         )
         app.state.request_limiters = {
             "options_analysis": RequestLimiter(
