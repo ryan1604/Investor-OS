@@ -3,12 +3,15 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchStockAnalysisCurrentPrice,
   fetchStockAnalysisModel,
+  fetchStockAnalysisModels,
+  refreshStockAnalysisCurrentPrices,
   upsertStockAnalysisModel,
   type StockAnalysisModelRequest,
 } from '@/api/stockAnalysis'
 
 const modelRequest: StockAnalysisModelRequest = {
   version: 1,
+  current_price: 42.5,
   payload: {
     bull: { revenue: [100] },
     base: {},
@@ -21,9 +24,15 @@ afterEach(() => {
 })
 
 describe('stock analysis api', () => {
-  it('fetches and upserts ticker models through normalized endpoints', async () => {
+  it('fetches, refreshes, and upserts stock analysis models', async () => {
     const fetchMock = vi
       .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify([{ ticker: 'AAPL' }]), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
       .mockResolvedValueOnce(
         new Response(JSON.stringify({ ticker: 'AAPL' }), {
           status: 200,
@@ -37,6 +46,24 @@ describe('stock analysis api', () => {
         }),
       )
       .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            results: [
+              {
+                ticker: 'AAPL',
+                status: 'refreshed',
+                current_price: 42.5,
+                message: null,
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
         new Response(JSON.stringify({ ticker: 'AAPL' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' },
@@ -44,22 +71,37 @@ describe('stock analysis api', () => {
       )
     vi.stubGlobal('fetch', fetchMock)
 
+    await fetchStockAnalysisModels()
     await fetchStockAnalysisModel(' aapl ')
     await fetchStockAnalysisCurrentPrice('aapl')
+    await refreshStockAnalysisCurrentPrices()
     await upsertStockAnalysisModel('aapl', modelRequest)
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      'http://127.0.0.1:8000/stock-analysis/AAPL',
+      'http://127.0.0.1:8000/stock-analysis',
       { signal: undefined },
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      'http://127.0.0.1:8000/stock-analysis/AAPL/current-price',
+      'http://127.0.0.1:8000/stock-analysis/AAPL',
       { signal: undefined },
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
+      'http://127.0.0.1:8000/stock-analysis/AAPL/current-price',
+      { signal: undefined },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      4,
+      'http://127.0.0.1:8000/stock-analysis/current-prices/refresh',
+      {
+        method: 'POST',
+        signal: undefined,
+      },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      5,
       'http://127.0.0.1:8000/stock-analysis/AAPL',
       {
         method: 'PUT',

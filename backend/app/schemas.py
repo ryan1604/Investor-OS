@@ -169,6 +169,7 @@ def empty_stock_analysis_payload() -> StockAnalysisPayload:
 
 class StockAnalysisModelRequest(BaseModel):
     version: int = 1
+    current_price: float | None = None
     payload: StockAnalysisPayload = Field(default_factory=empty_stock_analysis_payload)
 
     @model_validator(mode="after")
@@ -182,6 +183,7 @@ class StockAnalysisModelRequest(BaseModel):
 class StockAnalysisModelResponse(BaseModel):
     ticker: str
     version: int = 1
+    current_price: float | None = None
     payload: StockAnalysisPayload = Field(default_factory=empty_stock_analysis_payload)
     updated_at: str | None = None
 
@@ -189,6 +191,17 @@ class StockAnalysisModelResponse(BaseModel):
 class StockAnalysisCurrentPriceResponse(BaseModel):
     ticker: str
     current_price: float
+
+
+class StockAnalysisPriceRefreshResult(BaseModel):
+    ticker: str
+    status: Literal["refreshed", "stale", "missing", "failed"]
+    current_price: float | None = None
+    message: str | None = None
+
+
+class StockAnalysisPriceRefreshResponse(BaseModel):
+    results: list[StockAnalysisPriceRefreshResult] = Field(default_factory=list)
 
 
 OrderAction = Literal["BUY", "SELL"]

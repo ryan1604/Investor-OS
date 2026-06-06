@@ -6,6 +6,7 @@ import {
   calculateValuationModel,
   createEmptyValuationModel,
   getValuationCellKind,
+  stockAnalysisValuationModelFromPayload,
   type ScenarioEditableInputs,
 } from '@/features/stock-analysis/lib/valuationModel'
 import {
@@ -250,6 +251,26 @@ describe('valuationModel', () => {
       null,
       null,
     ])
+  })
+
+  it('coerces saved payloads into valuation models', () => {
+    const model = stockAnalysisValuationModelFromPayload(
+      {
+        firstForecastYear: 2028,
+        bull: {
+          revenue: [100, 'bad', 120],
+        },
+        base: {},
+        bear: null,
+      },
+      10,
+    )
+
+    expect(model.firstForecastYear).toBe(2028)
+    expect(model.currentPrice).toBe(10)
+    expect(model.scenarios.bull.revenue).toEqual([100, null, 120, null, null])
+    expect(model.scenarios.base.revenue).toEqual([null, null, null, null, null])
+    expect(model.scenarios.bear.revenue).toEqual([null, null, null, null, null])
   })
 
   it('keeps table metadata in the shared row registry', () => {

@@ -2,6 +2,7 @@ import {
   BriefcaseBusiness,
   ChartCandlestick,
   ChartNoAxesCombined,
+  ListOrdered,
   ListChecks,
 } from 'lucide-react'
 
@@ -47,6 +48,11 @@ const navigationItems: {
     page: 'stock-analysis',
     label: 'Stock analysis',
     icon: ChartNoAxesCombined,
+  },
+  {
+    page: 'rank-stocks',
+    label: 'Rank stocks',
+    icon: ListOrdered,
   },
 ]
 

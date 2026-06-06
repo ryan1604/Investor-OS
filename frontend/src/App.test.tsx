@@ -48,6 +48,10 @@ vi.mock('@/features/stock-analysis/StockAnalysisPage', () => ({
   StockAnalysisPage: () => <main>Stock analysis route</main>,
 }))
 
+vi.mock('@/features/rank-stocks/RankStocksPage', () => ({
+  RankStocksPage: () => <main>Rank stocks route</main>,
+}))
+
 afterEach(() => {
   cleanup()
 })
@@ -67,5 +71,8 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('Stock analysis'))
     expect(await screen.findByText('Stock analysis route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Rank stocks'))
+    expect(await screen.findByText('Rank stocks route')).toBeTruthy()
   })
 })

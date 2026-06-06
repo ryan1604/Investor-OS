@@ -43,6 +43,13 @@ export type StockAnalysisValuationModel = {
   scenarios: Record<ScenarioKey, ScenarioEditableInputs>
 }
 
+export type StockAnalysisPayloadInput = {
+  firstForecastYear?: unknown
+  bull?: unknown
+  base?: unknown
+  bear?: unknown
+}
+
 export type CalculatedScenario = {
   editable: ScenarioEditableInputs
   derived: ScenarioDerivedValues
@@ -79,6 +86,27 @@ export function createEmptyScenarioInputs(): ScenarioEditableInputs {
   return Object.fromEntries(
     EDITABLE_ROW_DEFINITIONS.map((row) => [row.key, emptyYearValues()]),
   ) as ScenarioEditableInputs
+}
+
+export function stockAnalysisValuationModelFromPayload(
+  payload: StockAnalysisPayloadInput,
+  currentPrice: number | null = null,
+): StockAnalysisValuationModel {
+  const emptyModel = createEmptyValuationModel()
+
+  return {
+    firstForecastYear:
+      typeof payload.firstForecastYear === 'number'
+        ? payload.firstForecastYear
+        : null,
+    currentPrice,
+    scenarios: Object.fromEntries(
+      SCENARIO_KEYS.map((scenario) => [
+        scenario,
+        coerceScenarioInputs(payload[scenario], emptyModel.scenarios[scenario]),
+      ]),
+    ) as Record<ScenarioKey, ScenarioEditableInputs>,
+  }
 }
 
 export function calculateValuationModel(
@@ -245,6 +273,40 @@ function calculateGrownSeries(
   }
 
   return values
+}
+
+function coerceScenarioInputs(
+  value: unknown,
+  fallback: ScenarioEditableInputs,
+): ScenarioEditableInputs {
+  if (!value || typeof value !== 'object') {
+    return fallback
+  }
+
+  const scenarioValue = value as Record<string, unknown>
+
+  return Object.fromEntries(
+    Object.entries(fallback).map(([row, fallbackValues]) => [
+      row,
+      coerceYearValues(scenarioValue[row], fallbackValues),
+    ]),
+  ) as ScenarioEditableInputs
+}
+
+function coerceYearValues(
+  value: unknown,
+  fallback: ValuationYearValues,
+): ValuationYearValues {
+  if (!Array.isArray(value)) {
+    return fallback
+  }
+
+  return YEAR_INDEXES.map((yearIndex) => {
+    const cellValue = value[yearIndex]
+    return typeof cellValue === 'number' && Number.isFinite(cellValue)
+      ? cellValue
+      : null
+  }) as ValuationYearValues
 }
 
 function divideSeries(

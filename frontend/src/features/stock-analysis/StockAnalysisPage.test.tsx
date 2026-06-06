@@ -258,6 +258,7 @@ describe('StockAnalysisPage', () => {
     vi.mocked(fetchStockAnalysisModel).mockResolvedValue({
       ticker: 'ABCD',
       version: 1,
+      current_price: null,
       payload: {
         bull: {},
         base: {
@@ -294,7 +295,7 @@ describe('StockAnalysisPage', () => {
     expect(screen.getAllByText('14.87%').length).toBeGreaterThan(0)
   })
 
-  it('does not save IB current price with the valuation payload', async () => {
+  it('saves IB current price beside the valuation payload', async () => {
     vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('RBLX'))
     vi.mocked(upsertStockAnalysisModel).mockResolvedValue({
       ...emptyResponse('RBLX'),
@@ -316,11 +317,33 @@ describe('StockAnalysisPage', () => {
     await waitFor(() => {
       expect(upsertStockAnalysisModel).toHaveBeenCalledWith('RBLX', {
         version: 1,
+        current_price: 10,
         payload: expect.not.objectContaining({
           currentPrice: expect.any(Number),
         }),
       }, expect.any(AbortSignal))
     }, { timeout: 1500 })
+  })
+
+  it('uses the saved current price snapshot when live price is unavailable', async () => {
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue({
+      ...emptyResponse('NFLX'),
+      current_price: 25,
+      updated_at: '2026-06-04T00:00:00+00:00',
+    })
+    vi.mocked(fetchStockAnalysisCurrentPrice).mockRejectedValue(
+      new Error('Current price is unavailable for NFLX.'),
+    )
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'NFLX' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+
+    expect(await screen.findByText('NFLX valuation model')).toBeTruthy()
+    expect(screen.getByLabelText('Current price').textContent).toBe('$25.00')
   })
 
   it('discards an active cell edit when Escape is pressed', async () => {
@@ -374,6 +397,7 @@ describe('StockAnalysisPage', () => {
     await waitFor(() => {
       expect(upsertStockAnalysisModel).toHaveBeenCalledWith('TSLA', {
         version: 1,
+        current_price: 10,
         payload: expect.objectContaining({
           firstForecastYear: 2028,
           bull: expect.objectContaining({
@@ -428,6 +452,7 @@ function emptyResponse(ticker: string) {
   return {
     ticker,
     version: 1,
+    current_price: null,
     payload: {
       bull: {},
       base: {},

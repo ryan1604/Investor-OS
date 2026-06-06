@@ -9,12 +9,10 @@ import {
 import { isAbortError } from '@/api/client'
 import type { EditingCell } from '@/features/stock-analysis/components/ScenarioValuationTable'
 import {
-  SCENARIO_KEYS,
-  YEAR_INDEXES,
   calculateValuationModel,
   createEmptyValuationModel,
+  stockAnalysisValuationModelFromPayload,
   type EditableRowKey,
-  type ScenarioEditableInputs,
   type ScenarioKey,
   type StockAnalysisValuationModel,
   type ValuationYearValues,
@@ -72,6 +70,7 @@ export function useStockAnalysisModel() {
       setSaveStatus('saving')
       void upsertStockAnalysisModel(activeModel.ticker, {
         version: activeModel.version,
+        current_price: activeModel.valuation.currentPrice,
         payload: toStockAnalysisPayload(activeModel.valuation),
       }, saveController.signal)
         .then((savedModel) => {
@@ -140,12 +139,14 @@ export function useStockAnalysisModel() {
         throw savedModel.reason
       }
 
-      const valuation = fromStockAnalysisPayload(savedModel.value.payload)
+      const valuation = stockAnalysisValuationModelFromPayload(
+        savedModel.value.payload,
+        savedModel.value.current_price,
+      )
       if (currentPriceResult.status === 'fulfilled') {
         valuation.currentPrice = currentPriceResult.value.current_price
         setCurrentPriceStatus('loaded')
       } else {
-        valuation.currentPrice = null
         setCurrentPriceStatus('unavailable')
       }
 
@@ -281,26 +282,6 @@ function updateScenarioInput(
   }
 }
 
-function fromStockAnalysisPayload(
-  payload: StockAnalysisPayload,
-): StockAnalysisValuationModel {
-  const emptyModel = createEmptyValuationModel()
-
-  return {
-    firstForecastYear:
-      typeof payload.firstForecastYear === 'number'
-        ? payload.firstForecastYear
-        : null,
-    currentPrice: null,
-    scenarios: Object.fromEntries(
-      SCENARIO_KEYS.map((scenario) => [
-        scenario,
-        coerceScenarioInputs(payload[scenario], emptyModel.scenarios[scenario]),
-      ]),
-    ) as Record<ScenarioKey, ScenarioEditableInputs>,
-  }
-}
-
 function toStockAnalysisPayload(
   model: StockAnalysisValuationModel,
 ): StockAnalysisPayload {
@@ -308,40 +289,6 @@ function toStockAnalysisPayload(
     firstForecastYear: model.firstForecastYear,
     ...model.scenarios,
   }
-}
-
-function coerceScenarioInputs(
-  value: unknown,
-  fallback: ScenarioEditableInputs,
-): ScenarioEditableInputs {
-  if (!value || typeof value !== 'object') {
-    return fallback
-  }
-
-  const scenarioValue = value as Record<string, unknown>
-
-  return Object.fromEntries(
-    Object.entries(fallback).map(([row, fallbackValues]) => [
-      row,
-      coerceYearValues(scenarioValue[row], fallbackValues),
-    ]),
-  ) as ScenarioEditableInputs
-}
-
-function coerceYearValues(
-  value: unknown,
-  fallback: ValuationYearValues,
-): ValuationYearValues {
-  if (!Array.isArray(value)) {
-    return fallback
-  }
-
-  return YEAR_INDEXES.map((yearIndex) => {
-    const cellValue = value[yearIndex]
-    return typeof cellValue === 'number' && Number.isFinite(cellValue)
-      ? cellValue
-      : null
-  }) as ValuationYearValues
 }
 
 function errorMessage(error: unknown) {

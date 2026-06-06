@@ -11,7 +11,12 @@ import { useOrders } from '@/features/orders/hooks/useOrders'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
 import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
 
-export type AppPage = 'portfolio' | 'options' | 'orders' | 'stock-analysis'
+export type AppPage =
+  | 'portfolio'
+  | 'options'
+  | 'orders'
+  | 'stock-analysis'
+  | 'rank-stocks'
 
 const OptionsPage = lazy(() =>
   import('@/features/options/OptionsPage').then((module) => ({
@@ -26,6 +31,11 @@ const OrdersPage = lazy(() =>
 const StockAnalysisPage = lazy(() =>
   import('@/features/stock-analysis/StockAnalysisPage').then((module) => ({
     default: module.StockAnalysisPage,
+  })),
+)
+const RankStocksPage = lazy(() =>
+  import('@/features/rank-stocks/RankStocksPage').then((module) => ({
+    default: module.RankStocksPage,
   })),
 )
 
@@ -56,9 +66,13 @@ function App() {
             <Suspense fallback={<PageLoading />}>
               <OrdersRoute />
             </Suspense>
-          ) : (
+          ) : activePage === 'stock-analysis' ? (
             <Suspense fallback={<PageLoading />}>
               <StockAnalysisPage />
+            </Suspense>
+          ) : (
+            <Suspense fallback={<PageLoading />}>
+              <RankStocksPage />
             </Suspense>
           )}
         </SidebarInset>
