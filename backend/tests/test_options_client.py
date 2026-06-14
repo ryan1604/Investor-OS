@@ -2,6 +2,8 @@ import threading
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
+import pytest
+
 from app.ib.app import IbPortfolioApp
 from app.ib.contracts import us_equity_contract
 from app.ib.options import (
@@ -323,6 +325,32 @@ def test_repeat_ticker_load_refreshes_latest_cached_completed_bar(tmp_path):
     assert provider.requests == [
         ("MSFT", date(2026, 5, 29), date(2026, 5, 30)),
     ]
+
+
+def test_underlying_price_uses_focused_recent_bar_request(tmp_path):
+    provider = FakeHistoricalProvider()
+    client, _store = make_client(tmp_path, provider)
+
+    price = client.get_underlying_price(
+        " aapl ",
+        current_date=date(2026, 5, 30),
+    )
+
+    assert price == 100
+    assert provider.requests == [
+        ("AAPL", date(2026, 5, 23), date(2026, 5, 30)),
+    ]
+
+
+def test_underlying_price_reports_unavailable_recent_bars(tmp_path):
+    provider = EmptyHistoricalProvider()
+    client, _store = make_client(tmp_path, provider)
+
+    with pytest.raises(
+        OptionsDataUnavailable,
+        match="Current price is unavailable for AAPL.",
+    ):
+        client.get_underlying_price("AAPL", current_date=date(2026, 5, 30))
 
 
 def test_repeat_recently_listed_ticker_load_does_not_request_pre_cache_history(

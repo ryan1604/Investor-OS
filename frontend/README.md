@@ -1,6 +1,6 @@
 # Investor OS Frontend
 
-React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, Orders, and Stock Analysis workflows backed by the FastAPI service.
+React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, Options Trade Tracker, Orders, Stock Analysis, and Rank Stocks workflows backed by the FastAPI service.
 
 ## Local Setup
 
@@ -38,6 +38,10 @@ VITE_API_BASE_URL=http://127.0.0.1:8000
 
 If the variable is not set, the app uses `http://127.0.0.1:8000`.
 
+## Application Loading
+
+`src/App.tsx` eagerly imports the six page modules into the current production bundle and conditionally mounts only the active page. Feature hooks and live subscriptions are therefore active only for the selected workflow. Portfolio is the default page; Options mounts Portfolio and Orders state because its tickets and chart overlays require them.
+
 On load, the Portfolio page fetches the current snapshot from:
 
 ```text
@@ -56,6 +60,15 @@ The WebSocket URL is derived from `VITE_API_BASE_URL`, replacing `http` with
 ## Portfolio View
 
 The Portfolio page shows IB connection status, account summaries, positions, market prices, and P&L values. Account selection is explicit and is shared with order tickets that need an account.
+
+Manual account-scoped chart history is loaded and replaced through:
+
+```text
+GET /portfolio/chart-values?account={account}
+PUT /portfolio/chart-values?account={account}
+```
+
+Advanced mode charts monthly portfolio value and cumulative amount invested. Simple mode charts December year-end values. Drafts and responses are isolated by selected account.
 
 ## Options View
 
@@ -145,3 +158,44 @@ PUT /stock-analysis/{ticker}
 ```
 
 Searching a saved ticker restores its scenarios. Searching a first-time ticker starts from empty scenario inputs.
+
+## Rank Stocks View
+
+Rank Stocks loads all saved Stock Analysis models, displays saved rankings immediately, and refreshes current-price snapshots on open and every 15 minutes.
+
+```text
+GET  /stock-analysis
+POST /stock-analysis/current-prices/refresh
+```
+
+Rankings reuse the Stock Analysis valuation formulas across bull, base, and bear scenarios and five valuation methods. Missing or incomplete values render as `-` and sort last.
+
+## Options Trade Tracker View
+
+Options Trade Tracker manages named workspaces with tracker-scoped trades and notes plus global strategy options.
+
+```text
+GET    /options-trade-trackers
+POST   /options-trade-trackers
+GET    /options-trade-trackers/strategy-options
+PUT    /options-trade-trackers/strategy-options
+GET    /options-trade-trackers/{tracker_id}
+PATCH  /options-trade-trackers/{tracker_id}
+DELETE /options-trade-trackers/{tracker_id}
+PUT    /options-trade-trackers/{tracker_id}/trades
+PUT    /options-trade-trackers/{tracker_id}/notes
+```
+
+Trades and notes save independently so one response cannot discard unrelated drafts. Tracker loads and mutations are guarded against stale responses. Completed valid trades drive row P&L, totals, stats, monthly charts, and strategy execution data through one shared projection.
+
+## Feature Structure
+
+```text
+src/features/
+├── options/                Options analysis, live chain/chart state, and tickets
+├── options-trade-tracker/  Page root with components/, hooks/, and lib/ modules
+├── orders/                 Active and terminal IB order management
+├── portfolio/              Live portfolio plus manual account chart history
+├── rank-stocks/            Rankings over saved Stock Analysis models
+└── stock-analysis/         Valuation models, scenarios, autosave, and price lookup
+```

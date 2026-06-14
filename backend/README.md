@@ -1,6 +1,6 @@
 # Investor OS Backend
 
-FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi`, serves portfolio data, options analysis, order entry and order state, and manual stock-analysis models.
+FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi`, serves portfolio data, options analysis, order entry and order state, manual stock-analysis models, portfolio chart history, and Options Trade Tracker workspaces.
 
 ## Local Setup
 
@@ -24,10 +24,12 @@ Runtime settings are fixed local Python defaults in `app/config.py`. They are no
 
 ```text
 Settings.ib_host = "127.0.0.1"
-Settings.ib_port = 7497
+Settings.ib_port = 7496
 Settings.ib_client_id = 1
 Settings.options_database_path = "data/options.sqlite3"
+Settings.options_trade_trackers_database_path = "data/options_trade_trackers.sqlite3"
 Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
+Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
 Settings.allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -38,16 +40,24 @@ Settings.allowed_origins = [
 
 `Settings.stock_analysis_database_path` stores saved manual Stock Analysis scenario models. The store keeps bull, base, and bear payloads per ticker in the runtime-local `data/stock_analysis.sqlite3` database.
 
-Both local SQLite stores use Python's standard `sqlite3` module directly. The backend does not currently carry SQLAlchemy or Alembic because there is no ORM or migration layer in the supported runtime contract.
+`Settings.portfolio_chart_values_database_path` stores manual account-scoped Portfolio history by month. Replacing one account's rows is transactional and does not affect other accounts.
+
+`Settings.options_trade_trackers_database_path` stores named trackers, tracker-scoped trade rows and notes, and global strategy options. Trade row identity is scoped by tracker, and startup migrates the legacy global row-id schema when present.
+
+All four local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization and the tracker compatibility migration are handled by the stores.
 
 ## Portfolio API
 
 ```text
 GET /portfolio
+GET /portfolio/chart-values?account={account}
+PUT /portfolio/chart-values?account={account}
 WS  /portfolio/ws
 ```
 
 The portfolio snapshot returns IB connection status, account summaries, positions, market prices, and P&L values. The WebSocket sends the current snapshot and live updates while the backend remains connected to IB.
+
+Portfolio chart-value endpoints load or transactionally replace manual monthly history for one normalized account.
 
 ## Options API
 
@@ -85,12 +95,30 @@ Order requests require an explicit account. Stock orders support whole-share buy
 ## Stock Analysis API
 
 ```text
+GET  /stock-analysis
+POST /stock-analysis/current-prices/refresh
 GET /stock-analysis/{ticker}
 GET /stock-analysis/{ticker}/current-price
 PUT /stock-analysis/{ticker}
 ```
 
-Stock Analysis stores manual bull, base, and bear scenario models per ticker. First-time tickers return an empty scenario payload. Saved models are persisted in `Settings.stock_analysis_database_path`, and the current-price endpoint reuses the Options analysis price source.
+Stock Analysis stores manual bull, base, and bear scenario models per ticker. First-time tickers return an empty scenario payload. The collection endpoint lists every saved model for Rank Stocks. The refresh endpoint updates saved current-price snapshots best-effort and preserves stale prices when IB lookup fails. The focused current-price endpoint persists a successful snapshot without loading the full Options analysis payload.
+
+## Options Trade Tracker API
+
+```text
+GET    /options-trade-trackers
+POST   /options-trade-trackers
+GET    /options-trade-trackers/strategy-options
+PUT    /options-trade-trackers/strategy-options
+GET    /options-trade-trackers/{tracker_id}
+PATCH  /options-trade-trackers/{tracker_id}
+DELETE /options-trade-trackers/{tracker_id}
+PUT    /options-trade-trackers/{tracker_id}/trades
+PUT    /options-trade-trackers/{tracker_id}/notes
+```
+
+Trackers own ordered trade rows and notes. Strategy options are global and survive tracker deletion. Trade replacement is transactional; invalid rows return validation responses without partially replacing saved data.
 
 ## Verification
 

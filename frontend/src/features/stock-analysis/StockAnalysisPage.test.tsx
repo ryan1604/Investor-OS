@@ -317,7 +317,6 @@ describe('StockAnalysisPage', () => {
     await waitFor(() => {
       expect(upsertStockAnalysisModel).toHaveBeenCalledWith('RBLX', {
         version: 1,
-        current_price: 10,
         payload: expect.not.objectContaining({
           currentPrice: expect.any(Number),
         }),
@@ -397,7 +396,6 @@ describe('StockAnalysisPage', () => {
     await waitFor(() => {
       expect(upsertStockAnalysisModel).toHaveBeenCalledWith('TSLA', {
         version: 1,
-        current_price: 10,
         payload: expect.objectContaining({
           firstForecastYear: 2028,
           bull: expect.objectContaining({

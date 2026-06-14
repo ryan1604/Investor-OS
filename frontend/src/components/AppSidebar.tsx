@@ -2,6 +2,7 @@ import {
   BriefcaseBusiness,
   ChartCandlestick,
   ChartNoAxesCombined,
+  ClipboardList,
   ListOrdered,
   ListChecks,
 } from 'lucide-react'
@@ -16,7 +17,6 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarSeparator,
 } from '@/components/ui/sidebar'
 
 type AppSidebarProps = {
@@ -40,18 +40,23 @@ const navigationItems: {
     icon: ChartCandlestick,
   },
   {
+    page: 'options-trade-tracker',
+    label: 'Options Trade Tracker',
+    icon: ClipboardList,
+  },
+  {
     page: 'orders',
     label: 'Orders',
     icon: ListChecks,
   },
   {
     page: 'stock-analysis',
-    label: 'Stock analysis',
+    label: 'Stock Analysis',
     icon: ChartNoAxesCombined,
   },
   {
     page: 'rank-stocks',
-    label: 'Rank stocks',
+    label: 'Rank Stocks',
     icon: ListOrdered,
   },
 ]
@@ -62,7 +67,6 @@ export function AppSidebar({ activePage, onPageChange }: AppSidebarProps) {
       <SidebarHeader className="px-4 py-6 text-lg font-semibold">
         Investor OS
       </SidebarHeader>
-      <SidebarSeparator />
       <SidebarContent>
         <SidebarGroup>
           <SidebarGroupContent>

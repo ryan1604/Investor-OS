@@ -81,7 +81,6 @@ class StockAnalysisStore:
         ticker: str,
         *,
         version: int,
-        current_price: float | None = None,
         payload: StockAnalysisPayload,
         updated_at: datetime | None = None,
     ) -> StockAnalysisModel:
@@ -102,26 +101,22 @@ class StockAnalysisStore:
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(ticker) DO UPDATE SET
                     version = excluded.version,
-                    current_price = excluded.current_price,
                     payload_json = excluded.payload_json,
                     updated_at = excluded.updated_at
                 """,
                 (
                     normalized_ticker,
                     version,
-                    current_price,
+                    None,
                     payload_json,
                     updated_at_value,
                 ),
             )
 
-        return StockAnalysisModel(
-            ticker=normalized_ticker,
-            version=version,
-            current_price=current_price,
-            payload=payload,
-            updated_at=updated_at_value,
-        )
+        model = self.get_model(normalized_ticker)
+        if model is None:
+            raise RuntimeError("Stock analysis model upsert did not persist.")
+        return model
 
     def update_current_price(
         self,

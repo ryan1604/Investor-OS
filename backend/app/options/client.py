@@ -77,6 +77,7 @@ class OptionMetadataProvider(Protocol):
 
 OPTION_METADATA_CACHE_TTL_SECONDS = 15 * 60
 ANALYSIS_UNDERLYING_PRICE_CACHE_TTL_SECONDS = 60
+UNDERLYING_PRICE_LOOKBACK_DAYS = 7
 US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 
 
@@ -296,6 +297,30 @@ class OptionsClient:
             ],
             message=f"Loaded analysis data for {normalized_ticker}.",
         )
+
+    def get_underlying_price(
+        self,
+        ticker: str,
+        *,
+        current_date: date | None = None,
+    ) -> float:
+        normalized_ticker = normalize_ticker(ticker)
+        if not normalized_ticker:
+            raise OptionsDataUnavailable("Ticker is required.")
+
+        as_of_date = current_date or self.current_date_provider()
+        bars = self.historical_provider.fetch_daily_bars(
+            normalized_ticker,
+            as_of_date - timedelta(days=UNDERLYING_PRICE_LOOKBACK_DAYS),
+            as_of_date,
+        )
+        latest_bar = max(bars, key=lambda bar: bar.trading_date, default=None)
+        if latest_bar is None:
+            raise OptionsDataUnavailable(
+                f"Current price is unavailable for {normalized_ticker}."
+            )
+
+        return latest_bar.close
 
     def get_expirations(
         self,

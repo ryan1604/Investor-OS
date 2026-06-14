@@ -61,20 +61,23 @@ def test_upsert_model_updates_existing_payload(tmp_path):
     assert model.updated_at == "2026-06-04T02:00:00+00:00"
 
 
-def test_upsert_model_saves_nullable_current_price(tmp_path):
+def test_upsert_model_preserves_existing_current_price_snapshot(tmp_path):
     store = make_store(tmp_path)
 
     store.upsert_model(
         "MSFT",
         version=1,
-        current_price=123.45,
         payload={"bull": {}, "base": {}, "bear": {}},
         updated_at=datetime(2026, 6, 4, 1, 0, tzinfo=UTC),
+    )
+    store.update_current_price(
+        "MSFT",
+        123.45,
+        updated_at=datetime(2026, 6, 4, 1, 30, tzinfo=UTC),
     )
     store.upsert_model(
         "MSFT",
         version=1,
-        current_price=None,
         payload={"bull": {}, "base": {"revenue": [100]}, "bear": {}},
         updated_at=datetime(2026, 6, 4, 2, 0, tzinfo=UTC),
     )
@@ -82,7 +85,7 @@ def test_upsert_model_saves_nullable_current_price(tmp_path):
     model = store.get_model("MSFT")
 
     assert model is not None
-    assert model.current_price is None
+    assert model.current_price == 123.45
     assert model.payload["base"]["revenue"] == [100]
 
 
@@ -97,9 +100,13 @@ def test_list_models_returns_saved_models_ordered_by_ticker(tmp_path):
     store.upsert_model(
         "AAPL",
         version=2,
-        current_price=195.5,
         payload={"bull": {"revenue": [200]}, "base": {}, "bear": {}},
         updated_at=datetime(2026, 6, 4, 1, 0, tzinfo=UTC),
+    )
+    store.update_current_price(
+        "AAPL",
+        195.5,
+        updated_at=datetime(2026, 6, 4, 1, 30, tzinfo=UTC),
     )
 
     models = store.list_models()

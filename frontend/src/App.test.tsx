@@ -44,6 +44,10 @@ vi.mock('@/features/orders/OrdersPage', () => ({
   OrdersPage: () => <main>Orders route</main>,
 }))
 
+vi.mock('@/features/options-trade-tracker/OptionsTradeTrackerPage', () => ({
+  OptionsTradeTrackerPage: () => <main>Options trade tracker route</main>,
+}))
+
 vi.mock('@/features/stock-analysis/StockAnalysisPage', () => ({
   StockAnalysisPage: () => <main>Stock analysis route</main>,
 }))
@@ -57,7 +61,7 @@ afterEach(() => {
 })
 
 describe('App', () => {
-  it('renders Portfolio first and navigates to lazy-loaded pages', async () => {
+  it('renders Portfolio first and navigates between pages', async () => {
     render(<App />)
 
     expect(screen.getByText('Portfolio route')).toBeTruthy()
@@ -69,10 +73,13 @@ describe('App', () => {
     fireEvent.click(screen.getByText('Orders'))
     expect(await screen.findByText('Orders route')).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Stock analysis'))
+    fireEvent.click(screen.getByText('Options Trade Tracker'))
+    expect(await screen.findByText('Options trade tracker route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Stock Analysis'))
     expect(await screen.findByText('Stock analysis route')).toBeTruthy()
 
-    fireEvent.click(screen.getByText('Rank stocks'))
+    fireEvent.click(screen.getByText('Rank Stocks'))
     expect(await screen.findByText('Rank stocks route')).toBeTruthy()
   })
 })

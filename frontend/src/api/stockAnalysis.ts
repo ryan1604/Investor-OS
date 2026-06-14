@@ -27,7 +27,6 @@ export type StockAnalysisModel = {
 
 export type StockAnalysisModelRequest = {
   version?: number
-  current_price?: number | null
   payload: StockAnalysisPayload
 }
 

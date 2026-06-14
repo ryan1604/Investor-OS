@@ -31,6 +31,9 @@ class OptionsAnalysisClient(Protocol):
     def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
         ...
 
+    def get_underlying_price(self, ticker: str) -> float:
+        ...
+
     def get_expirations(self, ticker: str) -> OptionExpirationsResponse:
         ...
 

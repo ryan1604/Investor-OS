@@ -52,7 +52,7 @@ describe('RankStocksPage', () => {
 
     render(<RankStocksPage />)
 
-    expect(await screen.findByText('Rank stocks')).toBeTruthy()
+    expect(await screen.findByText('Rank Stocks')).toBeTruthy()
     expect(screen.getAllByText('P/S')).toHaveLength(3)
     expect(screen.getAllByText('P/E')).toHaveLength(3)
     expect(screen.getAllByText('P/EBITDA')).toHaveLength(3)
@@ -117,6 +117,11 @@ describe('RankStocksPage', () => {
   })
 
   it('refreshes every 15 minutes only while mounted', async () => {
+    const intervalRefresh = deferred<{
+      results: Awaited<
+        ReturnType<typeof refreshStockAnalysisCurrentPrices>
+      >['results']
+    }>()
     const setIntervalSpy = vi
       .spyOn(window, 'setInterval')
       .mockImplementation(() => {
@@ -128,6 +133,9 @@ describe('RankStocksPage', () => {
         bull: scenarioPayload({ priceToSales: [2, 2, 2, 2, 2] }),
       }),
     ])
+    vi.mocked(refreshStockAnalysisCurrentPrices)
+      .mockResolvedValueOnce({ results: [] })
+      .mockReturnValueOnce(intervalRefresh.promise)
 
     const { unmount } = render(<RankStocksPage />)
 
@@ -150,8 +158,122 @@ describe('RankStocksPage', () => {
     unmount()
 
     expect(clearIntervalSpy).toHaveBeenCalledWith(1)
+    expect(
+      vi.mocked(refreshStockAnalysisCurrentPrices).mock.calls[1][0]?.aborted,
+    ).toBe(true)
+  })
+
+  it('invalidates a superseded refresh response', async () => {
+    const setIntervalSpy = vi
+      .spyOn(window, 'setInterval')
+      .mockImplementation(() => 1)
+    const firstRefresh = deferred<{
+      results: Awaited<
+        ReturnType<typeof refreshStockAnalysisCurrentPrices>
+      >['results']
+    }>()
+    const secondRefresh = deferred<{
+      results: Awaited<
+        ReturnType<typeof refreshStockAnalysisCurrentPrices>
+      >['results']
+    }>()
+    vi.mocked(fetchStockAnalysisModels).mockResolvedValue([
+      savedModel('AAPL', 10, {
+        bull: scenarioPayload({ priceToSales: [2, 2, 2, 2, 2] }),
+      }),
+    ])
+    vi.mocked(refreshStockAnalysisCurrentPrices)
+      .mockReturnValueOnce(firstRefresh.promise)
+      .mockReturnValueOnce(secondRefresh.promise)
+
+    render(<RankStocksPage />)
+
+    await waitFor(() => {
+      expect(refreshStockAnalysisCurrentPrices).toHaveBeenCalledTimes(1)
+    })
+    const scheduledRefresh = setIntervalSpy.mock.calls[0][0]
+    act(() => {
+      if (typeof scheduledRefresh === 'function') {
+        scheduledRefresh()
+      }
+    })
+
+    expect(
+      vi.mocked(refreshStockAnalysisCurrentPrices).mock.calls[0][0]?.aborted,
+    ).toBe(true)
+
+    secondRefresh.resolve({
+      results: [
+        {
+          ticker: 'AAPL',
+          status: 'refreshed',
+          current_price: 20,
+          message: null,
+        },
+      ],
+    })
+    await screen.findByText('Prices updated')
+
+    firstRefresh.resolve({
+      results: [
+        {
+          ticker: 'AAPL',
+          status: 'refreshed',
+          current_price: 5,
+          message: null,
+        },
+      ],
+    })
+    await act(async () => {
+      await firstRefresh.promise
+    })
+
+    const bullSection = screen.getByRole('heading', { name: 'Bull' })
+      .parentElement?.parentElement
+    const firstTable = within(bullSection as HTMLElement).getAllByRole('table')[0]
+    expect(within(firstTable).getByText('0.00%')).toBeTruthy()
+    expect(within(firstTable).queryByText('+300.00%')).toBeNull()
+  })
+
+  it('clears a refresh error when a retry starts and succeeds', async () => {
+    vi.mocked(fetchStockAnalysisModels).mockResolvedValue([
+      savedModel('AAPL', 10, {
+        bull: scenarioPayload({ priceToSales: [2, 2, 2, 2, 2] }),
+      }),
+    ])
+    const retry = deferred<{
+      results: Awaited<
+        ReturnType<typeof refreshStockAnalysisCurrentPrices>
+      >['results']
+    }>()
+    vi.mocked(refreshStockAnalysisCurrentPrices)
+      .mockRejectedValueOnce(new Error('Refresh unavailable'))
+      .mockReturnValueOnce(retry.promise)
+
+    render(<RankStocksPage />)
+
+    expect(await screen.findByText('Refresh unavailable')).toBeTruthy()
+    act(() => {
+      screen.getByRole('button', { name: 'Refresh' }).click()
+    })
+    expect(screen.queryByText('Refresh unavailable')).toBeNull()
+
+    retry.resolve({ results: [] })
+    expect(await screen.findByText('Prices updated')).toBeTruthy()
+    expect(screen.queryByText('Refresh unavailable')).toBeNull()
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+
+  return { promise, reject, resolve }
+}
 
 function savedModel(
   ticker: string,

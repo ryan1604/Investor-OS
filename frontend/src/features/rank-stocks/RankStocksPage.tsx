@@ -1,5 +1,5 @@
 import { RefreshCw } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   fetchStockAnalysisModels,
@@ -60,23 +60,44 @@ export function RankStocksPage() {
     StockAnalysisPriceRefreshResult[]
   >([])
   const [error, setError] = useState<string | null>(null)
+  const refreshControllerRef = useRef<AbortController | null>(null)
+  const refreshGenerationRef = useRef(0)
 
-  const refreshPrices = useCallback(async (signal?: AbortSignal) => {
+  const refreshPrices = useCallback(async () => {
+    refreshControllerRef.current?.abort()
+    const refreshController = new AbortController()
+    refreshControllerRef.current = refreshController
+    const refreshGeneration = ++refreshGenerationRef.current
     setRefreshStatus('refreshing')
+    setError(null)
     try {
-      const response = await refreshStockAnalysisCurrentPrices(signal)
+      const response = await refreshStockAnalysisCurrentPrices(
+        refreshController.signal,
+      )
+      if (refreshGenerationRef.current !== refreshGeneration) {
+        return
+      }
+
       setRefreshResults(response.results)
       setModels((currentModels) =>
         mergeRefreshResults(currentModels, response.results),
       )
       setRefreshStatus('complete')
+      setError(null)
     } catch (requestError) {
-      if (isAbortError(requestError)) {
+      if (
+        isAbortError(requestError) ||
+        refreshGenerationRef.current !== refreshGeneration
+      ) {
         return
       }
 
       setRefreshStatus('error')
       setError(errorMessage(requestError))
+    } finally {
+      if (refreshControllerRef.current === refreshController) {
+        refreshControllerRef.current = null
+      }
     }
   }, [])
 
@@ -90,7 +111,7 @@ export function RankStocksPage() {
         const savedModels = await fetchStockAnalysisModels(loadController.signal)
         setModels(savedModels)
         setIsLoading(false)
-        void refreshPrices(loadController.signal)
+        void refreshPrices()
       } catch (requestError) {
         if (isAbortError(requestError)) {
           return
@@ -103,12 +124,14 @@ export function RankStocksPage() {
 
     void loadModels()
     const refreshTimer = window.setInterval(() => {
-      const refreshController = new AbortController()
-      void refreshPrices(refreshController.signal)
+      void refreshPrices()
     }, REFRESH_INTERVAL_MS)
 
     return () => {
       loadController.abort()
+      refreshGenerationRef.current += 1
+      refreshControllerRef.current?.abort()
+      refreshControllerRef.current = null
       window.clearInterval(refreshTimer)
     }
   }, [refreshPrices])
@@ -123,10 +146,10 @@ export function RankStocksPage() {
 
   return (
     <main className="flex min-w-0 w-full flex-col gap-5">
-      <header className="flex flex-col gap-3 border-b pb-4 lg:flex-row lg:items-end lg:justify-between">
+      <header className="flex flex-col gap-3 pb-4 lg:flex-row lg:items-end lg:justify-between">
         <div className="grid gap-1">
           <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-            Rank stocks
+            Rank Stocks
           </h1>
           <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
             <Badge variant="outline">{models.length} tickers</Badge>

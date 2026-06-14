@@ -2,6 +2,7 @@ from fastapi import Request, WebSocket
 
 from app.ib.portfolio import PortfolioClient
 from app.options.factory import OptionsAnalysisClient
+from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.orders.service import OrderService
 from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.portfolio.service import PortfolioRefreshService, PortfolioSnapshotCache
@@ -31,6 +32,10 @@ def get_portfolio_refresh_service(websocket: WebSocket) -> PortfolioRefreshServi
 
 def get_portfolio_chart_values_store(request: Request) -> PortfolioChartValuesStore:
     return request.app.state.portfolio_chart_values_store
+
+
+def get_options_trade_tracker_store(request: Request) -> OptionsTradeTrackerStore:
+    return request.app.state.options_trade_tracker_store
 
 
 def get_stock_analysis_store(request: Request) -> StockAnalysisStore:

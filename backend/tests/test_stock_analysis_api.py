@@ -11,9 +11,16 @@ class FakeOptionsAnalysisClient:
         price: float | None | dict[str, float | None] = 42.5,
     ) -> None:
         self.price = price
+        self.analysis_requests: list[str] = []
+        self.price_requests: list[str] = []
 
     def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
+        self.analysis_requests.append(ticker)
+        raise AssertionError("Price refresh must not invoke full options analysis.")
+
+    def get_underlying_price(self, ticker: str) -> float:
         normalized_ticker = ticker.upper()
+        self.price_requests.append(normalized_ticker)
         price = (
             self.price.get(normalized_ticker)
             if isinstance(self.price, dict)
@@ -22,13 +29,7 @@ class FakeOptionsAnalysisClient:
         if price is None:
             raise OptionsDataUnavailable(f"No daily price data is available for {ticker}.")
 
-        return OptionsAnalysisResponse(
-            ticker=normalized_ticker,
-            underlying_price=price,
-            candles=[],
-            bollinger_bands=[],
-            rsi=[],
-        )
+        return price
 
     def get_expirations(self, ticker):
         raise NotImplementedError
@@ -63,7 +64,6 @@ def test_put_stock_analysis_saves_partial_scenarios_by_ticker(tmp_path):
     api = create_stock_analysis_test_app(tmp_path)
     payload = {
         "version": 2,
-        "current_price": 332.25,
         "payload": {
             "bull": {"revenue": [100, None, 130]},
             "base": {"revenue": [90]},
@@ -78,7 +78,7 @@ def test_put_stock_analysis_saves_partial_scenarios_by_ticker(tmp_path):
     assert put_response.status_code == 200
     assert put_response.json()["ticker"] == "MSFT"
     assert put_response.json()["version"] == 2
-    assert put_response.json()["current_price"] == 332.25
+    assert put_response.json()["current_price"] is None
     assert put_response.json()["payload"] == payload["payload"]
     assert put_response.json()["updated_at"] is not None
     assert get_response.status_code == 200
@@ -98,20 +98,23 @@ def test_put_stock_analysis_requires_all_three_scenarios(tmp_path):
 
 
 def test_get_stock_analysis_models_returns_saved_models_ordered(tmp_path):
-    api = create_stock_analysis_test_app(tmp_path)
+    api = create_stock_analysis_test_app(
+        tmp_path,
+        options_client=FakeOptionsAnalysisClient(
+            price={"AAPL": 195.5, "MSFT": 332.25},
+        ),
+    )
 
     with TestClient(api) as client:
         client.put(
             "/stock-analysis/msft",
             json={
-                "current_price": 332.25,
                 "payload": {"bull": {}, "base": {}, "bear": {}},
             },
         )
         client.put(
             "/stock-analysis/aapl",
             json={
-                "current_price": 195.5,
                 "payload": {
                     "bull": {"revenue": [100]},
                     "base": {},
@@ -119,6 +122,8 @@ def test_get_stock_analysis_models_returns_saved_models_ordered(tmp_path):
                 },
             },
         )
+        client.get("/stock-analysis/msft/current-price")
+        client.get("/stock-analysis/aapl/current-price")
         response = client.get("/stock-analysis")
 
     assert response.status_code == 200
@@ -128,9 +133,10 @@ def test_get_stock_analysis_models_returns_saved_models_ordered(tmp_path):
 
 
 def test_get_stock_analysis_current_price_returns_ib_backed_price(tmp_path):
+    options_client = FakeOptionsAnalysisClient(price=42.5)
     api = create_stock_analysis_test_app(
         tmp_path,
-        options_client=FakeOptionsAnalysisClient(price=42.5),
+        options_client=options_client,
     )
 
     with TestClient(api) as client:
@@ -138,6 +144,8 @@ def test_get_stock_analysis_current_price_returns_ib_backed_price(tmp_path):
 
     assert response.status_code == 200
     assert response.json() == {"ticker": "HIMS", "current_price": 42.5}
+    assert options_client.price_requests == ["HIMS"]
+    assert options_client.analysis_requests == []
 
 
 def test_get_stock_analysis_current_price_persists_snapshot(tmp_path):
@@ -158,25 +166,24 @@ def test_get_stock_analysis_current_price_persists_snapshot(tmp_path):
 
 
 def test_refresh_stock_analysis_current_prices_updates_successful_tickers(tmp_path):
+    options_client = FakeOptionsAnalysisClient(
+        price={"AAPL": 195.5, "MSFT": 332.25, "NFLX": None},
+    )
     api = create_stock_analysis_test_app(
         tmp_path,
-        options_client=FakeOptionsAnalysisClient(
-            price={"AAPL": 205.0, "MSFT": None, "NFLX": None},
-        ),
+        options_client=options_client,
     )
 
     with TestClient(api) as client:
         client.put(
             "/stock-analysis/aapl",
             json={
-                "current_price": 195.5,
                 "payload": {"bull": {}, "base": {}, "bear": {}},
             },
         )
         client.put(
             "/stock-analysis/msft",
             json={
-                "current_price": 332.25,
                 "payload": {"bull": {}, "base": {}, "bear": {}},
             },
         )
@@ -184,6 +191,9 @@ def test_refresh_stock_analysis_current_prices_updates_successful_tickers(tmp_pa
             "/stock-analysis/nflx",
             json={"payload": {"bull": {}, "base": {}, "bear": {}}},
         )
+        client.get("/stock-analysis/aapl/current-price")
+        client.get("/stock-analysis/msft/current-price")
+        options_client.price = {"AAPL": 205.0, "MSFT": None, "NFLX": None}
         refresh_response = client.post("/stock-analysis/current-prices/refresh")
         models_response = client.get("/stock-analysis")
 
@@ -217,6 +227,32 @@ def test_refresh_stock_analysis_current_prices_updates_successful_tickers(tmp_pa
     assert models_by_ticker["AAPL"]["current_price"] == 205.0
     assert models_by_ticker["MSFT"]["current_price"] == 332.25
     assert models_by_ticker["NFLX"]["current_price"] is None
+    assert options_client.price_requests[-3:] == ["AAPL", "MSFT", "NFLX"]
+    assert options_client.analysis_requests == []
+
+
+def test_put_stock_analysis_preserves_focused_price_snapshot(tmp_path):
+    api = create_stock_analysis_test_app(
+        tmp_path,
+        options_client=FakeOptionsAnalysisClient(price=42.5),
+    )
+
+    with TestClient(api) as client:
+        client.get("/stock-analysis/hims/current-price")
+        response = client.put(
+            "/stock-analysis/hims",
+            json={
+                "payload": {
+                    "bull": {"revenue": [100]},
+                    "base": {},
+                    "bear": {},
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["current_price"] == 42.5
+    assert response.json()["payload"]["bull"]["revenue"] == [100]
 
 
 def test_get_stock_analysis_current_price_reports_unavailable_price(tmp_path):

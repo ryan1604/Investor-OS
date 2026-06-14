@@ -66,6 +66,41 @@ describe('usePortfolioChartValues', () => {
     )
   })
 
+  it('does not expose or apply rows from a previous account', async () => {
+    const firstLoad = deferred<Response>()
+    const secondLoad = deferred<Response>()
+    const fetchMock = vi
+      .fn()
+      .mockReturnValueOnce(firstLoad.promise)
+      .mockReturnValueOnce(secondLoad.promise)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, rerender } = renderHook(
+      ({ account }) => usePortfolioChartValues(account),
+      { initialProps: { account: 'ACCOUNT-A' as string | undefined } },
+    )
+
+    rerender({ account: 'ACCOUNT-B' })
+
+    expect(result.current.rows).toEqual([])
+    expect(result.current.isLoading).toBe(true)
+    expect(
+      (fetchMock.mock.calls[0][1] as { signal: AbortSignal }).signal.aborted,
+    ).toBe(true)
+
+    secondLoad.resolve(chartValuesResponse('ACCOUNT-B', '2026-02', 2_000))
+    await waitFor(() => {
+      expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+    })
+
+    firstLoad.resolve(chartValuesResponse('ACCOUNT-A', '2026-01', 1_000))
+    await act(async () => {
+      await firstLoad.promise
+    })
+
+    expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+  })
+
   it('clears rows when there is no selected account', () => {
     const { result } = renderHook(() => usePortfolioChartValues(undefined))
 
@@ -137,9 +172,78 @@ describe('usePortfolioChartValues', () => {
             },
           ],
         }),
-        signal: undefined,
+        signal: expect.any(AbortSignal),
       },
     )
     expect(result.current.rows[0]?.month).toBe('2026-01')
   })
+
+  it('ignores a late save response after the account changes', async () => {
+    const saveResponse = deferred<Response>()
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(chartValuesResponse('ACCOUNT-A', '2026-01', 1_000))
+      .mockReturnValueOnce(saveResponse.promise)
+      .mockResolvedValueOnce(chartValuesResponse('ACCOUNT-B', '2026-02', 2_000))
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { result, rerender } = renderHook(
+      ({ account }) => usePortfolioChartValues(account),
+      { initialProps: { account: 'ACCOUNT-A' as string | undefined } },
+    )
+    await waitFor(() => {
+      expect(result.current.rows[0]?.portfolio_value).toBe(1_000)
+    })
+
+    let pendingSave: Promise<unknown>
+    act(() => {
+      pendingSave = result.current.saveRows([
+        { month: '2026-01', portfolio_value: 1_500 },
+      ])
+    })
+    rerender({ account: 'ACCOUNT-B' })
+
+    await waitFor(() => {
+      expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+    })
+    expect(
+      (fetchMock.mock.calls[1][1] as { signal: AbortSignal }).signal.aborted,
+    ).toBe(true)
+
+    saveResponse.resolve(chartValuesResponse('ACCOUNT-A', '2026-01', 1_500))
+    await act(async () => {
+      await pendingSave
+    })
+
+    expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+    expect(result.current.isSaving).toBe(false)
+  })
 })
+
+function chartValuesResponse(account: string, month: string, value: number) {
+  return new Response(
+    JSON.stringify({
+      account,
+      rows: [
+        {
+          month,
+          portfolio_value: value,
+          amount_invested: null,
+          updated_at: '2026-06-06T00:00:00+00:00',
+        },
+      ],
+    }),
+    {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    },
+  )
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}

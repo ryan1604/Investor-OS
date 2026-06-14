@@ -353,4 +353,52 @@ describe('PortfolioChartSection', () => {
     expect(screen.queryByText('Jun 26')).toBeNull()
     expect(onSaveRows).not.toHaveBeenCalled()
   })
+
+  it('ignores a late editor save after the active account changes', async () => {
+    const save = deferred<PortfolioChartValue[]>()
+    const onSaveRows = vi.fn().mockReturnValue(save.promise)
+    const { rerender } = render(
+      <PortfolioChartSection
+        account="ACCOUNT-A"
+        error={null}
+        isLoading={false}
+        isSaving={false}
+        onSaveRows={onSaveRows}
+        rows={[rows[1]]}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit values/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    rerender(
+      <PortfolioChartSection
+        account="ACCOUNT-B"
+        error={null}
+        isLoading={false}
+        isSaving={false}
+        onSaveRows={onSaveRows}
+        rows={[rows[0]]}
+      />,
+    )
+    await waitFor(() => {
+      expect(screen.queryByTestId('portfolio-chart-values-editor')).toBeNull()
+    })
+
+    save.resolve([rows[1]])
+    await waitFor(() => {
+      expect(screen.getByText('ACCOUNT-B')).toBeTruthy()
+    })
+
+    expect(screen.getAllByText('Dec 24').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Jan 25')).toBeNull()
+  })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}

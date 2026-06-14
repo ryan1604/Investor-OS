@@ -157,8 +157,9 @@ Task 9.5.4 frontend snapshot from `pnpm bundle:report` on June 5, 2026:
 | JavaScript total | 634,699 bytes | 200,582 bytes | 173,692 bytes |
 | CSS | 82,403 bytes | 13,884 bytes | 11,823 bytes |
 
-The split production build keeps Portfolio in the initial app shell and moves
-inactive pages and heavy options paths into route or on-demand chunks:
+The June 5 Task 9.5.4 snapshot used a split production build that kept Portfolio
+in the initial app shell and moved inactive pages and heavy options paths into
+route or on-demand chunks:
 
 - Initial app shell: `assets/index-DlJuzjxo.js`, 118,695 gzip bytes.
 - Options route: `assets/OptionsPage-BvE-mpWs.js`, 8,886 gzip bytes.
@@ -219,8 +220,12 @@ Task 9.5.6 request-abort profile from focused frontend tests:
 
 Options ticker search still disables the search control while loading, so Task
 9.5.6 does not add rapid overlapping Options searches. Options request aborts
-are scoped to cleanup, unmount, navigation away from the lazy route, or another
+are scoped to cleanup, unmount, navigation away from the active page, or another
 real submit if the UI later allows one.
+
+The current application entry point eagerly imports all page modules and emits
+one application JavaScript chunk. The asset names above remain historical
+baseline evidence rather than a description of the current loading boundary.
 
 Task 9.5.6 CSS and asset snapshot from `pnpm bundle:report` on June 5, 2026:
 

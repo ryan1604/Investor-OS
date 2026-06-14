@@ -70,7 +70,6 @@ export function useStockAnalysisModel() {
       setSaveStatus('saving')
       void upsertStockAnalysisModel(activeModel.ticker, {
         version: activeModel.version,
-        current_price: activeModel.valuation.currentPrice,
         payload: toStockAnalysisPayload(activeModel.valuation),
       }, saveController.signal)
         .then((savedModel) => {

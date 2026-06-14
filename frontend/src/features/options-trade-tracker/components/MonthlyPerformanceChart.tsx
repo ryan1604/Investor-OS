@@ -1,0 +1,228 @@
+import { useMemo, useState } from 'react'
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
+
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  ChartTooltipContent,
+} from '@/components/ui/chart'
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from '@/components/ui/toggle-group'
+import {
+  deriveNetMonthlyChartData,
+  deriveStackedMonthlyChartData,
+  deriveStrategyStats,
+  type CompletedTradeProjection,
+  type StackedMonthlyChartRow,
+} from '@/features/options-trade-tracker/lib/tradeTracker'
+import {
+  strategyChartColor,
+  strategyChartConfig,
+  strategyChartKey,
+} from '@/features/options-trade-tracker/lib/trackerCharts'
+import { formatCurrency, formatNumber } from '@/lib/format'
+
+type MonthlyChartMode = 'strategy' | 'net'
+
+type MonthlyPerformanceChartProps = {
+  completedTrades: CompletedTradeProjection[]
+  strategyOptions: string[]
+}
+
+export function MonthlyPerformanceChart({
+  completedTrades,
+  strategyOptions,
+}: MonthlyPerformanceChartProps) {
+  const [mode, setMode] = useState<MonthlyChartMode>('strategy')
+  const activeStrategies = useMemo(
+    () =>
+      deriveStrategyStats(completedTrades, strategyOptions).rows
+        .filter((row) => row.count > 0)
+        .map((row) => row.strategy),
+    [completedTrades, strategyOptions],
+  )
+  const stackedData = useMemo(
+    () => toKeyedStackedRows(completedTrades, activeStrategies),
+    [completedTrades, activeStrategies],
+  )
+  const netData = useMemo(
+    () => deriveNetMonthlyChartData(completedTrades),
+    [completedTrades],
+  )
+  const strategyConfig = useMemo(
+    () => strategyChartConfig(activeStrategies),
+    [activeStrategies],
+  )
+  const netConfig = {
+    total: {
+      label: 'Net P&L',
+      color: 'var(--chart-1)',
+    },
+  }
+  const hasCompletedData = activeStrategies.length > 0
+
+  return (
+    <section className="rounded-lg border border-border bg-background p-3">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h3 className="font-medium text-foreground">Monthly performance</h3>
+        </div>
+        <ToggleGroup
+          type="single"
+          value={mode}
+          onValueChange={(value) => {
+            if (value === 'strategy' || value === 'net') {
+              setMode(value)
+            }
+          }}
+          variant="outline"
+          size="sm"
+          aria-label="Monthly performance mode"
+        >
+          <ToggleGroupItem value="strategy">By strategy</ToggleGroupItem>
+          <ToggleGroupItem value="net">Net</ToggleGroupItem>
+        </ToggleGroup>
+      </div>
+
+      {hasCompletedData ? (
+        mode === 'strategy' ? (
+          <ChartContainer
+            config={strategyConfig}
+            className="mt-3 h-80 w-full"
+            initialDimension={{ width: 960, height: 320 }}
+          >
+            <BarChart
+              accessibilityLayer
+              data={stackedData}
+              margin={{ left: 8, right: 8 }}
+            >
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+              />
+              <YAxis
+                tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                tickLine={false}
+                axisLine={false}
+                width={72}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent
+                    formatter={(value) => formatCurrency(Number(value))}
+                  />
+                }
+              />
+              <ChartLegend content={<ChartLegendContent />} />
+              {activeStrategies.map((strategy, index) => (
+                <Bar
+                  key={strategy}
+                  dataKey={strategyChartKey(index)}
+                  name={strategy}
+                  stackId="strategy"
+                  fill={strategyChartColor(index)}
+                  radius={[3, 3, 0, 0]}
+                />
+              ))}
+            </BarChart>
+          </ChartContainer>
+        ) : (
+          <ChartContainer
+            config={netConfig}
+            className="mt-3 h-80 w-full"
+            initialDimension={{ width: 960, height: 320 }}
+          >
+            <BarChart
+              accessibilityLayer
+              data={netData}
+              margin={{ left: 8, right: 8 }}
+            >
+              <CartesianGrid vertical={false} />
+              <XAxis
+                dataKey="label"
+                tickLine={false}
+                axisLine={false}
+                tickMargin={8}
+              />
+              <YAxis
+                tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                tickLine={false}
+                axisLine={false}
+                width={72}
+              />
+              <ChartTooltip
+                cursor={false}
+                content={
+                  <ChartTooltipContent
+                    formatter={(value) => formatCurrency(Number(value))}
+                  />
+                }
+              />
+              <Bar
+                dataKey="total"
+                name="Net P&L"
+                fill="var(--chart-1)"
+                radius={[4, 4, 0, 0]}
+              />
+            </BarChart>
+          </ChartContainer>
+        )
+      ) : (
+        <StatsChartEmptyState message="Complete valid trades to chart monthly performance." />
+      )}
+    </section>
+  )
+}
+
+export function StatsChartEmptyState({ message }: { message: string }) {
+  return (
+    <div className="mt-3 flex min-h-60 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
+      {message}
+    </div>
+  )
+}
+
+function toKeyedStackedRows(
+  completedTrades: CompletedTradeProjection[],
+  strategies: string[],
+) {
+  const strategyIndexes = new Map(
+    strategies.map((strategy, index) => [strategy, strategyChartKey(index)]),
+  )
+
+  return deriveStackedMonthlyChartData(completedTrades, strategies).map((row) => {
+    const keyedRow: StackedMonthlyChartRow = {
+      month: row.month,
+      label: row.label,
+    }
+
+    strategies.forEach((strategy) => {
+      const key = strategyIndexes.get(strategy)
+      if (key !== undefined) {
+        keyedRow[key] = Number(row[strategy] ?? 0)
+      }
+    })
+
+    return keyedRow
+  })
+}
+
+function formatCompactCurrency(value: number) {
+  const absoluteValue = Math.abs(value)
+
+  if (absoluteValue >= 1000) {
+    return `$${formatNumber(value / 1000, {
+      maximumFractionDigits: 1,
+    })}k`
+  }
+
+  return formatCurrency(value)
+}

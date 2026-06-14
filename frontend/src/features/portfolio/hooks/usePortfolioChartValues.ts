@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import {
   fetchPortfolioChartValues,
@@ -15,37 +15,77 @@ function portfolioChartValuesErrorMessage(error: unknown) {
 }
 
 export function usePortfolioChartValues(account: string | undefined) {
-  const [rows, setRows] = useState<PortfolioChartValue[]>([])
-  const [isLoading, setIsLoading] = useState(false)
-  const [isSaving, setIsSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [state, setState] = useState<{
+    account: string | undefined
+    rows: PortfolioChartValue[]
+    isLoading: boolean
+    isSaving: boolean
+    error: string | null
+  }>({
+    account: undefined,
+    rows: [],
+    isLoading: false,
+    isSaving: false,
+    error: null,
+  })
+  const accountRef = useRef(account)
+  const requestGenerationRef = useRef(0)
+  const saveControllerRef = useRef<AbortController | null>(null)
+  accountRef.current = account
 
   useEffect(() => {
+    const requestGeneration = ++requestGenerationRef.current
+    saveControllerRef.current?.abort()
+    saveControllerRef.current = null
+
     if (!account) {
+      setState({
+        account: undefined,
+        rows: [],
+        isLoading: false,
+        isSaving: false,
+        error: null,
+      })
       return
     }
 
     const controller = new AbortController()
-
-    Promise.resolve().then(() => {
-      if (!controller.signal.aborted) {
-        setIsLoading(true)
-        setError(null)
-      }
+    setState({
+      account,
+      rows: [],
+      isLoading: true,
+      isSaving: false,
+      error: null,
     })
 
     fetchPortfolioChartValues(account, controller.signal)
       .then((response) => {
-        setRows(response.rows)
-      })
-      .catch((requestError: unknown) => {
-        if (!isAbortError(requestError)) {
-          setError(portfolioChartValuesErrorMessage(requestError))
+        if (
+          requestGenerationRef.current === requestGeneration &&
+          accountRef.current === account
+        ) {
+          setState({
+            account,
+            rows: response.rows,
+            isLoading: false,
+            isSaving: false,
+            error: null,
+          })
         }
       })
-      .finally(() => {
-        if (!controller.signal.aborted) {
-          setIsLoading(false)
+      .catch((requestError: unknown) => {
+        if (
+          !isAbortError(requestError) &&
+          requestGenerationRef.current === requestGeneration &&
+          accountRef.current === account
+        ) {
+          setState({
+            account,
+            rows: [],
+            isLoading: false,
+            isSaving: false,
+            error: portfolioChartValuesErrorMessage(requestError),
+          })
         }
       })
 
@@ -60,31 +100,66 @@ export function usePortfolioChartValues(account: string | undefined) {
         throw new Error('Account is required.')
       }
 
-      setIsSaving(true)
-      setError(null)
+      const requestGeneration = requestGenerationRef.current
+      const saveController = new AbortController()
+      saveControllerRef.current?.abort()
+      saveControllerRef.current = saveController
+      setState((currentState) =>
+        currentState.account === account
+          ? { ...currentState, isSaving: true, error: null }
+          : currentState,
+      )
 
       try {
         const response = await replacePortfolioChartValues(account, {
           rows: nextRows,
-        })
-        setRows(response.rows)
+        }, saveController.signal)
+        if (
+          requestGenerationRef.current === requestGeneration &&
+          accountRef.current === account
+        ) {
+          setState({
+            account,
+            rows: response.rows,
+            isLoading: false,
+            isSaving: false,
+            error: null,
+          })
+        }
         return response.rows
       } catch (requestError) {
-        const message = portfolioChartValuesErrorMessage(requestError)
-        setError(message)
+        if (
+          !isAbortError(requestError) &&
+          requestGenerationRef.current === requestGeneration &&
+          accountRef.current === account
+        ) {
+          setState((currentState) =>
+            currentState.account === account
+              ? {
+                  ...currentState,
+                  isSaving: false,
+                  error: portfolioChartValuesErrorMessage(requestError),
+                }
+              : currentState,
+          )
+        }
         throw requestError
       } finally {
-        setIsSaving(false)
+        if (saveControllerRef.current === saveController) {
+          saveControllerRef.current = null
+        }
       }
     },
     [account],
   )
 
+  const isCurrentAccount = state.account === account
+
   return {
-    rows: account ? rows : [],
-    isLoading: account ? isLoading : false,
-    isSaving: account ? isSaving : false,
-    error: account ? error : null,
+    rows: account && isCurrentAccount ? state.rows : [],
+    isLoading: account ? !isCurrentAccount || state.isLoading : false,
+    isSaving: account && isCurrentAccount ? state.isSaving : false,
+    error: account && isCurrentAccount ? state.error : null,
     saveRows,
   }
 }

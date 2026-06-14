@@ -1,6 +1,6 @@
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { Pencil } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type {
   PortfolioChartValue,
@@ -75,6 +75,7 @@ export function PortfolioChartSection({
   const [isEditorOpen, setIsEditorOpen] = useState(false)
   const [draftRows, setDraftRows] = useState<PortfolioChartValueDraftRow[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
+  const accountRef = useRef(account)
   const previewRows = useMemo(
     () => editorPreviewRows(isEditorOpen, draftRows, rows),
     [isEditorOpen, draftRows, rows],
@@ -90,6 +91,7 @@ export function PortfolioChartSection({
   const hasSavedValues = monthlyRows.length > 0
 
   useEffect(() => {
+    accountRef.current = account
     Promise.resolve().then(() => {
       setIsEditorOpen(false)
       setDraftRows(savedRowsToDraftRows(rows))
@@ -138,13 +140,23 @@ export function PortfolioChartSection({
   }
 
   const handleSave = async () => {
+    const saveAccount = account
+
     try {
       const nextRows = parsePortfolioChartValueDraftRows(draftRows)
       const savedRows = await onSaveRows(nextRows)
+      if (accountRef.current !== saveAccount) {
+        return
+      }
+
       setDraftRows(savedRowsToDraftRows(savedRows))
       setSaveError(null)
       setIsEditorOpen(false)
     } catch (saveError) {
+      if (accountRef.current !== saveAccount) {
+        return
+      }
+
       setSaveError(
         saveError instanceof Error ? saveError.message : 'Save failed.',
       )

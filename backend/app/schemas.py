@@ -1,10 +1,13 @@
+from collections.abc import Hashable, Iterable
 import math
 import re
-from typing import Annotated, Any, Literal, NotRequired, TypedDict
+from typing import Annotated, Any, Literal, NotRequired, Self, TypeVar, TypedDict
 
 from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
 
 from app.tickers import require_ticker
+
+DuplicateValue = TypeVar("DuplicateValue", bound=Hashable)
 
 
 class IbStatus(BaseModel):
@@ -66,6 +69,20 @@ class PortfolioResponse(BaseModel):
 
 
 MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+OPTIONS_TRADE_MONTHS = {
+    "jan",
+    "feb",
+    "mar",
+    "apr",
+    "may",
+    "jun",
+    "jul",
+    "aug",
+    "sep",
+    "oct",
+    "nov",
+    "dec",
+}
 
 
 class PortfolioChartValueRequest(BaseModel):
@@ -103,9 +120,7 @@ class PortfolioChartValuesRequest(BaseModel):
     @model_validator(mode="after")
     def reject_duplicate_months(self):
         months = [row.month for row in self.rows]
-        duplicate_months = sorted(
-            {month for month in months if months.count(month) > 1}
-        )
+        duplicate_months = duplicate_values(months)
         if duplicate_months:
             raise ValueError(
                 f"Duplicate month values are not allowed: {', '.join(duplicate_months)}."
@@ -123,6 +138,222 @@ class PortfolioChartValueResponse(BaseModel):
 class PortfolioChartValuesResponse(BaseModel):
     account: str
     rows: list[PortfolioChartValueResponse] = Field(default_factory=list)
+
+
+OptionsTradeStatus = Literal["In Progress", "Completed"]
+
+
+def normalize_optional_text(value: str | None) -> str | None:
+    if value is None:
+        return None
+
+    normalized_value = value.strip()
+    return normalized_value or None
+
+
+def normalize_optional_upper_text(value: str | None) -> str | None:
+    normalized_value = normalize_optional_text(value)
+    return normalized_value.upper() if normalized_value is not None else None
+
+
+def normalize_strategy_option(value: str) -> str:
+    normalized_value = " ".join(value.strip().split())
+    if not normalized_value:
+        return ""
+
+    return normalized_value.upper()
+
+
+def duplicate_values(
+    values: Iterable[DuplicateValue],
+) -> list[DuplicateValue]:
+    seen: set[DuplicateValue] = set()
+    duplicates: set[DuplicateValue] = set()
+    for value in values:
+        if value in seen:
+            duplicates.add(value)
+        else:
+            seen.add(value)
+    return sorted(duplicates)
+
+
+class OptionsTradeTrackerCreateRequest(BaseModel):
+    name: str
+
+    @field_validator("name")
+    @classmethod
+    def non_empty_name(cls, value: str) -> str:
+        normalized_value = value.strip()
+        if not normalized_value:
+            raise ValueError("Tracker name is required.")
+        return normalized_value
+
+
+class OptionsTradeTrackerRenameRequest(OptionsTradeTrackerCreateRequest):
+    pass
+
+
+class OptionsTradeTrackerSummaryResponse(BaseModel):
+    id: str
+    name: str
+    created_at: str
+    updated_at: str
+
+
+class OptionsTradeTrackerListResponse(BaseModel):
+    trackers: list[OptionsTradeTrackerSummaryResponse] = Field(default_factory=list)
+
+
+class OptionsTradeRowRequest(BaseModel):
+    id: str | None = None
+    display_order: int = Field(ge=0)
+    status: OptionsTradeStatus = "In Progress"
+    strategy: str | None = None
+    ticker: str | None = None
+    month: str | None = None
+    size: float | None = None
+    strike_price: float | None = None
+    credit_debit: float | None = None
+    exit: float | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def optional_text(cls, value: str | None) -> str | None:
+        return normalize_optional_text(value)
+
+    @field_validator("strategy", mode="before")
+    @classmethod
+    def optional_strategy(cls, value: str | None) -> str | None:
+        normalized_value = normalize_optional_text(value)
+        return (
+            normalize_strategy_option(normalized_value)
+            if normalized_value is not None
+            else None
+        )
+
+    @field_validator("ticker", mode="before")
+    @classmethod
+    def optional_ticker(cls, value: str | None) -> str | None:
+        return normalize_optional_upper_text(value)
+
+    @field_validator("month", mode="before")
+    @classmethod
+    def optional_month(cls, value: str | None) -> str | None:
+        normalized_value = normalize_optional_text(value)
+        if normalized_value is not None:
+            tracker_month = normalized_value.lower()
+            if tracker_month not in OPTIONS_TRADE_MONTHS:
+                raise ValueError("month must be jan-dec.")
+            return tracker_month
+        return normalized_value
+
+    @field_validator("size", "strike_price", "credit_debit", "exit")
+    @classmethod
+    def finite_number(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("numeric values must be finite.")
+        return value
+
+    @model_validator(mode="after")
+    def validate_completed_row(self) -> Self:
+        if self.strike_price is not None and self.strike_price <= 0:
+            raise ValueError("strike_price must be greater than zero.")
+        if self.credit_debit is not None and self.credit_debit <= 0:
+            raise ValueError("credit_debit must be greater than zero.")
+        if self.exit is not None and self.exit < 0:
+            raise ValueError("exit must be greater than or equal to zero.")
+
+        if self.status != "Completed":
+            return self
+
+        missing_fields = [
+            field_name
+            for field_name in (
+                "strategy",
+                "ticker",
+                "month",
+                "size",
+                "strike_price",
+                "credit_debit",
+            )
+            if getattr(self, field_name) is None
+        ]
+        if missing_fields:
+            raise ValueError(
+                "Completed rows require strategy, ticker, month, size, "
+                "strike_price, and credit_debit."
+            )
+
+        if self.size == 0:
+            raise ValueError("Completed rows require non-zero size.")
+        return self
+
+
+class OptionsTradeRowsReplaceRequest(BaseModel):
+    trades: list[OptionsTradeRowRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_row_ordering(self) -> Self:
+        row_ids = [row.id for row in self.trades if row.id is not None]
+        duplicate_row_ids = duplicate_values(row_ids)
+        if duplicate_row_ids:
+            raise ValueError("Duplicate trade row ids are not allowed.")
+
+        display_orders = [row.display_order for row in self.trades]
+        duplicate_orders = duplicate_values(display_orders)
+        if duplicate_orders:
+            raise ValueError("Duplicate trade row display_order values are not allowed.")
+
+        return self
+
+
+class OptionsTradeNotesRequest(BaseModel):
+    notes: str = ""
+
+
+class OptionsTradeStrategiesRequest(BaseModel):
+    strategies: list[str] = Field(default_factory=list)
+
+    @field_validator("strategies")
+    @classmethod
+    def normalize_strategies(cls, values: list[str]) -> list[str]:
+        normalized_values = [normalize_strategy_option(value) for value in values]
+        blank_values = [value for value in normalized_values if not value]
+        if blank_values:
+            raise ValueError("Strategy options cannot be blank.")
+
+        normalized_lookup_values = [value.lower() for value in normalized_values]
+        duplicate_strategy_values = duplicate_values(normalized_lookup_values)
+        if duplicate_strategy_values:
+            raise ValueError("Duplicate strategy options are not allowed.")
+
+        return normalized_values
+
+
+class OptionsTradeStrategyOptionsResponse(BaseModel):
+    strategies: list[str] = Field(default_factory=list)
+
+
+class OptionsTradeRowResponse(BaseModel):
+    id: str
+    display_order: int
+    status: OptionsTradeStatus
+    strategy: str | None = None
+    ticker: str | None = None
+    month: str | None = None
+    size: float | None = None
+    strike_price: float | None = None
+    credit_debit: float | None = None
+    exit: float | None = None
+    created_at: str
+    updated_at: str
+
+
+class OptionsTradeTrackerDetailResponse(BaseModel):
+    tracker: OptionsTradeTrackerSummaryResponse
+    trades: list[OptionsTradeRowResponse] = Field(default_factory=list)
+    notes: str = ""
+    strategy_options: list[str] = Field(default_factory=list)
 
 
 class OptionDailyBar(BaseModel):
@@ -231,7 +462,6 @@ def empty_stock_analysis_payload() -> StockAnalysisPayload:
 
 class StockAnalysisModelRequest(BaseModel):
     version: int = 1
-    current_price: float | None = None
     payload: StockAnalysisPayload = Field(default_factory=empty_stock_analysis_payload)
 
     @model_validator(mode="after")

@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useMemo,
   useState,
@@ -16,6 +14,10 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ExpirationTabs } from '@/features/options/components/ExpirationTabs'
 import { OptionChainTable } from '@/features/options/components/OptionChainTable'
+import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
+import { OptionsChart } from '@/features/options/components/OptionsChart'
+import { RsiChart } from '@/features/options/components/RsiChart'
+import { StockTradeTicket } from '@/features/options/components/StockTradeTicket'
 import { useOptionChain } from '@/features/options/hooks/useOptionChain'
 import { useOptionsChartStream } from '@/features/options/hooks/useOptionsChartStream'
 import { useSyncedChartRange } from '@/features/options/hooks/useSyncedChartRange'
@@ -29,27 +31,6 @@ import {
   type OptionQuoteSelection,
 } from '@/features/options/lib/strategyLegs'
 import { chartOverlays } from '@/features/options/lib/chartOverlays'
-
-const OptionStrategyTicket = lazy(() =>
-  import('@/features/options/components/OptionStrategyTicket').then((module) => ({
-    default: module.OptionStrategyTicket,
-  })),
-)
-const OptionsChart = lazy(() =>
-  import('@/features/options/components/OptionsChart').then((module) => ({
-    default: module.OptionsChart,
-  })),
-)
-const RsiChart = lazy(() =>
-  import('@/features/options/components/RsiChart').then((module) => ({
-    default: module.RsiChart,
-  })),
-)
-const StockTradeTicket = lazy(() =>
-  import('@/features/options/components/StockTradeTicket').then((module) => ({
-    default: module.StockTradeTicket,
-  })),
-)
 
 type OptionsPageProps = {
   orders: OrderRecord[]
@@ -178,14 +159,12 @@ export function OptionsPage({
                 Strategy
                 {draftOptionLegs.length ? ` (${draftOptionLegs.length})` : ''}
               </Button>
-              <Suspense fallback={null}>
-                <StockTradeTicket
-                  ticker={analysis.ticker}
-                  latestPrice={analysis.underlying_price}
-                  portfolio={portfolio}
-                  selectedAccount={selectedAccount}
-                />
-              </Suspense>
+              <StockTradeTicket
+                ticker={analysis.ticker}
+                latestPrice={analysis.underlying_price}
+                portfolio={portfolio}
+                selectedAccount={selectedAccount}
+              />
             </>
           ) : null}
         </div>
@@ -201,19 +180,17 @@ export function OptionsPage({
         <div className="flex min-w-0 flex-col gap-4">
           {hasAnalysisPriceData(analysis) ? (
             <>
-              <Suspense fallback={<OptionsPanelLoading />}>
-                <OptionsChart
-                  analysis={initialAnalysis ?? analysis}
-                  latestUpdate={latestChartUpdate}
-                  overlays={overlays}
-                  onChartReady={handlePriceChartReady}
-                />
-                <RsiChart
-                  analysis={initialAnalysis ?? analysis}
-                  latestUpdate={latestChartUpdate}
-                  onChartReady={handleRsiChartReady}
-                />
-              </Suspense>
+              <OptionsChart
+                analysis={initialAnalysis ?? analysis}
+                latestUpdate={latestChartUpdate}
+                overlays={overlays}
+                onChartReady={handlePriceChartReady}
+              />
+              <RsiChart
+                analysis={initialAnalysis ?? analysis}
+                latestUpdate={latestChartUpdate}
+                onChartReady={handleRsiChartReady}
+              />
               {chartStreamError ? (
                 <Alert>{chartStreamError} Showing the latest available chart.</Alert>
               ) : null}
@@ -258,26 +235,15 @@ export function OptionsPage({
         </div>
       ) : null}
       {draftOptionLegs.length ? (
-        <Suspense fallback={null}>
-          <OptionStrategyTicket
-            legs={draftOptionLegs}
-            open={isStrategyTicketOpen}
-            portfolio={portfolio}
-            selectedAccount={selectedAccount}
-            onLegsChange={handleDraftOptionLegsChange}
-            onOpenChange={setIsStrategyTicketOpen}
-          />
-        </Suspense>
+        <OptionStrategyTicket
+          legs={draftOptionLegs}
+          open={isStrategyTicketOpen}
+          portfolio={portfolio}
+          selectedAccount={selectedAccount}
+          onLegsChange={handleDraftOptionLegsChange}
+          onOpenChange={setIsStrategyTicketOpen}
+        />
       ) : null}
     </main>
-  )
-}
-
-function OptionsPanelLoading() {
-  return (
-    <div className="flex items-center gap-2 text-sm text-muted-foreground">
-      <LoaderCircle className="size-4 animate-spin" />
-      Loading charts...
-    </div>
   )
 }

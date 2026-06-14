@@ -7,9 +7,10 @@ class Settings(BaseModel):
     """Fixed local backend defaults; these are not loaded from environment."""
 
     ib_host: str = "127.0.0.1"
-    ib_port: int = 7497
+    ib_port: int = 7496
     ib_client_id: int = 1
     options_database_path: str = "data/options.sqlite3"
+    options_trade_trackers_database_path: str = "data/options_trade_trackers.sqlite3"
     stock_analysis_database_path: str = "data/stock_analysis.sqlite3"
     portfolio_chart_values_database_path: str = "data/portfolio_chart_values.sqlite3"
     ib_request_queue_timeout_seconds: float = 0.25

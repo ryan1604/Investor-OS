@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react'
+import { useState } from 'react'
 
 import { AppSidebar } from '@/components/AppSidebar'
 import {
@@ -7,37 +7,22 @@ import {
 } from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
+import { OptionsPage } from '@/features/options/OptionsPage'
+import { OrdersPage } from '@/features/orders/OrdersPage'
 import { useOrders } from '@/features/orders/hooks/useOrders'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
 import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
+import { RankStocksPage } from '@/features/rank-stocks/RankStocksPage'
+import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
 
 export type AppPage =
   | 'portfolio'
   | 'options'
+  | 'options-trade-tracker'
   | 'orders'
   | 'stock-analysis'
   | 'rank-stocks'
-
-const OptionsPage = lazy(() =>
-  import('@/features/options/OptionsPage').then((module) => ({
-    default: module.OptionsPage,
-  })),
-)
-const OrdersPage = lazy(() =>
-  import('@/features/orders/OrdersPage').then((module) => ({
-    default: module.OrdersPage,
-  })),
-)
-const StockAnalysisPage = lazy(() =>
-  import('@/features/stock-analysis/StockAnalysisPage').then((module) => ({
-    default: module.StockAnalysisPage,
-  })),
-)
-const RankStocksPage = lazy(() =>
-  import('@/features/rank-stocks/RankStocksPage').then((module) => ({
-    default: module.RankStocksPage,
-  })),
-)
 
 function App() {
   const [activePage, setActivePage] = useState<AppPage>('portfolio')
@@ -57,23 +42,15 @@ function App() {
               onSelectedAccountChange={setSelectedPortfolioAccount}
             />
           ) : activePage === 'options' ? (
-            <Suspense fallback={<PageLoading />}>
-              <OptionsRoute
-                selectedAccount={selectedPortfolioAccount}
-              />
-            </Suspense>
+            <OptionsRoute selectedAccount={selectedPortfolioAccount} />
           ) : activePage === 'orders' ? (
-            <Suspense fallback={<PageLoading />}>
-              <OrdersRoute />
-            </Suspense>
+            <OrdersRoute />
+          ) : activePage === 'options-trade-tracker' ? (
+            <OptionsTradeTrackerPage />
           ) : activePage === 'stock-analysis' ? (
-            <Suspense fallback={<PageLoading />}>
-              <StockAnalysisPage />
-            </Suspense>
+            <StockAnalysisPage />
           ) : (
-            <Suspense fallback={<PageLoading />}>
-              <RankStocksPage />
-            </Suspense>
+            <RankStocksPage />
           )}
         </SidebarInset>
         <Toaster />
@@ -117,14 +94,6 @@ function OrdersRoute() {
   const orders = useOrders()
 
   return <OrdersPage orders={orders} />
-}
-
-function PageLoading() {
-  return (
-    <div className="text-sm text-muted-foreground" role="status">
-      Loading page...
-    </div>
-  )
 }
 
 export default App

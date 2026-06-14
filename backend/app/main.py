@@ -9,6 +9,8 @@ from app.ib.portfolio import IbPortfolioClient, PortfolioClient
 from app.ib.routes import router as ib_router
 from app.options.factory import OptionsAnalysisClient, create_options_client
 from app.options.routes import router as options_router
+from app.options_trade_tracker.routes import router as options_trade_tracker_router
+from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.orders.routes import router as orders_router
 from app.orders.service import (
     OrderService,
@@ -42,6 +44,11 @@ def create_app(
         PortfolioChartValuesStore,
     ]
     | None = None,
+    options_trade_tracker_store_factory: Callable[
+        [Settings],
+        OptionsTradeTrackerStore,
+    ]
+    | None = None,
 ) -> FastAPI:
     settings = get_settings()
 
@@ -65,6 +72,13 @@ def create_app(
             if portfolio_chart_values_store_factory
             else PortfolioChartValuesStore(
                 settings.portfolio_chart_values_database_path
+            )
+        )
+        app.state.options_trade_tracker_store = (
+            options_trade_tracker_store_factory(settings)
+            if options_trade_tracker_store_factory
+            else OptionsTradeTrackerStore(
+                settings.options_trade_trackers_database_path
             )
         )
         app.state.request_limiters = {
@@ -127,6 +141,7 @@ def create_app(
     api.include_router(ib_router)
     api.include_router(portfolio_router)
     api.include_router(options_router)
+    api.include_router(options_trade_tracker_router)
     api.include_router(orders_router)
     api.include_router(stock_analysis_router)
 

@@ -11,7 +11,6 @@ import {
 
 const modelRequest: StockAnalysisModelRequest = {
   version: 1,
-  current_price: 42.5,
   payload: {
     bull: { revenue: [100] },
     base: {},
