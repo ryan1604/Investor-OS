@@ -152,6 +152,76 @@ describe('OptionStrategyTicket', () => {
     })
   })
 
+  it('shows a positive CSP credit while preserving the signed request price', async () => {
+    vi.mocked(previewOrder).mockResolvedValue(
+      previewResponse({
+        request: {
+          order_kind: 'option_strategy',
+          account: 'DU222',
+          limit_price: -1,
+          time_in_force: 'DAY',
+          legs: [
+            {
+              ticker: 'AAPL',
+              expiration: '2026-06-19',
+              right: 'CALL',
+              strike: 210,
+              action: 'SELL',
+              quantity: 1,
+            },
+          ],
+        },
+      }),
+    )
+
+    render(
+      <OptionStrategyTicket
+        legs={[legs[1]]}
+        open
+        portfolio={portfolio}
+        selectedAccount="DU222"
+        creditEntry
+        selectedAccountOnly
+        onLegsChange={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(
+      (screen.getByLabelText('Net limit credit') as HTMLInputElement).value,
+    ).toBe('1.00')
+    expect(screen.getByText('Net credit')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /review/i }))
+
+    await waitFor(() => {
+      expect(previewOrder).toHaveBeenCalledWith(
+        expect.objectContaining({ limit_price: -1 }),
+      )
+    })
+  })
+
+  it('opens without an account but blocks review until one is selected', () => {
+    render(
+      <OptionStrategyTicket
+        legs={[legs[1]]}
+        open
+        portfolio={portfolio}
+        selectedAccount={null}
+        creditEntry
+        selectedAccountOnly
+        onLegsChange={vi.fn()}
+        onOpenChange={vi.fn()}
+      />,
+    )
+
+    expect(screen.getByText('Option strategy')).toBeTruthy()
+    expect(screen.getByText('Select an account.')).toBeTruthy()
+    expect(
+      (screen.getByRole('button', { name: /review/i }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+  })
+
   it('adds enabled bracket exit prices to option strategy previews', async () => {
     const bracketRequest: OptionStrategyOrderRequest = {
       order_kind: 'option_strategy',

@@ -51,6 +51,9 @@ type OptionStrategyTicketProps = {
   open: boolean
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
+  creditEntry?: boolean
+  selectedAccountOnly?: boolean
+  warning?: string | null
   onLegsChange: (legs: DraftOptionLeg[]) => void
   onOpenChange: (open: boolean) => void
 }
@@ -62,6 +65,9 @@ export function OptionStrategyTicket({
   open,
   portfolio,
   selectedAccount,
+  creditEntry = false,
+  selectedAccountOnly = false,
+  warning = null,
   onLegsChange,
   onOpenChange,
 }: OptionStrategyTicketProps) {
@@ -69,10 +75,14 @@ export function OptionStrategyTicket({
   const defaultAccount =
     selectedAccount && accounts.includes(selectedAccount)
       ? selectedAccount
-      : accounts[0] ?? ''
+      : selectedAccountOnly
+        ? ''
+        : accounts[0] ?? ''
   const defaultNetPrice = useMemo(() => netStrategyPrice(legs), [legs])
   const [account, setAccount] = useState(defaultAccount)
-  const [limitPrice, setLimitPrice] = useState(formatNetPrice(defaultNetPrice))
+  const [limitPrice, setLimitPrice] = useState(
+    formatDisplayedNetPrice(defaultNetPrice, creditEntry),
+  )
   const [takeProfitEnabled, setTakeProfitEnabled] = useState(false)
   const [takeProfitPrice, setTakeProfitPrice] = useState('')
   const [stopLossEnabled, setStopLossEnabled] = useState(false)
@@ -82,7 +92,11 @@ export function OptionStrategyTicket({
   const [preview, setPreview] = useState<OrderPreviewResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
-  const parsedLimitPrice = parseSignedNumber(limitPrice)
+  const displayedLimitPrice = parseSignedNumber(limitPrice)
+  const parsedLimitPrice =
+    creditEntry && displayedLimitPrice !== null
+      ? -Math.abs(displayedLimitPrice)
+      : displayedLimitPrice
   const parsedTakeProfitPrice = takeProfitEnabled
     ? parseSignedNumber(takeProfitPrice)
     : null
@@ -99,6 +113,8 @@ export function OptionStrategyTicket({
     legs,
     account,
     parsedLimitPrice,
+    creditEntry,
+    displayedLimitPrice,
     takeProfitEnabled,
     parsedTakeProfitPrice,
     stopLossEnabled,
@@ -109,9 +125,9 @@ export function OptionStrategyTicket({
     if (!open && step === 'draft') {
       // Keep the closed draft price aligned with selected legs without overriding open edits.
       // eslint-disable-next-line react-hooks/set-state-in-effect
-      setLimitPrice(formatNetPrice(defaultNetPrice))
+      setLimitPrice(formatDisplayedNetPrice(defaultNetPrice, creditEntry))
     }
-  }, [defaultNetPrice, open, step])
+  }, [creditEntry, defaultNetPrice, open, step])
 
   function resetTicketState() {
     setStep('draft')
@@ -200,6 +216,7 @@ export function OptionStrategyTicket({
 
         <div className="flex flex-col gap-4 px-4">
           {error ? <Alert variant="destructive">{error}</Alert> : null}
+          {warning ? <Alert>{warning}</Alert> : null}
 
           {step !== 'draft' && preview ? (
             <StrategyConfirmationPreview preview={preview} />
@@ -276,9 +293,12 @@ export function OptionStrategyTicket({
               </div>
 
               <Field>
-                <FieldLabel>Net limit price</FieldLabel>
+                <FieldLabel>
+                  {creditEntry ? 'Net limit credit' : 'Net limit price'}
+                </FieldLabel>
                 <Input
-                  aria-label="Net limit price"
+                  aria-label={creditEntry ? 'Net limit credit' : 'Net limit price'}
+                  min={creditEntry ? '0.01' : undefined}
                   step="0.01"
                   type="number"
                   value={limitPrice}
@@ -481,6 +501,8 @@ function validateDraft(
   legs: DraftOptionLeg[],
   account: string,
   limitPrice: number | null,
+  creditEntry: boolean,
+  displayedLimitPrice: number | null,
   takeProfitEnabled: boolean,
   takeProfitPrice: number | null,
   stopLossEnabled: boolean,
@@ -497,6 +519,9 @@ function validateDraft(
   }
   if (limitPrice === null) {
     return 'Enter a net limit price.'
+  }
+  if (creditEntry && displayedLimitPrice !== null && displayedLimitPrice <= 0) {
+    return 'Net limit credit must be greater than zero.'
   }
   if (takeProfitEnabled && takeProfitPrice === null) {
     return 'Enter a take profit price.'
@@ -524,6 +549,10 @@ function netStrategyPrice(legs: DraftOptionLeg[]) {
 
 function formatNetPrice(value: number) {
   return Number.isFinite(value) ? value.toFixed(2) : ''
+}
+
+function formatDisplayedNetPrice(value: number, creditEntry: boolean) {
+  return formatNetPrice(creditEntry ? Math.abs(value) : value)
 }
 
 function strategyTone(limitPrice: number | null) {

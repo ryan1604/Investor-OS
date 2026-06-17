@@ -1,6 +1,6 @@
 # Investor OS Frontend
 
-React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, Options Trade Tracker, Orders, Stock Analysis, and Rank Stocks workflows backed by the FastAPI service.
+React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, CSP/CC/CS screeners, Options Trade Tracker, Orders, Stock Analysis, and Rank Stocks workflows backed by the FastAPI service.
 
 ## Local Setup
 
@@ -40,7 +40,7 @@ If the variable is not set, the app uses `http://127.0.0.1:8000`.
 
 ## Application Loading
 
-`src/App.tsx` eagerly imports the six page modules into the current production bundle and conditionally mounts only the active page. Feature hooks and live subscriptions are therefore active only for the selected workflow. Portfolio is the default page; Options mounts Portfolio and Orders state because its tickets and chart overlays require them.
+`src/App.tsx` eagerly imports page modules into the current production bundle and conditionally mounts only the active page. Feature hooks and live subscriptions are therefore active only for the selected workflow. Portfolio is the default page; Options mounts Portfolio and Orders state because its tickets and chart overlays require them.
 
 On load, the Portfolio page fetches the current snapshot from:
 
@@ -107,6 +107,24 @@ WS /options/{ticker}/chart/ws
 Changing ticker or expiration closes the previous stream and opens a new one. Leaving the Options page closes the streams. Quote and Greek fields depend on the user's Interactive Brokers market-data subscriptions and delayed-data settings.
 
 The stock ticket supports explicit account selection, whole-share quantities, buy and sell actions, market or limit orders, and DAY or GTC time-in-force. The option strategy ticket supports signed option legs, required strategy limit prices, optional take-profit and stop-loss prices, order previews, and transmitted orders.
+
+## Options Screener Views
+
+CSP, CC, and CS screeners share one provider for durable settings, active jobs, completed snapshots, live progress, warnings, table sorting, and quote refresh before ticket opening.
+
+```text
+GET  /options-screeners/settings
+PUT  /options-screeners/settings/ticker-lists/{list_name}
+PUT  /options-screeners/settings/filters/{screener}
+GET  /options-screeners/state
+POST /options-screeners/scans/{screener}
+POST /options-screeners/scans/{job_id}/cancel
+POST /options-screeners/quotes/refresh
+POST /options-screeners/quotes/refresh-spread
+WS   /options-screeners/scans/ws
+```
+
+CSP and CC share a ticker list and single-leg result table patterns. CS has its own ticker list, spread filters, spread table columns, and two-leg ticket mapping. All three open the shared option-strategy ticket only after refreshing the selected row.
 
 ## Orders View
 
@@ -193,6 +211,7 @@ Trades and notes save independently so one response cannot discard unrelated dra
 ```text
 src/features/
 ├── options/                Options analysis, live chain/chart state, and tickets
+├── options-screeners/      CSP, CC, and CS scan pages, settings, live jobs, and result tables
 ├── options-trade-tracker/  Page root with components/, hooks/, and lib/ modules
 ├── orders/                 Active and terminal IB order management
 ├── portfolio/              Live portfolio plus manual account chart history

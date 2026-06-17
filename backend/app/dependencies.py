@@ -2,6 +2,8 @@ from fastapi import Request, WebSocket
 
 from app.ib.portfolio import PortfolioClient
 from app.options.factory import OptionsAnalysisClient
+from app.options_screeners.manager import OptionsScreenerScanManager
+from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.orders.service import OrderService
 from app.portfolio.chart_values_store import PortfolioChartValuesStore
@@ -36,6 +38,18 @@ def get_portfolio_chart_values_store(request: Request) -> PortfolioChartValuesSt
 
 def get_options_trade_tracker_store(request: Request) -> OptionsTradeTrackerStore:
     return request.app.state.options_trade_tracker_store
+
+
+def get_options_screener_settings_store(
+    request: Request | WebSocket,
+) -> OptionsScreenerSettingsStore:
+    return request.app.state.options_screener_settings_store
+
+
+def get_options_screener_scan_manager(
+    request: Request | WebSocket,
+) -> OptionsScreenerScanManager:
+    return request.app.state.options_screener_scan_manager
 
 
 def get_stock_analysis_store(request: Request) -> StockAnalysisStore:

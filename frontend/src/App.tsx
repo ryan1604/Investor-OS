@@ -9,6 +9,10 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
 import { OptionsPage } from '@/features/options/OptionsPage'
+import { CspScreenerPage } from '@/features/options-screeners/CspScreenerPage'
+import { CcScreenerPage } from '@/features/options-screeners/CcScreenerPage'
+import { CsScreenerPage } from '@/features/options-screeners/CsScreenerPage'
+import { OptionsScreenersProvider } from '@/features/options-screeners/OptionsScreenersProvider'
 import { OrdersPage } from '@/features/orders/OrdersPage'
 import { useOrders } from '@/features/orders/hooks/useOrders'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
@@ -19,6 +23,9 @@ import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
 export type AppPage =
   | 'portfolio'
   | 'options'
+  | 'csp-screener'
+  | 'cc-screener'
+  | 'cs-screener'
   | 'options-trade-tracker'
   | 'orders'
   | 'stock-analysis'
@@ -32,29 +39,37 @@ function App() {
 
   return (
     <TooltipProvider>
-      <SidebarProvider className="min-h-full">
-        <AppSidebar activePage={activePage} onPageChange={setActivePage} />
+      <OptionsScreenersProvider>
+        <SidebarProvider className="min-h-full">
+          <AppSidebar activePage={activePage} onPageChange={setActivePage} />
 
-        <SidebarInset className="min-w-0 p-6">
-          {activePage === 'portfolio' ? (
-            <PortfolioRoute
-              selectedAccount={selectedPortfolioAccount}
-              onSelectedAccountChange={setSelectedPortfolioAccount}
-            />
-          ) : activePage === 'options' ? (
-            <OptionsRoute selectedAccount={selectedPortfolioAccount} />
-          ) : activePage === 'orders' ? (
-            <OrdersRoute />
-          ) : activePage === 'options-trade-tracker' ? (
-            <OptionsTradeTrackerPage />
-          ) : activePage === 'stock-analysis' ? (
-            <StockAnalysisPage />
-          ) : (
-            <RankStocksPage />
-          )}
-        </SidebarInset>
-        <Toaster />
-      </SidebarProvider>
+          <SidebarInset className="min-w-0 p-6">
+            {activePage === 'portfolio' ? (
+              <PortfolioRoute
+                selectedAccount={selectedPortfolioAccount}
+                onSelectedAccountChange={setSelectedPortfolioAccount}
+              />
+            ) : activePage === 'options' ? (
+              <OptionsRoute selectedAccount={selectedPortfolioAccount} />
+            ) : activePage === 'csp-screener' ? (
+              <CspScreenerRoute selectedAccount={selectedPortfolioAccount} />
+            ) : activePage === 'cc-screener' ? (
+              <CcScreenerRoute selectedAccount={selectedPortfolioAccount} />
+            ) : activePage === 'cs-screener' ? (
+              <CsScreenerRoute selectedAccount={selectedPortfolioAccount} />
+            ) : activePage === 'orders' ? (
+              <OrdersRoute />
+            ) : activePage === 'options-trade-tracker' ? (
+              <OptionsTradeTrackerPage />
+            ) : activePage === 'stock-analysis' ? (
+              <StockAnalysisPage />
+            ) : (
+              <RankStocksPage />
+            )}
+          </SidebarInset>
+          <Toaster />
+        </SidebarProvider>
+      </OptionsScreenersProvider>
     </TooltipProvider>
   )
 }
@@ -84,6 +99,51 @@ function OptionsRoute({ selectedAccount }: { selectedAccount: string | null }) {
   return (
     <OptionsPage
       orders={orders}
+      portfolio={portfolioState.portfolio}
+      selectedAccount={selectedAccount}
+    />
+  )
+}
+
+function CspScreenerRoute({
+  selectedAccount,
+}: {
+  selectedAccount: string | null
+}) {
+  const portfolioState = usePortfolio()
+
+  return (
+    <CspScreenerPage
+      portfolio={portfolioState.portfolio}
+      selectedAccount={selectedAccount}
+    />
+  )
+}
+
+function CcScreenerRoute({
+  selectedAccount,
+}: {
+  selectedAccount: string | null
+}) {
+  const portfolioState = usePortfolio()
+
+  return (
+    <CcScreenerPage
+      portfolio={portfolioState.portfolio}
+      selectedAccount={selectedAccount}
+    />
+  )
+}
+
+function CsScreenerRoute({
+  selectedAccount,
+}: {
+  selectedAccount: string | null
+}) {
+  const portfolioState = usePortfolio()
+
+  return (
+    <CsScreenerPage
       portfolio={portfolioState.portfolio}
       selectedAccount={selectedAccount}
     />

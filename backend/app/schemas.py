@@ -496,6 +496,255 @@ class StockAnalysisPriceRefreshResponse(BaseModel):
     results: list[StockAnalysisPriceRefreshResult] = Field(default_factory=list)
 
 
+OptionsScreenerTickerList = Literal["csp_cc", "cs"]
+OptionsScreener = Literal["csp", "cc", "cs"]
+CreditSpreadStrategy = Literal["put_credit_spread", "call_credit_spread"]
+CreditSpreadWidth = Literal[1.0, 2.0, 2.5, 5.0, 10.0]
+
+
+class OptionsScreenerFilters(BaseModel):
+    version: int = Field(default=1, ge=1)
+    minimum_dte: int = 7
+    maximum_dte: int = 45
+    minimum_absolute_delta: float = 0.15
+    maximum_absolute_delta: float = 0.30
+    minimum_annualized_return: float = 10
+
+    @model_validator(mode="after")
+    def validate_ranges(self):
+        if not 1 <= self.minimum_dte <= self.maximum_dte:
+            raise ValueError(
+                "DTE range must satisfy 1 <= minimum_dte <= maximum_dte."
+            )
+        if not (
+            0
+            <= self.minimum_absolute_delta
+            <= self.maximum_absolute_delta
+            <= 1
+        ):
+            raise ValueError(
+                "Absolute delta range must satisfy "
+                "0 <= minimum_absolute_delta <= maximum_absolute_delta <= 1."
+            )
+        if (
+            not math.isfinite(self.minimum_annualized_return)
+            or self.minimum_annualized_return < 0
+        ):
+            raise ValueError("minimum_annualized_return must be finite and >= 0.")
+        return self
+
+
+class CreditSpreadScreenerFilters(OptionsScreenerFilters):
+    strategy_types: list[CreditSpreadStrategy] = Field(
+        default_factory=lambda: [
+            "put_credit_spread",
+            "call_credit_spread",
+        ]
+    )
+    spread_widths: list[CreditSpreadWidth] = Field(default_factory=lambda: [5.0])
+
+    @field_validator("strategy_types", "spread_widths")
+    @classmethod
+    def require_unique_selection(cls, value: list[Any]) -> list[Any]:
+        if not value:
+            raise ValueError("At least one value is required.")
+        if len(value) != len(set(value)):
+            raise ValueError("Duplicate values are not allowed.")
+        return value
+
+
+class OptionsScreenerTickerListRequest(BaseModel):
+    tickers: list[str] = Field(default_factory=list)
+
+
+class OptionsScreenerTickerListResponse(BaseModel):
+    list_name: OptionsScreenerTickerList
+    tickers: list[str] = Field(default_factory=list)
+
+
+class OptionsScreenerFilterSettings(BaseModel):
+    csp: OptionsScreenerFilters
+    cc: OptionsScreenerFilters
+    cs: CreditSpreadScreenerFilters
+
+
+class OptionsScreenerSettingsResponse(BaseModel):
+    ticker_lists: dict[OptionsScreenerTickerList, list[str]]
+    filters: OptionsScreenerFilterSettings
+
+
+class OptionContractIdentity(BaseModel):
+    con_id: int | None = None
+    local_symbol: str | None = None
+
+
+class CashSecuredPutCandidate(BaseModel):
+    strategy: Literal["csp"] = "csp"
+    ticker: str
+    annualized_return: float
+    stock_price: float
+    strike: float
+    expiration: str
+    dte: int
+    delta: float
+    bid: float
+    ask: float
+    discount_percentage: float
+    contract: OptionContractIdentity
+
+
+class CoveredCallCandidate(BaseModel):
+    strategy: Literal["cc"] = "cc"
+    ticker: str
+    annualized_return: float
+    stock_price: float
+    strike: float
+    expiration: str
+    dte: int
+    delta: float
+    bid: float
+    ask: float
+    gain_percentage: float
+    contract: OptionContractIdentity
+
+
+class CreditSpreadCandidate(BaseModel):
+    strategy: CreditSpreadStrategy
+    ticker: str
+    annualized_return: float
+    stock_price: float
+    short_strike: float
+    long_strike: float
+    expiration: str
+    dte: int
+    short_delta: float
+    net_bid: float
+    net_ask: float
+    distance_percentage: float
+    short_contract: OptionContractIdentity
+    long_contract: OptionContractIdentity
+
+
+ScreenerCandidate = Annotated[
+    CashSecuredPutCandidate | CoveredCallCandidate | CreditSpreadCandidate,
+    Field(discriminator="strategy"),
+]
+OptionsScreenerJobStatus = Literal[
+    "active",
+    "completed",
+    "cancelled",
+    "failed",
+]
+
+
+class OptionsScreenerTickerWarning(BaseModel):
+    ticker: str
+    category: Literal["excluded_contracts", "no_matches"]
+    message: str
+    count: int = Field(default=0, ge=0)
+
+
+class OptionsScreenerScanJob(BaseModel):
+    id: str
+    screener: OptionsScreener
+    status: OptionsScreenerJobStatus
+    tickers: list[str]
+    filters: OptionsScreenerFilters | CreditSpreadScreenerFilters
+    total_tickers: int
+    completed_tickers: int = 0
+    progress_message: str
+    successful_tickers: int = 0
+    no_match_tickers: int = 0
+    failed_tickers: int = 0
+    total_match_count: int = 0
+    excluded_contracts: int = 0
+    candidates: list[ScreenerCandidate] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[OptionsScreenerTickerWarning] = Field(default_factory=list)
+    started_at: str
+    finished_at: str | None = None
+    successful_completion_at: str | None = None
+
+
+class OptionsScreenerCompletedSnapshot(BaseModel):
+    screener: OptionsScreener
+    job_id: str
+    total_match_count: int = 0
+    excluded_contracts: int = 0
+    candidates: list[ScreenerCandidate] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[OptionsScreenerTickerWarning] = Field(default_factory=list)
+    completed_at: str
+
+
+class OptionsScreenerScanState(BaseModel):
+    active_job: OptionsScreenerScanJob | None = None
+    latest_jobs: dict[OptionsScreener, OptionsScreenerScanJob | None]
+    completed_snapshots: dict[
+        OptionsScreener,
+        OptionsScreenerCompletedSnapshot | None,
+    ]
+
+
+class OptionsScreenerScanEvent(BaseModel):
+    type: Literal["job_started", "job_updated", "job_finished"]
+    job: OptionsScreenerScanJob
+
+
+class OptionsScreenerQuoteRefreshRequest(BaseModel):
+    ticker: str
+    expiration: str
+    strike: float
+    right: Literal["CALL", "PUT"]
+    contract: OptionContractIdentity
+
+
+class OptionsScreenerQuoteRefreshResponse(BaseModel):
+    ticker: str
+    expiration: str
+    strike: float
+    right: Literal["CALL", "PUT"]
+    contract: OptionContractIdentity
+    bid: float
+    ask: float
+    midpoint: float
+    delta: float | None = None
+    refreshed_at: str
+
+
+class OptionsScreenerSpreadQuoteRefreshRequest(BaseModel):
+    strategy: CreditSpreadStrategy
+    ticker: str
+    expiration: str
+    short_strike: float
+    long_strike: float
+    short_contract: OptionContractIdentity
+    long_contract: OptionContractIdentity
+
+
+class OptionsScreenerSpreadQuoteRefreshResponse(BaseModel):
+    strategy: CreditSpreadStrategy
+    ticker: str
+    expiration: str
+    right: Literal["CALL", "PUT"]
+    short_strike: float
+    long_strike: float
+    short_contract: OptionContractIdentity
+    long_contract: OptionContractIdentity
+    short_bid: float
+    short_ask: float
+    short_midpoint: float
+    long_bid: float
+    long_ask: float
+    long_midpoint: float
+    short_delta: float | None = None
+    net_bid: float
+    net_ask: float
+    net_midpoint: float
+    maximum_loss: float
+    refreshed_at: str
+
+
 OrderAction = Literal["BUY", "SELL"]
 OrderTimeInForce = Literal["DAY", "GTC"]
 OrderType = Literal["MARKET", "LIMIT"]

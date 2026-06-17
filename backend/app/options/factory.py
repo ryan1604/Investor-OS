@@ -9,6 +9,7 @@ from app.ib.options import (
     IbOptionChainSnapshotProvider,
     IbOptionChainStreamProvider,
     IbOptionMetadataProvider,
+    IbOptionScannerProvider,
 )
 from app.ib.portfolio import PortfolioClient
 from app.options.client import (
@@ -83,6 +84,7 @@ def create_options_client(
         chain_provider=IbOptionChainSnapshotProvider(app),
         chain_stream_provider=IbOptionChainStreamProvider(app),
         historical_stream_provider=IbHistoricalDailyBarStreamProvider(app),
+        scanner_provider=IbOptionScannerProvider(app),
         chain_context_workers=settings.option_chain_context_workers,
         max_chain_stream_strikes=settings.max_option_chain_stream_strikes,
     )

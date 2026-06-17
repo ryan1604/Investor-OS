@@ -1,0 +1,1 @@
+"""Durable options screener settings."""

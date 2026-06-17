@@ -2,10 +2,9 @@ import asyncio
 import queue
 import threading
 from contextlib import suppress
+from typing import Any
 
 from fastapi import WebSocket
-
-from app.schemas import OrderStatusUpdate
 
 
 async def send_websocket_iterator(
@@ -57,7 +56,7 @@ async def wait_for_websocket_disconnect(websocket: WebSocket) -> None:
 
 async def send_queue_websocket_updates(
     websocket: WebSocket,
-    updates: queue.Queue[OrderStatusUpdate],
+    updates: queue.Queue[Any],
 ) -> None:
     disconnect_task = asyncio.create_task(wait_for_websocket_disconnect(websocket))
     next_message_task = None

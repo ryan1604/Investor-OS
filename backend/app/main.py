@@ -9,6 +9,17 @@ from app.ib.portfolio import IbPortfolioClient, PortfolioClient
 from app.ib.routes import router as ib_router
 from app.options.factory import OptionsAnalysisClient, create_options_client
 from app.options.routes import router as options_router
+from app.options_screeners.manager import OptionsScreenerScanManager
+from app.options_screeners.credit_spread import (
+    CombinedOptionsScreenerScanService,
+    CreditSpreadOptionsScreenerScanService,
+)
+from app.options_screeners.single_leg import SingleLegOptionsScreenerScanService
+from app.options_screeners.routes import router as options_screeners_router
+from app.options_screeners.service import (
+    OptionsScreenerService,
+)
+from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.options_trade_tracker.routes import router as options_trade_tracker_router
 from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.orders.routes import router as orders_router
@@ -49,6 +60,16 @@ def create_app(
         OptionsTradeTrackerStore,
     ]
     | None = None,
+    options_screener_settings_store_factory: Callable[
+        [Settings],
+        OptionsScreenerSettingsStore,
+    ]
+    | None = None,
+    options_screener_scan_service_factory: Callable[
+        [Settings],
+        OptionsScreenerService,
+    ]
+    | None = None,
 ) -> FastAPI:
     settings = get_settings()
 
@@ -80,6 +101,30 @@ def create_app(
             else OptionsTradeTrackerStore(
                 settings.options_trade_trackers_database_path
             )
+        )
+        app.state.options_screener_settings_store = (
+            options_screener_settings_store_factory(settings)
+            if options_screener_settings_store_factory
+            else OptionsScreenerSettingsStore(
+                settings.options_screeners_database_path
+            )
+        )
+        options_screener_scan_service = (
+            options_screener_scan_service_factory(settings)
+            if options_screener_scan_service_factory
+            else CombinedOptionsScreenerScanService(
+                SingleLegOptionsScreenerScanService(app.state.options_client),
+                CreditSpreadOptionsScreenerScanService(app.state.options_client),
+            )
+        )
+        app.state.options_screener_scan_manager = OptionsScreenerScanManager(
+            app.state.options_screener_settings_store,
+            options_screener_scan_service,
+            max_workers=settings.max_concurrent_options_screener_tickers,
+            retention_minutes=settings.options_screener_job_retention_minutes,
+            subscriber_queue_size=(
+                settings.options_screener_subscriber_queue_size
+            ),
         )
         app.state.request_limiters = {
             "options_analysis": RequestLimiter(
@@ -126,6 +171,7 @@ def create_app(
         app.state.portfolio_refresh_service.start()
         yield
         await app.state.portfolio_refresh_service.stop()
+        app.state.options_screener_scan_manager.shutdown()
         if hasattr(app.state.options_client, "shutdown"):
             app.state.options_client.shutdown()
         client.stop()
@@ -141,6 +187,7 @@ def create_app(
     api.include_router(ib_router)
     api.include_router(portfolio_router)
     api.include_router(options_router)
+    api.include_router(options_screeners_router)
     api.include_router(options_trade_tracker_router)
     api.include_router(orders_router)
     api.include_router(stock_analysis_router)

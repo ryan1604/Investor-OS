@@ -1,6 +1,6 @@
 # Investor OS Backend
 
-FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi`, serves portfolio data, options analysis, order entry and order state, manual stock-analysis models, portfolio chart history, and Options Trade Tracker workspaces.
+FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi`, serves portfolio data, options analysis, options screeners, order entry and order state, manual stock-analysis models, portfolio chart history, and Options Trade Tracker workspaces.
 
 ## Local Setup
 
@@ -27,6 +27,7 @@ Settings.ib_host = "127.0.0.1"
 Settings.ib_port = 7496
 Settings.ib_client_id = 1
 Settings.options_database_path = "data/options.sqlite3"
+Settings.options_screeners_database_path = "data/options_screeners.sqlite3"
 Settings.options_trade_trackers_database_path = "data/options_trade_trackers.sqlite3"
 Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
@@ -38,13 +39,15 @@ Settings.allowed_origins = [
 
 `Settings.options_database_path` stores the SQLite completed daily-bar cache used by the Options analysis endpoints. The `data/` directory is runtime-local and ignored by git. Completed bars are cached by ticker and trading date; the current trading day is fetched separately and is not finalized into the cache.
 
+`Settings.options_screeners_database_path` stores durable CSP/CC and CS ticker lists plus independent saved filters for the CSP, CC, and CS screeners. Scan jobs and completed result snapshots are in-memory only.
+
 `Settings.stock_analysis_database_path` stores saved manual Stock Analysis scenario models. The store keeps bull, base, and bear payloads per ticker in the runtime-local `data/stock_analysis.sqlite3` database.
 
 `Settings.portfolio_chart_values_database_path` stores manual account-scoped Portfolio history by month. Replacing one account's rows is transactional and does not affect other accounts.
 
 `Settings.options_trade_trackers_database_path` stores named trackers, tracker-scoped trade rows and notes, and global strategy options. Trade row identity is scoped by tracker, and startup migrates the legacy global row-id schema when present.
 
-All four local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization and the tracker compatibility migration are handled by the stores.
+All five local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization and compatibility migrations are handled by the stores.
 
 ## Portfolio API
 
@@ -76,6 +79,24 @@ The analysis endpoint returns daily candles, Bollinger Bands, RSI, the latest un
 The chain WebSocket subscribes to IB market data for calls and puts in the active ticker, selected expiration, and bounded strike range. It sends a snapshot followed by row updates as ticks arrive, then cancels those IB market-data subscriptions when the WebSocket disconnects. Quote and Greek availability depends on the user's IB market-data subscriptions and delayed-data settings.
 
 The chart WebSocket streams latest chart data for the active ticker.
+
+## Options Screeners API
+
+```text
+GET  /options-screeners/settings
+PUT  /options-screeners/settings/ticker-lists/{list_name}
+PUT  /options-screeners/settings/filters/{screener}
+GET  /options-screeners/state
+GET  /options-screeners/jobs/{job_id}
+GET  /options-screeners/snapshots/{screener}
+POST /options-screeners/scans/{screener}
+POST /options-screeners/scans/{job_id}/cancel
+POST /options-screeners/quotes/refresh
+POST /options-screeners/quotes/refresh-spread
+WS   /options-screeners/scans/ws
+```
+
+CSP and CC share one ticker list; CS has its own. Filters are durable per screener. Scan jobs, progress, completed snapshots, and warnings are retained in memory while the backend process is running. Quote refresh endpoints reprice selected rows before the frontend opens an option-strategy ticket.
 
 ## Orders API
 

@@ -3,14 +3,23 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 import logging
-from threading import Event
+from threading import Event, Lock
 from time import perf_counter
 
 from ibapi.contract import Contract
 
 from app.ib.app import IB_INVALID_CONTRACT_CODES, US_MARKET_TIME_ZONE, IbPortfolioApp
-from app.ib.contracts import us_equity_contract, us_option_contract
-from app.options.client import OptionsDataUnavailable
+from app.ib.contracts import (
+    us_equity_contract,
+    us_option_contract,
+    us_option_universe_contract,
+)
+from app.options.client import (
+    OptionsDataUnavailable,
+    ScannerContractSelection,
+    ScannerOptionContract,
+    ScannerOptionQuote,
+)
 from app.options.domain import OptionMetadata, to_option_quote
 from app.options.store import CompletedDailyBar
 from app.tickers import normalize_ticker
@@ -432,6 +441,395 @@ class IbOptionChainStreamProvider:
                 )
         finally:
             subscriptions.close()
+
+
+class IbOptionScannerProvider:
+    def __init__(
+        self,
+        app: IbPortfolioApp,
+        *,
+        contract_timeout_seconds: float = 8,
+        quote_wait_seconds: float = 4,
+        quote_batch_size: int = 40,
+    ) -> None:
+        self.app = app
+        self.contract_timeout_seconds = contract_timeout_seconds
+        self.quote_wait_seconds = quote_wait_seconds
+        self.quote_batch_size = max(1, quote_batch_size)
+        self.active_req_ids: set[int] = set()
+        self.active_req_ids_lock = Lock()
+
+    def fetch_option_contracts(
+        self,
+        ticker: str,
+        expirations: list[str],
+        strikes: list[float],
+        right: str,
+        cancel_event: Event,
+    ) -> ScannerContractSelection:
+        if not self.app.isConnected():
+            raise OptionsDataUnavailable(
+                "Options scanning is unavailable while IB is disconnected."
+            )
+
+        normalized_ticker = normalize_ticker(ticker)
+        allowed_strikes = set(strikes)
+        contracts: list[ScannerOptionContract] = []
+        excluded_contracts = 0
+        for expiration in expirations:
+            if cancel_event.is_set():
+                break
+            selection = self._fetch_expiration_contracts(
+                normalized_ticker,
+                expiration,
+                allowed_strikes,
+                right,
+            )
+            contracts.extend(selection.contracts)
+            excluded_contracts += selection.excluded_contracts
+        return ScannerContractSelection(
+            contracts=contracts,
+            excluded_contracts=excluded_contracts,
+        )
+
+    def fetch_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+        cancel_event: Event,
+    ) -> list[ScannerOptionQuote]:
+        quotes: list[ScannerOptionQuote] = []
+        for start in range(0, len(contracts), self.quote_batch_size):
+            if cancel_event.is_set():
+                break
+            quotes.extend(
+                self._fetch_quote_batch(
+                    contracts[start : start + self.quote_batch_size],
+                    cancel_event,
+                )
+            )
+        return quotes
+
+    def refresh_quote(
+        self,
+        *,
+        ticker: str,
+        expiration: str,
+        strike: float,
+        right: str,
+        con_id: int | None,
+        local_symbol: str | None,
+    ) -> ScannerOptionQuote:
+        if not self.app.isConnected():
+            raise OptionsDataUnavailable(
+                "Option quote refresh is unavailable while IB is disconnected."
+            )
+
+        normalized_ticker = normalize_ticker(ticker)
+        contracts = self._resolve_option_contracts(
+            normalized_ticker,
+            expiration,
+            strike,
+            right,
+        )
+        selected = select_refreshed_contract(
+            contracts,
+            con_id=con_id,
+            local_symbol=local_symbol,
+        )
+        if selected is None:
+            raise OptionsDataUnavailable(
+                "The selected option contract can no longer be resolved."
+            )
+
+        quotes = self._fetch_quote_batch([selected], Event())
+        if not quotes:
+            raise OptionsDataUnavailable(
+                "The selected option contract could not be quoted."
+            )
+        return quotes[0]
+
+    def cancel(self) -> None:
+        with self.active_req_ids_lock:
+            req_ids = list(self.active_req_ids)
+        for req_id in req_ids:
+            self.app.cancelMktData(req_id)
+
+    def _fetch_expiration_contracts(
+        self,
+        ticker: str,
+        expiration: str,
+        allowed_strikes: set[float],
+        right: str,
+    ) -> ScannerContractSelection:
+        with self.app.lock:
+            req_id = self.app.next_contract_details_req_id
+            self.app.next_contract_details_req_id += 1
+            self.app.contract_details[req_id] = []
+            ready = Event()
+            self.app.contract_details_ready_by_req_id[req_id] = ready
+
+        self.app.reqContractDetails(
+            req_id,
+            us_option_universe_contract(
+                ticker,
+                expiration=expiration,
+                right=right,
+            ),
+        )
+        completed = ready.wait(timeout=self.contract_timeout_seconds)
+        with self.app.lock:
+            details = self.app.contract_details.pop(req_id, [])
+            self.app.contract_details_ready_by_req_id.pop(req_id, None)
+
+        raise_invalid_ticker_if_needed(self.app, req_id, ticker)
+        if not completed:
+            raise OptionsDataUnavailable(
+                f"Option contract request timed out for {ticker} {expiration}."
+            )
+
+        contracts = [
+            scanner_contract(detail.contract)
+            for detail in details
+            if is_standard_option_contract(
+                detail.contract,
+                ticker=ticker,
+                expiration=expiration,
+                allowed_strikes=allowed_strikes,
+                right=right,
+            )
+        ]
+        return ScannerContractSelection(
+            contracts=contracts,
+            excluded_contracts=len(details) - len(contracts),
+        )
+
+    def _resolve_option_contracts(
+        self,
+        ticker: str,
+        expiration: str,
+        strike: float,
+        right: str,
+    ) -> list[ScannerOptionContract]:
+        with self.app.lock:
+            req_id = self.app.next_contract_details_req_id
+            self.app.next_contract_details_req_id += 1
+            self.app.contract_details[req_id] = []
+            ready = Event()
+            self.app.contract_details_ready_by_req_id[req_id] = ready
+
+        self.app.reqContractDetails(
+            req_id,
+            us_option_contract(
+                ticker,
+                expiration=expiration,
+                strike=strike,
+                right=right,
+            ),
+        )
+        completed = ready.wait(timeout=self.contract_timeout_seconds)
+        with self.app.lock:
+            details = self.app.contract_details.pop(req_id, [])
+            self.app.contract_details_ready_by_req_id.pop(req_id, None)
+
+        raise_invalid_ticker_if_needed(self.app, req_id, ticker)
+        if not completed:
+            raise OptionsDataUnavailable(
+                f"Option contract request timed out for {ticker} {expiration}."
+            )
+
+        return [
+            scanner_contract(detail.contract)
+            for detail in details
+            if is_exact_standard_option_contract(
+                detail.contract,
+                ticker=ticker,
+                expiration=expiration,
+                strike=strike,
+                right=right,
+            )
+        ]
+
+    def _fetch_quote_batch(
+        self,
+        contracts: list[ScannerOptionContract],
+        cancel_event: Event,
+    ) -> list[ScannerOptionQuote]:
+        req_ids: dict[int, ScannerOptionContract] = {}
+        requests = []
+        with self.app.lock:
+            self.app.option_market_data_ready.clear()
+            for contract in contracts:
+                req_id = self.app.next_option_market_req_id
+                self.app.next_option_market_req_id += 1
+                self.app.option_market_req_to_key[req_id] = contract.con_id
+                self.app.option_market_data[req_id] = {}
+                req_ids[req_id] = contract
+                requests.append(
+                    (
+                        req_id,
+                        scanner_market_data_contract(contract),
+                        OPTION_MARKET_DATA_GENERIC_TICKS,
+                        False,
+                        False,
+                        [],
+                    )
+                )
+
+        with self.active_req_ids_lock:
+            self.active_req_ids.update(req_ids)
+        try:
+            self.app.reqMarketDataType(3)
+            for request in requests:
+                self.app.reqMktData(*request)
+            cancel_event.wait(self.quote_wait_seconds)
+            with self.app.lock:
+                values_by_req_id = {
+                    req_id: self.app.option_market_data.get(req_id, {}).copy()
+                    for req_id in req_ids
+                }
+            return [
+                ScannerOptionQuote(
+                    contract=contract,
+                    bid=clean_quote_value(values_by_req_id[req_id].get("bid")),
+                    ask=clean_quote_value(values_by_req_id[req_id].get("ask")),
+                    delta=clean_quote_value(values_by_req_id[req_id].get("delta")),
+                )
+                for req_id, contract in req_ids.items()
+            ]
+        finally:
+            for req_id in req_ids:
+                self.app.cancelMktData(req_id)
+            with self.app.lock:
+                for req_id in req_ids:
+                    self.app.option_market_req_to_key.pop(req_id, None)
+                    self.app.option_market_data.pop(req_id, None)
+            with self.active_req_ids_lock:
+                self.active_req_ids.difference_update(req_ids)
+
+
+def is_standard_option_contract(
+    contract: Contract,
+    *,
+    ticker: str,
+    expiration: str,
+    allowed_strikes: set[float],
+    right: str,
+) -> bool:
+    return (
+        contract.secType == "OPT"
+        and contract.symbol == ticker
+        and contract.currency == "USD"
+        and contract.right in {right, "PUT" if right == "P" else "CALL"}
+        and contract.multiplier == "100"
+        and contract.lastTradeDateOrContractMonth[:8]
+        == expiration.replace("-", "")
+        and contract.strike in allowed_strikes
+        and contract.strike > 0
+        and contract.tradingClass == ticker
+        and contract.conId > 0
+        and bool(contract.localSymbol)
+    )
+
+
+def is_exact_standard_option_contract(
+    contract: Contract,
+    *,
+    ticker: str,
+    expiration: str,
+    strike: float,
+    right: str,
+) -> bool:
+    return (
+        contract.secType == "OPT"
+        and contract.symbol == ticker
+        and contract.currency == "USD"
+        and contract.right in {right, "PUT" if right == "P" else "CALL"}
+        and contract.multiplier == "100"
+        and contract.lastTradeDateOrContractMonth[:8]
+        == expiration.replace("-", "")
+        and contract.strike == strike
+        and contract.tradingClass == ticker
+        and contract.conId > 0
+        and bool(contract.localSymbol)
+    )
+
+
+def select_refreshed_contract(
+    contracts: list[ScannerOptionContract],
+    *,
+    con_id: int | None,
+    local_symbol: str | None,
+) -> ScannerOptionContract | None:
+    if con_id is not None:
+        matched_con_id = next(
+            (contract for contract in contracts if contract.con_id == con_id),
+            None,
+        )
+        if matched_con_id is not None:
+            return matched_con_id
+    if local_symbol:
+        matched_local_symbol = next(
+            (
+                contract
+                for contract in contracts
+                if contract.local_symbol == local_symbol
+            ),
+            None,
+        )
+        if matched_local_symbol is not None:
+            return matched_local_symbol
+    return min(
+        contracts,
+        key=lambda contract: (
+            0 if contract.exchange == "SMART" else 1,
+            contract.con_id,
+        ),
+        default=None,
+    )
+
+
+def scanner_contract(contract: Contract) -> ScannerOptionContract:
+    return ScannerOptionContract(
+        con_id=contract.conId,
+        ticker=contract.symbol,
+        expiration=(
+            f"{contract.lastTradeDateOrContractMonth[:4]}-"
+            f"{contract.lastTradeDateOrContractMonth[4:6]}-"
+            f"{contract.lastTradeDateOrContractMonth[6:8]}"
+        ),
+        strike=contract.strike,
+        right=contract.right,
+        exchange=contract.exchange or "SMART",
+        currency=contract.currency,
+        multiplier=contract.multiplier,
+        trading_class=contract.tradingClass,
+        local_symbol=contract.localSymbol,
+    )
+
+
+def scanner_market_data_contract(contract: ScannerOptionContract) -> Contract:
+    ib_contract = Contract()
+    ib_contract.conId = contract.con_id
+    ib_contract.symbol = contract.ticker
+    ib_contract.secType = "OPT"
+    ib_contract.exchange = "SMART"
+    ib_contract.currency = contract.currency
+    ib_contract.lastTradeDateOrContractMonth = contract.expiration.replace("-", "")
+    ib_contract.strike = contract.strike
+    ib_contract.right = contract.right
+    ib_contract.multiplier = contract.multiplier
+    ib_contract.tradingClass = contract.trading_class
+    ib_contract.localSymbol = contract.local_symbol
+    return ib_contract
+
+
+def clean_quote_value(value: float | int | None) -> float | None:
+    if value is None:
+        return None
+    next_value = float(value)
+    if abs(next_value) > 1e100:
+        return None
+    return next_value
 
 
 class OptionMarketDataSubscriptions:

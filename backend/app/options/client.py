@@ -194,6 +194,80 @@ class OptionChainStreamProvider(Protocol):
 
 
 @dataclass(frozen=True)
+class ScannerOptionContract:
+    con_id: int
+    ticker: str
+    expiration: str
+    strike: float
+    right: str
+    exchange: str
+    currency: str
+    multiplier: str
+    trading_class: str
+    local_symbol: str
+
+
+@dataclass(frozen=True)
+class ScannerOptionQuote:
+    contract: ScannerOptionContract
+    bid: float | None
+    ask: float | None
+    delta: float | None
+
+
+@dataclass(frozen=True)
+class ScannerContractSelection:
+    contracts: list[ScannerOptionContract]
+    excluded_contracts: int = 0
+
+
+class OptionScannerProvider(Protocol):
+    def fetch_option_contracts(
+        self,
+        ticker: str,
+        expirations: list[str],
+        strikes: list[float],
+        right: str,
+        cancel_event: Event,
+    ) -> ScannerContractSelection:
+        ...
+
+    def fetch_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+        cancel_event: Event,
+    ) -> list[ScannerOptionQuote]:
+        ...
+
+    def refresh_quote(
+        self,
+        *,
+        ticker: str,
+        expiration: str,
+        strike: float,
+        right: str,
+        con_id: int | None,
+        local_symbol: str | None,
+    ) -> ScannerOptionQuote:
+        ...
+
+    def cancel(self) -> None:
+        ...
+
+
+@dataclass(frozen=True)
+class FullOptionChainSnapshot:
+    ticker: str
+    underlying_price: float
+    underlying_price_captured_at: datetime
+    contracts: list[ScannerOptionQuote]
+    excluded_contracts: int = 0
+
+
+FullPutChainSnapshot = FullOptionChainSnapshot
+
+
+@dataclass(frozen=True)
 class DailyBarsResult:
     ticker: str
     completed_bars: list[StoredDailyBar]
@@ -227,6 +301,7 @@ class OptionsClient:
         chain_provider: OptionChainSnapshotProvider,
         chain_stream_provider: OptionChainStreamProvider,
         historical_stream_provider: HistoricalDailyBarStreamProvider,
+        scanner_provider: OptionScannerProvider | None = None,
         current_date_provider: Callable[[], date] = current_us_market_date,
         chain_context_workers: int = 2,
         max_chain_stream_strikes: int = 80,
@@ -238,6 +313,7 @@ class OptionsClient:
         self.chain_provider = chain_provider
         self.chain_stream_provider = chain_stream_provider
         self.historical_stream_provider = historical_stream_provider
+        self.scanner_provider = scanner_provider
         self.current_date_provider = current_date_provider
         self.max_chain_stream_strikes = max(1, max_chain_stream_strikes)
         self.chain_context_executor = ThreadPoolExecutor(
@@ -246,7 +322,116 @@ class OptionsClient:
         )
 
     def shutdown(self) -> None:
+        if self.scanner_provider is not None:
+            self.scanner_provider.cancel()
         self.chain_context_executor.shutdown(wait=False, cancel_futures=True)
+
+    def get_full_option_chain(
+        self,
+        ticker: str,
+        *,
+        right: str,
+        minimum_dte: int,
+        maximum_dte: int,
+        cancel_event: Event,
+        current_date: date | None = None,
+    ) -> FullOptionChainSnapshot:
+        if self.scanner_provider is None:
+            raise OptionsDataUnavailable(
+                "Options scanner provider is not configured."
+            )
+
+        normalized_ticker = normalize_ticker(ticker)
+        if not normalized_ticker:
+            raise OptionsDataUnavailable("Ticker is required.")
+
+        as_of_date = current_date or self.current_date_provider()
+        underlying_price = self.get_underlying_price(
+            normalized_ticker,
+            current_date=as_of_date,
+        )
+        captured_at = datetime.now(US_MARKET_TIME_ZONE)
+        metadata = self.metadata_provider.fetch_option_metadata(normalized_ticker)
+        expirations = [
+            expiration
+            for expiration in sorted_expirations(metadata.expirations)
+            if minimum_dte
+            <= days_to_expiration(expiration, as_of_date)
+            <= maximum_dte
+        ]
+        strikes = [
+            strike
+            for strike in metadata.strikes
+            if (
+                strike < underlying_price
+                if right == "P"
+                else strike > underlying_price
+            )
+        ]
+        selection = self.scanner_provider.fetch_option_contracts(
+            normalized_ticker,
+            expirations,
+            strikes,
+            right,
+            cancel_event,
+        )
+        quotes = self.scanner_provider.fetch_quotes(
+            selection.contracts,
+            cancel_event,
+        )
+        return FullOptionChainSnapshot(
+            ticker=normalized_ticker,
+            underlying_price=underlying_price,
+            underlying_price_captured_at=captured_at,
+            contracts=quotes,
+            excluded_contracts=selection.excluded_contracts,
+        )
+
+    def get_full_put_chain(
+        self,
+        ticker: str,
+        *,
+        minimum_dte: int,
+        maximum_dte: int,
+        cancel_event: Event,
+        current_date: date | None = None,
+    ) -> FullOptionChainSnapshot:
+        return self.get_full_option_chain(
+            ticker,
+            right="P",
+            minimum_dte=minimum_dte,
+            maximum_dte=maximum_dte,
+            cancel_event=cancel_event,
+            current_date=current_date,
+        )
+
+    def cancel_scanner(self) -> None:
+        if self.scanner_provider is not None:
+            self.scanner_provider.cancel()
+
+    def refresh_option_quote(
+        self,
+        *,
+        ticker: str,
+        expiration: str,
+        strike: float,
+        right: str,
+        con_id: int | None,
+        local_symbol: str | None,
+    ) -> ScannerOptionQuote:
+        if self.scanner_provider is None:
+            raise OptionsDataUnavailable(
+                "Options scanner provider is not configured."
+            )
+
+        return self.scanner_provider.refresh_quote(
+            ticker=normalize_ticker(ticker),
+            expiration=expiration,
+            strike=strike,
+            right=right,
+            con_id=con_id,
+            local_symbol=local_symbol,
+        )
 
     def get_analysis(
         self,

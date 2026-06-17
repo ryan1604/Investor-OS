@@ -7,6 +7,8 @@ from fastapi import FastAPI
 from app.config import Settings
 from app.main import create_app
 from app.options_trade_tracker.store import OptionsTradeTrackerStore
+from app.options_screeners.store import OptionsScreenerSettingsStore
+from app.options_screeners.service import OptionsScreenerService
 from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
 from app.stock_analysis.store import StockAnalysisStore
@@ -155,6 +157,8 @@ def make_api(
     stock_analysis_database_path: str | Path | None = None,
     portfolio_chart_values_database_path: str | Path | None = None,
     options_trade_tracker_database_path: str | Path | None = None,
+    options_screeners_database_path: str | Path | None = None,
+    options_screener_scan_service: OptionsScreenerService | None = None,
 ) -> FastAPI:
     explicit_portfolio_client = portfolio_client or FakePortfolioClient()
 
@@ -176,6 +180,14 @@ def make_api(
             options_trade_tracker_database_path,
         )
 
+    options_screener_settings_store_factory = None
+    if options_screeners_database_path is not None:
+        options_screener_settings_store_factory = (
+            lambda _settings: OptionsScreenerSettingsStore(
+                options_screeners_database_path,
+            )
+        )
+
     return create_app(
         lambda _settings: explicit_portfolio_client,
         options_client_factory=(
@@ -186,4 +198,12 @@ def make_api(
         stock_analysis_store_factory=stock_analysis_store_factory,
         portfolio_chart_values_store_factory=portfolio_chart_values_store_factory,
         options_trade_tracker_store_factory=options_trade_tracker_store_factory,
+        options_screener_settings_store_factory=(
+            options_screener_settings_store_factory
+        ),
+        options_screener_scan_service_factory=(
+            (lambda _settings: options_screener_scan_service)
+            if options_screener_scan_service is not None
+            else None
+        ),
     )

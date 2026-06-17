@@ -56,6 +56,22 @@ vi.mock('@/features/rank-stocks/RankStocksPage', () => ({
   RankStocksPage: () => <main>Rank stocks route</main>,
 }))
 
+vi.mock('@/features/options-screeners/OptionsScreenersProvider', () => ({
+  OptionsScreenersProvider: ({ children }: { children: React.ReactNode }) => children,
+}))
+
+vi.mock('@/features/options-screeners/CspScreenerPage', () => ({
+  CspScreenerPage: () => <main>CSP screener route</main>,
+}))
+
+vi.mock('@/features/options-screeners/CcScreenerPage', () => ({
+  CcScreenerPage: () => <main>CC screener route</main>,
+}))
+
+vi.mock('@/features/options-screeners/CsScreenerPage', () => ({
+  CsScreenerPage: () => <main>CS screener route</main>,
+}))
+
 afterEach(() => {
   cleanup()
 })
@@ -69,6 +85,15 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('Options'))
     expect(await screen.findByText('Options route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('CSP Screener'))
+    expect(await screen.findByText('CSP screener route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('CC Screener'))
+    expect(await screen.findByText('CC screener route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('CS Screener'))
+    expect(await screen.findByText('CS screener route')).toBeTruthy()
 
     fireEvent.click(screen.getByText('Orders'))
     expect(await screen.findByText('Orders route')).toBeTruthy()

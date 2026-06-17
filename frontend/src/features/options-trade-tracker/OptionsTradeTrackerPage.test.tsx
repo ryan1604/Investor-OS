@@ -187,7 +187,7 @@ describe('OptionsTradeTrackerPage', () => {
     expect(screen.getAllByText('Income').length).toBeGreaterThan(0)
 
     fireEvent.click(screen.getByRole('tab', { name: 'Trades' }))
-    expect(screen.getByRole('button', { name: 'Add row' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Add row' })).toBeTruthy()
     expect(screen.getAllByText('Income').length).toBeGreaterThan(0)
   })
 
@@ -289,7 +289,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
 
     setFirstStrategy('WHEEL')
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
@@ -304,7 +304,7 @@ describe('OptionsTradeTrackerPage', () => {
     fireEvent.change(screen.getByLabelText(/Credit debit row/), {
       target: { value: '1.5' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
 
     expect((screen.getAllByLabelText(/Ticker row/)[0] as HTMLInputElement).value).toBe(
       'AAPL',
@@ -351,7 +351,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     openSelect(/Strategy row/)
     fireEvent.click(await screen.findByText('Add strategy'))
     fireEvent.change(screen.getByLabelText('Strategy name'), {
@@ -381,7 +381,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     setFirstStrategy('WHEEL')
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
@@ -406,7 +406,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     setFirstStatus('Completed')
     fireEvent.click(screen.getByRole('button', { name: 'Save trades' }))
 
@@ -420,7 +420,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     setFirstStrategy('WHEEL')
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'AAPL' },
@@ -471,7 +471,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
     })
@@ -501,7 +501,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
     })
@@ -535,7 +535,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
     })
@@ -624,7 +624,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
     })
@@ -664,9 +664,11 @@ describe('OptionsTradeTrackerPage', () => {
     openSelect('Select tracker')
     fireEvent.click(await screen.findByText('Growth'))
     expect(await screen.findByDisplayValue('Growth notes')).toBeTruthy()
-    expect(
-      vi.mocked(updateOptionsTradeTrackerNotes).mock.calls[0][2]?.aborted,
-    ).toBe(true)
+    await waitFor(() => {
+      expect(
+        vi.mocked(updateOptionsTradeTrackerNotes).mock.calls[0][2]?.aborted,
+      ).toBe(true)
+    })
 
     notesSave.resolve(trackerDetail(incomeTracker, 'Saved too late', 'AAPL'))
     await act(async () => {
@@ -689,7 +691,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.click(screen.getByRole('button', { name: 'Add row' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
       target: { value: 'aapl' },
     })

@@ -5,6 +5,7 @@ import {
   ClipboardList,
   ListOrdered,
   ListChecks,
+  Radar,
 } from 'lucide-react'
 
 import type { AppPage } from '@/App'
@@ -40,14 +41,29 @@ const navigationItems: {
     icon: ChartCandlestick,
   },
   {
-    page: 'options-trade-tracker',
-    label: 'Options Trade Tracker',
-    icon: ClipboardList,
-  },
-  {
     page: 'orders',
     label: 'Orders',
     icon: ListChecks,
+  },
+  {
+    page: 'csp-screener',
+    label: 'CSP Screener',
+    icon: Radar,
+  },
+  {
+    page: 'cc-screener',
+    label: 'CC Screener',
+    icon: Radar,
+  },
+  {
+    page: 'cs-screener',
+    label: 'CS Screener',
+    icon: Radar,
+  },
+  {
+    page: 'options-trade-tracker',
+    label: 'Options Trade Tracker',
+    icon: ClipboardList,
   },
   {
     page: 'stock-analysis',

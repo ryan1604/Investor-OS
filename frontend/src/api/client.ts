@@ -30,6 +30,14 @@ export async function responseErrorMessage(response: Response, label: string) {
     if (typeof payload.detail === 'string' && payload.detail) {
       return payload.detail
     }
+    if (
+      payload.detail &&
+      typeof payload.detail === 'object' &&
+      'message' in payload.detail &&
+      typeof payload.detail.message === 'string'
+    ) {
+      return payload.detail.message
+    }
   } catch {
     // Fall back to the status code below.
   }
