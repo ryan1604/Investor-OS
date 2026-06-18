@@ -9,6 +9,7 @@ from app.schemas import (
     OptionsScreenerQuoteRefreshResponse,
     OptionsScreenerSpreadQuoteRefreshResponse,
 )
+from app.options_screeners.service import OptionsScreenerTickerResult
 from conftest import make_api
 
 
@@ -31,8 +32,8 @@ class ApiScanService:
         self.started.set()
         while not self.release.wait(0.01):
             if cancel_event.is_set():
-                return []
-        return self.results.get(ticker, [])
+                return OptionsScreenerTickerResult()
+        return self.results.get(ticker, OptionsScreenerTickerResult())
 
     def cancel(self):
         self.cancel_calls += 1
@@ -127,7 +128,9 @@ def test_websocket_disconnect_does_not_cancel_active_job(tmp_path):
 
 def test_live_websocket_emits_progress_and_finished_events(tmp_path):
     service = ApiScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     api = scan_api(tmp_path, service)
 
     with TestClient(api) as client:
@@ -150,7 +153,9 @@ def test_live_websocket_emits_progress_and_finished_events(tmp_path):
 
 def test_successful_zero_match_and_fatal_scan_snapshot_behavior_via_api(tmp_path):
     service = ApiScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     api = scan_api(tmp_path, service)
 
     with TestClient(api) as client:

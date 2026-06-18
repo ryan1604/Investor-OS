@@ -15,7 +15,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.main import create_app
+from app.main import AppFactories, create_app
 from app.schemas import (
     BollingerBandPoint,
     IbStatus,
@@ -280,14 +280,14 @@ def run_baseline(
         ignore_cleanup_errors=True,
     ) as directory:
         database_path = Path(directory) / "stock-analysis.sqlite3"
-        api = create_app(
-            lambda _settings: portfolio_client,
-            options_client_factory=lambda _settings, _client: options_client,
-            stock_analysis_store_factory=stock_analysis_store_factory(
+        api = create_app(AppFactories(
+            client=lambda _settings: portfolio_client,
+            options_client=lambda _settings, _client: options_client,
+            stock_analysis_store=stock_analysis_store_factory(
                 database_path,
                 recorder,
             ),
-        )
+        ))
 
         with TestClient(api) as client:
             time.sleep(0.05)

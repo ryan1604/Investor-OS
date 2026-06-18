@@ -277,8 +277,6 @@ class OptionsScreenerScanManager:
                     filters,
                     cancel_event,
                 )
-                if isinstance(result, list):
-                    result = OptionsScreenerTickerResult(candidates=result)
                 if cancel_event.is_set():
                     return
                 self._record_ticker_result(job_id, ticker, result)
@@ -299,31 +297,12 @@ class OptionsScreenerScanManager:
             job = self.jobs[job_id]
             if job.status != "active":
                 return
-            job.completed_tickers += 1
-            job.progress_message = (
-                f"{job.completed_tickers} of {job.total_tickers} tickers scanned"
-            )
+            self._record_ticker_progress_locked(job)
             job.excluded_contracts += result.excluded_contracts
             job.warnings.extend(result.warnings)
             job.total_match_count += len(result.candidates)
-            if result.candidates:
-                job.successful_tickers += 1
-                job.candidates = sort_candidates(
-                    [*job.candidates, *result.candidates]
-                )[:500]
-            else:
-                job.no_match_tickers += 1
-                if not any(
-                    warning.category == "no_matches"
-                    for warning in result.warnings
-                ):
-                    job.warnings.append(
-                        OptionsScreenerTickerWarning(
-                            ticker=ticker,
-                            category="no_matches",
-                            message="No contracts matched the saved filters.",
-                        )
-                    )
+            self._record_ticker_candidates_locked(job, result)
+            self._record_no_match_locked(job, ticker, result)
             snapshot = job.model_copy(deep=True)
         self._publish(OptionsScreenerScanEvent(type="job_updated", job=snapshot))
 
@@ -337,10 +316,7 @@ class OptionsScreenerScanManager:
             job = self.jobs[job_id]
             if job.status != "active":
                 return
-            job.completed_tickers += 1
-            job.progress_message = (
-                f"{job.completed_tickers} of {job.total_tickers} tickers scanned"
-            )
+            self._record_ticker_progress_locked(job)
             job.failed_tickers += 1
             job.errors.append(f"{ticker}: {message}")
             snapshot = job.model_copy(deep=True)
@@ -358,16 +334,7 @@ class OptionsScreenerScanManager:
                 job.status = "completed"
                 job.successful_completion_at = job.finished_at
                 self.completed_snapshots[job.screener] = (
-                    OptionsScreenerCompletedSnapshot(
-                        screener=job.screener,
-                        job_id=job.id,
-                        total_match_count=job.total_match_count,
-                        excluded_contracts=job.excluded_contracts,
-                        candidates=job.candidates,
-                        errors=job.errors,
-                        warnings=job.warnings,
-                        completed_at=job.successful_completion_at,
-                    )
+                    self._completed_snapshot_locked(job)
                 )
             self.active_job_id = None
             snapshot = job.model_copy(deep=True)
@@ -409,6 +376,61 @@ class OptionsScreenerScanManager:
             return None
         job = self.jobs.get(job_id)
         return job.model_copy(deep=True) if job is not None else None
+
+    def _record_ticker_progress_locked(
+        self,
+        job: OptionsScreenerScanJob,
+    ) -> None:
+        job.completed_tickers += 1
+        job.progress_message = (
+            f"{job.completed_tickers} of {job.total_tickers} tickers scanned"
+        )
+
+    def _record_ticker_candidates_locked(
+        self,
+        job: OptionsScreenerScanJob,
+        result: OptionsScreenerTickerResult,
+    ) -> None:
+        if not result.candidates:
+            return
+        job.successful_tickers += 1
+        job.candidates = sort_candidates(
+            [*job.candidates, *result.candidates]
+        )[:500]
+
+    def _record_no_match_locked(
+        self,
+        job: OptionsScreenerScanJob,
+        ticker: str,
+        result: OptionsScreenerTickerResult,
+    ) -> None:
+        if result.candidates:
+            return
+        job.no_match_tickers += 1
+        if any(warning.category == "no_matches" for warning in result.warnings):
+            return
+        job.warnings.append(
+            OptionsScreenerTickerWarning(
+                ticker=ticker,
+                category="no_matches",
+                message="No contracts matched the saved filters.",
+            )
+        )
+
+    def _completed_snapshot_locked(
+        self,
+        job: OptionsScreenerScanJob,
+    ) -> OptionsScreenerCompletedSnapshot:
+        return OptionsScreenerCompletedSnapshot(
+            screener=job.screener,
+            job_id=job.id,
+            total_match_count=job.total_match_count,
+            excluded_contracts=job.excluded_contracts,
+            candidates=job.candidates,
+            errors=job.errors,
+            warnings=job.warnings,
+            completed_at=job.successful_completion_at,
+        )
 
     def _purge_expired_locked(self) -> None:
         cutoff = datetime.now(UTC) - self.retention

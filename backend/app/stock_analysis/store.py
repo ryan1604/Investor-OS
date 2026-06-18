@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from app.schemas import StockAnalysisPayload, empty_stock_analysis_payload
+from app.sqlite import connect_row_database
 from app.tickers import normalize_ticker
 
 
@@ -163,9 +164,7 @@ class StockAnalysisStore:
         return model
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return connect_row_database(self.database_path)
 
 
 def stock_analysis_model_from_row(row: sqlite3.Row) -> StockAnalysisModel:

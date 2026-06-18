@@ -20,14 +20,11 @@ from app.options_screeners.domain import (
 from app.options_screeners.service import (
     OptionsScreenerScanService,
     OptionsScreenerServiceUnavailable,
-    OptionsScreenerService,
-    CreditSpreadOptionsScreenerService,
-    SingleLegOptionsScreenerService,
-    OptionsScreenerSpreadQuoteRefreshService,
     OptionsScreenerTickerResult,
 )
 from app.options_screeners.single_leg import (
     FullOptionChainClient,
+    SingleLegOptionsScreenerScanService,
     US_MARKET_TIME_ZONE,
     contract_dte,
     quote_preference,
@@ -46,10 +43,7 @@ from app.schemas import (
 WIDTH_TOLERANCE = 1e-6
 
 
-class CreditSpreadOptionsScreenerScanService(
-    OptionsScreenerScanService,
-    OptionsScreenerSpreadQuoteRefreshService,
-):
+class CreditSpreadOptionsScreenerScanService:
     def __init__(
         self,
         client: FullOptionChainClient,
@@ -228,11 +222,11 @@ class CreditSpreadOptionsScreenerScanService(
         )
 
 
-class CombinedOptionsScreenerScanService(OptionsScreenerService):
+class CombinedOptionsScreenerScanService:
     def __init__(
         self,
-        single_leg_service: SingleLegOptionsScreenerService,
-        credit_spread_service: CreditSpreadOptionsScreenerService,
+        single_leg_service: SingleLegOptionsScreenerScanService,
+        credit_spread_service: CreditSpreadOptionsScreenerScanService,
     ) -> None:
         self.single_leg_service = single_leg_service
         self.credit_spread_service = credit_spread_service

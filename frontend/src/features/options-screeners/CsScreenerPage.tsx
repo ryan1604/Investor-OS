@@ -13,6 +13,7 @@ import {
   csCandidates,
   useOptionsScreeners,
 } from '@/features/options-screeners/OptionsScreenersProvider'
+import { daysToExpiration } from '@/features/options-screeners/lib/expiration'
 import type { CreditSpreadCandidate } from '@/features/options-screeners/lib/screenerResults'
 import { useScreenerTicketRefresh } from '@/features/options-screeners/hooks/useScreenerTicketRefresh'
 import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
@@ -223,22 +224,6 @@ function refreshedCandidateWarning(
   return matches
     ? null
     : 'The refreshed spread no longer satisfies the current CS scan filters, exact width, or maximum-loss rules.'
-}
-
-function daysToExpiration(expiration: string) {
-  const expirationTime = Date.parse(`${expiration}T00:00:00Z`)
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/New_York',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(new Date())
-  const datePart = (type: Intl.DateTimeFormatPartTypes) =>
-    parts.find((part) => part.type === type)?.value ?? ''
-  const currentTime = Date.parse(
-    `${datePart('year')}-${datePart('month')}-${datePart('day')}T00:00:00Z`,
-  )
-  return Math.round((expirationTime - currentTime) / 86_400_000)
 }
 
 function errorMessage(error: unknown) {

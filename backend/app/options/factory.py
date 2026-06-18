@@ -1,5 +1,4 @@
 import threading
-from collections.abc import Callable
 from typing import Protocol
 
 from app.config import Settings
@@ -12,14 +11,7 @@ from app.ib.options import (
     IbOptionScannerProvider,
 )
 from app.ib.portfolio import PortfolioClient
-from app.options.client import (
-    OptionsClient,
-    OptionsDataUnavailable,
-    UnavailableHistoricalDailyBarStreamProvider,
-    UnavailableOptionChainSnapshotProvider,
-    UnavailableOptionChainStreamProvider,
-    UnavailableOptionMetadataProvider,
-)
+from app.options.client import OptionsClient
 from app.options.store import OptionsDailyBarStore
 from app.schemas import (
     OptionChainResponse,
@@ -59,23 +51,13 @@ class OptionsAnalysisClient(Protocol):
         ...
 
 
-OptionsClientFactory = Callable[[Settings, PortfolioClient], OptionsAnalysisClient]
-
-
 def create_options_client(
     settings: Settings,
     client: PortfolioClient,
 ) -> OptionsClient:
     app = getattr(client, "app", None)
     if app is None:
-        return OptionsClient(
-            OptionsDailyBarStore(settings.options_database_path),
-            historical_provider=UnavailableHistoricalDailyBarProvider(),
-            metadata_provider=UnavailableOptionMetadataProvider(),
-            chain_provider=UnavailableOptionChainSnapshotProvider(),
-            chain_stream_provider=UnavailableOptionChainStreamProvider(),
-            historical_stream_provider=UnavailableHistoricalDailyBarStreamProvider(),
-        )
+        raise RuntimeError("Options client requires an IB app.")
 
     return OptionsClient(
         OptionsDailyBarStore(settings.options_database_path),
@@ -88,10 +70,3 @@ def create_options_client(
         chain_context_workers=settings.option_chain_context_workers,
         max_chain_stream_strikes=settings.max_option_chain_stream_strikes,
     )
-
-
-class UnavailableHistoricalDailyBarProvider:
-    def fetch_daily_bars(self, ticker, start_date, end_date):
-        raise OptionsDataUnavailable(
-            "Options historical data provider is not configured."
-        )

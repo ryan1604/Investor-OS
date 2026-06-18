@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from app.sqlite import connect_row_database
 from app.tickers import normalize_ticker
 
 
@@ -149,6 +150,4 @@ class OptionsDailyBarStore:
         ]
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return connect_row_database(self.database_path)

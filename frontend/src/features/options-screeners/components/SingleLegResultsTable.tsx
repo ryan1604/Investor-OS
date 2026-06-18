@@ -25,7 +25,7 @@ export type SingleLegSortKey =
   | 'discount_percentage'
   | 'gain_percentage'
 
-type SingleLegCandidate = CashSecuredPutCandidate | CoveredCallCandidate
+export type SingleLegCandidate = CashSecuredPutCandidate | CoveredCallCandidate
 
 export type SingleLegColumn<Candidate extends SingleLegCandidate> =
   ResultsTableColumn<Candidate, SingleLegSortKey>

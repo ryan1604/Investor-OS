@@ -48,16 +48,11 @@ def calculate_bollinger_bands(
             values.append(BollingerBandValue(date=bar.trading_date))
             continue
 
-        closes = [item.close for item in bars[index + 1 - period : index + 1]]
-        middle = sum(closes) / period
-        variance = sum((close - middle) ** 2 for close in closes) / period
-        band_width = sqrt(variance) * standard_deviations
         values.append(
-            BollingerBandValue(
-                date=bar.trading_date,
-                upper=middle + band_width,
-                middle=middle,
-                lower=middle - band_width,
+            bollinger_band_from_window(
+                bar.trading_date,
+                bars[index + 1 - period : index + 1],
+                standard_deviations,
             )
         )
 
@@ -79,12 +74,24 @@ def latest_bollinger_band(
     if len(bars) < period:
         return BollingerBandValue(date=latest_bar.trading_date)
 
-    closes = [item.close for item in bars[-period:]]
-    middle = sum(closes) / period
-    variance = sum((close - middle) ** 2 for close in closes) / period
+    return bollinger_band_from_window(
+        latest_bar.trading_date,
+        bars[-period:],
+        standard_deviations,
+    )
+
+
+def bollinger_band_from_window(
+    trading_date: str,
+    bars: Sequence[DailyClose],
+    standard_deviations: float,
+) -> BollingerBandValue:
+    closes = [item.close for item in bars]
+    middle = sum(closes) / len(closes)
+    variance = sum((close - middle) ** 2 for close in closes) / len(closes)
     band_width = sqrt(variance) * standard_deviations
     return BollingerBandValue(
-        date=latest_bar.trading_date,
+        date=trading_date,
         upper=middle + band_width,
         middle=middle,
         lower=middle - band_width,
@@ -104,27 +111,19 @@ def calculate_rsi(
     if len(bars) <= period:
         return values
 
-    gains: list[float] = []
-    losses: list[float] = []
-
-    for index in range(1, period + 1):
-        change = bars[index].close - bars[index - 1].close
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
+    average_gain, average_loss = initial_rsi_averages(bars, period)
     values[period] = RsiValue(
         date=bars[period].trading_date,
         value=rsi_from_averages(average_gain, average_loss),
     )
 
     for index in range(period + 1, len(bars)):
-        change = bars[index].close - bars[index - 1].close
-        gain = max(change, 0)
-        loss = max(-change, 0)
-        average_gain = ((average_gain * (period - 1)) + gain) / period
-        average_loss = ((average_loss * (period - 1)) + loss) / period
+        average_gain, average_loss = next_rsi_averages(
+            average_gain,
+            average_loss,
+            bars[index].close - bars[index - 1].close,
+            period,
+        )
         values[index] = RsiValue(
             date=bars[index].trading_date,
             value=rsi_from_averages(average_gain, average_loss),
@@ -157,23 +156,15 @@ def rsi_state_from_bars(
             period=period,
         )
 
-    gains: list[float] = []
-    losses: list[float] = []
-
-    for index in range(1, period + 1):
-        change = bars[index].close - bars[index - 1].close
-        gains.append(max(change, 0))
-        losses.append(max(-change, 0))
-
-    average_gain = sum(gains) / period
-    average_loss = sum(losses) / period
+    average_gain, average_loss = initial_rsi_averages(bars, period)
 
     for index in range(period + 1, len(bars)):
-        change = bars[index].close - bars[index - 1].close
-        gain = max(change, 0)
-        loss = max(-change, 0)
-        average_gain = ((average_gain * (period - 1)) + gain) / period
-        average_loss = ((average_loss * (period - 1)) + loss) / period
+        average_gain, average_loss = next_rsi_averages(
+            average_gain,
+            average_loss,
+            bars[index].close - bars[index - 1].close,
+            period,
+        )
 
     return RsiState(
         previous_close=bars[-1].close,
@@ -192,18 +183,51 @@ def latest_rsi(
         return RsiValue(date=bar.trading_date)
 
     change = bar.close - state.previous_close
-    gain = max(change, 0)
-    loss = max(-change, 0)
-
     if state.average_gain is None or state.average_loss is None:
         return RsiValue(date=bar.trading_date)
 
-    average_gain = ((state.average_gain * (state.period - 1)) + gain) / state.period
-    average_loss = ((state.average_loss * (state.period - 1)) + loss) / state.period
+    average_gain, average_loss = next_rsi_averages(
+        state.average_gain,
+        state.average_loss,
+        change,
+        state.period,
+    )
     return RsiValue(
         date=bar.trading_date,
         value=rsi_from_averages(average_gain, average_loss),
     )
+
+
+def initial_rsi_averages(
+    bars: Sequence[DailyClose],
+    period: int,
+) -> tuple[float, float]:
+    gains: list[float] = []
+    losses: list[float] = []
+
+    for index in range(1, period + 1):
+        gain, loss = rsi_gain_loss(bars[index].close - bars[index - 1].close)
+        gains.append(gain)
+        losses.append(loss)
+
+    return sum(gains) / period, sum(losses) / period
+
+
+def next_rsi_averages(
+    average_gain: float,
+    average_loss: float,
+    change: float,
+    period: int,
+) -> tuple[float, float]:
+    gain, loss = rsi_gain_loss(change)
+    return (
+        ((average_gain * (period - 1)) + gain) / period,
+        ((average_loss * (period - 1)) + loss) / period,
+    )
+
+
+def rsi_gain_loss(change: float) -> tuple[float, float]:
+    return max(change, 0), max(-change, 0)
 
 
 def rsi_from_averages(average_gain: float, average_loss: float) -> float:

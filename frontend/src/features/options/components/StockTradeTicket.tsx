@@ -1,12 +1,9 @@
 import { useMemo, useState } from 'react'
 
 import { LoaderCircle, Send, Ticket } from 'lucide-react'
-import { toast } from 'sonner'
 
 import type { PortfolioPosition, PortfolioResponse } from '@/api/portfolio'
 import {
-  previewOrder,
-  transmitOrder,
   type OrderAction,
   type OrderPreviewResponse,
   type OrderTimeInForce,
@@ -31,6 +28,7 @@ import {
   PreviewRow,
   SelectField,
 } from '@/features/orders/lib/orderEntry'
+import { useOrderTicketFlow } from '@/features/orders/lib/orderTicketFlow'
 import {
   accountOptions,
   orderErrorMessage,
@@ -46,8 +44,6 @@ type StockTradeTicketProps = {
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
 }
-
-type TicketStep = 'draft' | 'confirm' | 'submitted'
 
 export function StockTradeTicket({
   ticker,
@@ -67,10 +63,7 @@ export function StockTradeTicket({
   const [orderType, setOrderType] = useState<OrderType>('MARKET')
   const [limitPrice, setLimitPrice] = useState('')
   const [timeInForce, setTimeInForce] = useState<OrderTimeInForce>('DAY')
-  const [step, setStep] = useState<TicketStep>('draft')
-  const [preview, setPreview] = useState<OrderPreviewResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const ticket = useOrderTicketFlow(orderErrorMessage)
   const ownedShares = ownedStockShares(portfolio?.positions ?? [], account, ticker)
   const request = buildRequest({
     account,
@@ -93,48 +86,21 @@ export function StockTradeTicket({
   function resetDraft(nextOpen: boolean) {
     setOpen(nextOpen)
     if (!nextOpen) {
-      setStep('draft')
-      setPreview(null)
-      setError(null)
-      setIsSubmitting(false)
+      ticket.resetTicketState()
     } else {
       setAccount(defaultAccount)
     }
   }
 
   async function handleReview() {
-    if (!request || validationError) {
+    if (validationError) {
       return
     }
-
-    setError(null)
-    setIsSubmitting(true)
-    try {
-      setPreview(await previewOrder(request))
-      setStep('confirm')
-    } catch (requestError) {
-      setError(orderErrorMessage(requestError))
-    } finally {
-      setIsSubmitting(false)
-    }
+    await ticket.review(request)
   }
 
   async function handleTransmit() {
-    if (!preview) {
-      return
-    }
-
-    setError(null)
-    setIsSubmitting(true)
-    try {
-      const response = await transmitOrder(preview.request)
-      toast.success(response.message)
-      setStep('submitted')
-    } catch (requestError) {
-      setError(orderErrorMessage(requestError))
-    } finally {
-      setIsSubmitting(false)
-    }
+    await ticket.transmit()
   }
 
   return (
@@ -159,10 +125,12 @@ export function StockTradeTicket({
           </SheetHeader>
 
           <div className="flex flex-col gap-4 px-4">
-            {error ? <Alert variant="destructive">{error}</Alert> : null}
+            {ticket.error ? (
+              <Alert variant="destructive">{ticket.error}</Alert>
+            ) : null}
 
-            {step !== 'draft' && preview ? (
-              <StockConfirmationPreview preview={preview} />
+            {ticket.step !== 'draft' && ticket.preview ? (
+              <StockConfirmationPreview preview={ticket.preview} />
             ) : (
               <div className="grid gap-4">
                 <SelectField
@@ -252,7 +220,7 @@ export function StockTradeTicket({
           </div>
 
           <SheetFooter>
-            {step === 'submitted' ? (
+            {ticket.step === 'submitted' ? (
               <Button
                 type="button"
                 onClick={() => resetDraft(false)}
@@ -260,13 +228,13 @@ export function StockTradeTicket({
               >
                 Close
               </Button>
-            ) : step === 'confirm' ? (
+            ) : ticket.step === 'confirm' ? (
               <>
                 <Button
                   type="button"
                   variant="outline"
-                  onClick={() => setStep('draft')}
-                  disabled={isSubmitting}
+                  onClick={() => ticket.setStep('draft')}
+                  disabled={ticket.isSubmitting}
                   className="cursor-pointer active:cursor-pointer"
                 >
                   Edit
@@ -274,10 +242,10 @@ export function StockTradeTicket({
                 <Button
                   type="button"
                   onClick={() => void handleTransmit()}
-                  disabled={isSubmitting}
+                  disabled={ticket.isSubmitting}
                   className="cursor-pointer active:cursor-pointer"
                 >
-                  {isSubmitting ? (
+                  {ticket.isSubmitting ? (
                     <LoaderCircle
                       className="animate-spin"
                       data-icon="inline-start"
@@ -294,7 +262,7 @@ export function StockTradeTicket({
                   type="button"
                   variant="outline"
                   onClick={() => resetDraft(false)}
-                  disabled={isSubmitting}
+                  disabled={ticket.isSubmitting}
                   className="cursor-pointer active:cursor-pointer"
                 >
                   Cancel
@@ -302,10 +270,10 @@ export function StockTradeTicket({
                 <Button
                   type="button"
                   onClick={() => void handleReview()}
-                  disabled={Boolean(validationError) || isSubmitting}
+                  disabled={Boolean(validationError) || ticket.isSubmitting}
                   className="cursor-pointer active:cursor-pointer disabled:cursor-not-allowed"
                 >
-                  {isSubmitting ? (
+                  {ticket.isSubmitting ? (
                     <LoaderCircle
                       className="animate-spin"
                       data-icon="inline-start"

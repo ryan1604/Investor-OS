@@ -2,6 +2,7 @@ import {
   valuationRowMetadata,
   type ValuationRowKey,
 } from '@/features/stock-analysis/lib/valuationRows'
+import { formatNumber as formatSharedNumber } from '@/lib/format'
 
 export function formatEditableValue(row: ValuationRowKey, value: number | null) {
   return value === null ? '' : formatValuationValue(row, value)
@@ -40,8 +41,8 @@ export function formatDraftValue(value: number | null) {
 }
 
 function formatNumber(value: number, maximumFractionDigits: number) {
-  return new Intl.NumberFormat('en-US', {
+  return formatSharedNumber(value, {
     minimumFractionDigits: maximumFractionDigits,
     maximumFractionDigits,
-  }).format(value)
+  })
 }

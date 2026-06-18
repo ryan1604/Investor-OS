@@ -1,12 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { LoaderCircle, Send, Trash2 } from 'lucide-react'
-import { toast } from 'sonner'
 
 import type { PortfolioResponse } from '@/api/portfolio'
 import {
-  previewOrder,
-  transmitOrder,
   type OptionStrategyOrderRequest,
   type OrderPreviewResponse,
   type OrderTimeInForce,
@@ -37,6 +34,7 @@ import {
   PreviewRow,
   SelectField,
 } from '@/features/orders/lib/orderEntry'
+import { useOrderTicketFlow } from '@/features/orders/lib/orderTicketFlow'
 import {
   accountOptions,
   orderErrorMessage,
@@ -57,8 +55,6 @@ type OptionStrategyTicketProps = {
   onLegsChange: (legs: DraftOptionLeg[]) => void
   onOpenChange: (open: boolean) => void
 }
-
-type TicketStep = 'draft' | 'confirm' | 'submitted'
 
 export function OptionStrategyTicket({
   legs,
@@ -88,10 +84,7 @@ export function OptionStrategyTicket({
   const [stopLossEnabled, setStopLossEnabled] = useState(false)
   const [stopLossPrice, setStopLossPrice] = useState('')
   const [timeInForce, setTimeInForce] = useState<OrderTimeInForce>('DAY')
-  const [step, setStep] = useState<TicketStep>('draft')
-  const [preview, setPreview] = useState<OrderPreviewResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [isSubmitting, setIsSubmitting] = useState(false)
+  const ticket = useOrderTicketFlow(orderErrorMessage)
   const displayedLimitPrice = parseSignedNumber(limitPrice)
   const parsedLimitPrice =
     creditEntry && displayedLimitPrice !== null
@@ -122,27 +115,20 @@ export function OptionStrategyTicket({
   )
 
   useEffect(() => {
-    if (!open && step === 'draft') {
+    if (!open && ticket.step === 'draft') {
       // Keep the closed draft price aligned with selected legs without overriding open edits.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       setLimitPrice(formatDisplayedNetPrice(defaultNetPrice, creditEntry))
     }
-  }, [creditEntry, defaultNetPrice, open, step])
-
-  function resetTicketState() {
-    setStep('draft')
-    setPreview(null)
-    setError(null)
-    setIsSubmitting(false)
-  }
+  }, [creditEntry, defaultNetPrice, open, ticket.step])
 
   function dismissTicket() {
-    resetTicketState()
+    ticket.resetTicketState()
     onOpenChange(false)
   }
 
   function closeAndClearTicket() {
-    resetTicketState()
+    ticket.resetTicketState()
     onOpenChange(false)
     onLegsChange([])
   }
@@ -163,38 +149,14 @@ export function OptionStrategyTicket({
   }
 
   async function handleReview() {
-    if (!request || validationError) {
+    if (validationError) {
       return
     }
-
-    setError(null)
-    setIsSubmitting(true)
-    try {
-      setPreview(await previewOrder(request))
-      setStep('confirm')
-    } catch (requestError) {
-      setError(orderErrorMessage(requestError))
-    } finally {
-      setIsSubmitting(false)
-    }
+    await ticket.review(request)
   }
 
   async function handleTransmit() {
-    if (!preview) {
-      return
-    }
-
-    setError(null)
-    setIsSubmitting(true)
-    try {
-      const response = await transmitOrder(preview.request)
-      toast.success(response.message)
-      setStep('submitted')
-    } catch (requestError) {
-      setError(orderErrorMessage(requestError))
-    } finally {
-      setIsSubmitting(false)
-    }
+    await ticket.transmit()
   }
 
   return (
@@ -215,11 +177,13 @@ export function OptionStrategyTicket({
         </SheetHeader>
 
         <div className="flex flex-col gap-4 px-4">
-          {error ? <Alert variant="destructive">{error}</Alert> : null}
+          {ticket.error ? (
+            <Alert variant="destructive">{ticket.error}</Alert>
+          ) : null}
           {warning ? <Alert>{warning}</Alert> : null}
 
-          {step !== 'draft' && preview ? (
-            <StrategyConfirmationPreview preview={preview} />
+          {ticket.step !== 'draft' && ticket.preview ? (
+            <StrategyConfirmationPreview preview={ticket.preview} />
           ) : (
             <div className="grid gap-4">
               <SelectField
@@ -345,7 +309,7 @@ export function OptionStrategyTicket({
         </div>
 
         <SheetFooter>
-          {step === 'submitted' ? (
+          {ticket.step === 'submitted' ? (
             <Button
               type="button"
               onClick={closeAndClearTicket}
@@ -353,13 +317,13 @@ export function OptionStrategyTicket({
             >
               Close
             </Button>
-          ) : step === 'confirm' ? (
+          ) : ticket.step === 'confirm' ? (
             <>
               <Button
                 type="button"
                 variant="outline"
-                onClick={() => setStep('draft')}
-                disabled={isSubmitting}
+                onClick={() => ticket.setStep('draft')}
+                disabled={ticket.isSubmitting}
                 className="cursor-pointer active:cursor-pointer"
               >
                 Edit
@@ -367,10 +331,10 @@ export function OptionStrategyTicket({
               <Button
                 type="button"
                 onClick={() => void handleTransmit()}
-                disabled={isSubmitting}
+                disabled={ticket.isSubmitting}
                 className="cursor-pointer active:cursor-pointer"
               >
-                {isSubmitting ? (
+                {ticket.isSubmitting ? (
                   <LoaderCircle className="animate-spin" data-icon="inline-start" />
                 ) : (
                   <Send data-icon="inline-start" />
@@ -384,7 +348,7 @@ export function OptionStrategyTicket({
                 type="button"
                 variant="outline"
                 onClick={closeAndClearTicket}
-                disabled={isSubmitting}
+                disabled={ticket.isSubmitting}
                 className="cursor-pointer active:cursor-pointer"
               >
                 Cancel
@@ -392,10 +356,10 @@ export function OptionStrategyTicket({
               <Button
                 type="button"
                 onClick={() => void handleReview()}
-                disabled={Boolean(validationError) || isSubmitting}
+                disabled={Boolean(validationError) || ticket.isSubmitting}
                 className="cursor-pointer active:cursor-pointer disabled:cursor-not-allowed"
               >
-                {isSubmitting ? (
+                {ticket.isSubmitting ? (
                   <LoaderCircle className="animate-spin" data-icon="inline-start" />
                 ) : null}
                 Review

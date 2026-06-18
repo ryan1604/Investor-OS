@@ -3,6 +3,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.sqlite import connect_row_database
+
 
 @dataclass(frozen=True)
 class PortfolioChartValue:
@@ -88,9 +90,7 @@ class PortfolioChartValuesStore:
         return self.list_values(account)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return connect_row_database(self.database_path)
 
 
 def portfolio_chart_value_from_row(row: sqlite3.Row) -> PortfolioChartValue:

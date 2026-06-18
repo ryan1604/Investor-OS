@@ -19,8 +19,6 @@ from app.options_screeners.domain import (
     sort_candidates,
 )
 from app.options_screeners.service import (
-    OptionsScreenerScanService,
-    OptionsScreenerQuoteRefreshService,
     OptionsScreenerServiceUnavailable,
     OptionsScreenerTickerResult,
 )
@@ -66,10 +64,7 @@ class FullOptionChainClient(Protocol):
         ...
 
 
-class SingleLegOptionsScreenerScanService(
-    OptionsScreenerScanService,
-    OptionsScreenerQuoteRefreshService,
-):
+class SingleLegOptionsScreenerScanService:
     def __init__(
         self,
         client: FullOptionChainClient,

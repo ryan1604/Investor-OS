@@ -264,9 +264,6 @@ class FullOptionChainSnapshot:
     excluded_contracts: int = 0
 
 
-FullPutChainSnapshot = FullOptionChainSnapshot
-
-
 @dataclass(frozen=True)
 class DailyBarsResult:
     ticker: str
@@ -385,24 +382,6 @@ class OptionsClient:
             underlying_price_captured_at=captured_at,
             contracts=quotes,
             excluded_contracts=selection.excluded_contracts,
-        )
-
-    def get_full_put_chain(
-        self,
-        ticker: str,
-        *,
-        minimum_dte: int,
-        maximum_dte: int,
-        cancel_event: Event,
-        current_date: date | None = None,
-    ) -> FullOptionChainSnapshot:
-        return self.get_full_option_chain(
-            ticker,
-            right="P",
-            minimum_dte=minimum_dte,
-            maximum_dte=maximum_dte,
-            cancel_event=cancel_event,
-            current_date=current_date,
         )
 
     def cancel_scanner(self) -> None:
@@ -818,54 +797,6 @@ class OptionsClient:
             completed_bars=completed_bars,
             current_bar=current_bar,
             metrics=metrics,
-        )
-
-
-class UnavailableOptionMetadataProvider:
-    def fetch_expirations(self, ticker: str) -> list[str]:
-        raise OptionsDataUnavailable(
-            "Options metadata provider is not configured."
-        )
-
-    def fetch_option_metadata(self, ticker: str) -> OptionMetadata:
-        raise OptionsDataUnavailable(
-            "Options metadata provider is not configured."
-        )
-
-
-class UnavailableHistoricalDailyBarStreamProvider:
-    def stream_daily_bar_updates(
-        self,
-        ticker: str,
-        stop_event: Event,
-    ) -> Iterable[CompletedDailyBar]:
-        raise OptionsDataUnavailable(
-            "Options chart stream provider is not configured."
-        )
-
-
-class UnavailableOptionChainSnapshotProvider:
-    def fetch_chain_quotes(
-        self,
-        ticker: str,
-        expiration: str,
-        strikes: list[float],
-    ) -> dict[tuple[float, str], OptionQuote]:
-        raise OptionsDataUnavailable(
-            "Options chain provider is not configured."
-        )
-
-
-class UnavailableOptionChainStreamProvider:
-    def stream_chain_quotes(
-        self,
-        ticker: str,
-        expiration: str,
-        strikes: list[float],
-        stop_event: Event,
-    ) -> Iterable[tuple[tuple[float, str], OptionQuote]]:
-        raise OptionsDataUnavailable(
-            "Options chain stream provider is not configured."
         )
 
 

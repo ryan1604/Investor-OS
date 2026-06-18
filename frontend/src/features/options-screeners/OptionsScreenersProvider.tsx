@@ -341,68 +341,33 @@ export function OptionsScreenersProvider({
   }, [isTickerUpdatePending])
 
   const addCspTickers = useCallback(
-    async (tickers: string[]) => {
-      const current = settings?.ticker_lists.csp_cc ?? []
-      await saveTickers('csp_cc', [
-        ...current,
-        ...tickers.filter((item) => !current.includes(item)),
-      ])
-    },
-    [saveTickers, settings?.ticker_lists.csp_cc],
+    (tickers: string[]) =>
+      addTickersToList('csp_cc', tickers, settings, saveTickers),
+    [saveTickers, settings],
   )
 
   const addCsTickers = useCallback(
-    async (tickers: string[]) => {
-      const current = settings?.ticker_lists.cs ?? []
-      await saveTickers('cs', [
-        ...current,
-        ...tickers.filter((item) => !current.includes(item)),
-      ])
-    },
-    [saveTickers, settings?.ticker_lists.cs],
+    (tickers: string[]) =>
+      addTickersToList('cs', tickers, settings, saveTickers),
+    [saveTickers, settings],
   )
 
-  const startCspScan = useCallback(async () => {
+  const startScan = useCallback(async (screener: 'csp' | 'cc' | 'cs') => {
     setScanActionError(null)
     try {
-      const job = await startOptionsScreenerScan('csp')
+      const job = await startOptionsScreenerScan(screener)
       setScanState((current) => ({
         ...current,
         active_job: job,
-        latest_jobs: { ...current.latest_jobs, csp: job },
+        latest_jobs: { ...current.latest_jobs, [screener]: job },
       }))
     } catch (error) {
       setScanActionError(errorMessage(error))
     }
   }, [])
-
-  const startCcScan = useCallback(async () => {
-    setScanActionError(null)
-    try {
-      const job = await startOptionsScreenerScan('cc')
-      setScanState((current) => ({
-        ...current,
-        active_job: job,
-        latest_jobs: { ...current.latest_jobs, cc: job },
-      }))
-    } catch (error) {
-      setScanActionError(errorMessage(error))
-    }
-  }, [])
-
-  const startCsScan = useCallback(async () => {
-    setScanActionError(null)
-    try {
-      const job = await startOptionsScreenerScan('cs')
-      setScanState((current) => ({
-        ...current,
-        active_job: job,
-        latest_jobs: { ...current.latest_jobs, cs: job },
-      }))
-    } catch (error) {
-      setScanActionError(errorMessage(error))
-    }
-  }, [])
+  const startCspScan = useCallback(() => startScan('csp'), [startScan])
+  const startCcScan = useCallback(() => startScan('cc'), [startScan])
+  const startCsScan = useCallback(() => startScan('cs'), [startScan])
 
   const cancelActiveScan = useCallback(async () => {
     if (!scanState.active_job) {
@@ -483,10 +448,7 @@ export function OptionsScreenersProvider({
       clearCsTickers: () => saveTickers('cs', []),
       updateCspFilterDraft: (field, nextValue) => {
         setCspFilterSaveStatus('idle')
-        setCspFilterDraft((current) => ({
-          ...current,
-          [field]: nextValue,
-        }))
+        setCspFilterDraft((current) => draftWithField(current, field, nextValue))
       },
       resetCspFilters: () => {
         setCspFilterSaveStatus('idle')
@@ -494,10 +456,7 @@ export function OptionsScreenersProvider({
       },
       updateCcFilterDraft: (field, nextValue) => {
         setCcFilterSaveStatus('idle')
-        setCcFilterDraft((current) => ({
-          ...current,
-          [field]: nextValue,
-        }))
+        setCcFilterDraft((current) => draftWithField(current, field, nextValue))
       },
       resetCcFilters: () => {
         setCcFilterSaveStatus('idle')
@@ -505,10 +464,7 @@ export function OptionsScreenersProvider({
       },
       updateCsFilterDraft: (field, nextValue) => {
         setCsFilterSaveStatus('idle')
-        setCsFilterDraft((current) => ({
-          ...current,
-          [field]: nextValue,
-        }))
+        setCsFilterDraft((current) => draftWithField(current, field, nextValue))
       },
       toggleCsStrategyType: (strategy) => {
         setCsFilterSaveStatus('idle')
@@ -533,23 +489,11 @@ export function OptionsScreenersProvider({
       startCsScan,
       cancelActiveScan,
       setCspSort: (key) =>
-        setCspSortState((current) => ({
-          key,
-          direction:
-            current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
-        })),
+        setCspSortState((current) => nextSort(current, key)),
       setCcSort: (key) =>
-        setCcSortState((current) => ({
-          key,
-          direction:
-            current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
-        })),
+        setCcSortState((current) => nextSort(current, key)),
       setCsSort: (key) =>
-        setCsSortState((current) => ({
-          key,
-          direction:
-            current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
-        })),
+        setCsSortState((current) => nextSort(current, key)),
     }),
     [
       addCspTickers,
@@ -592,6 +536,43 @@ export function OptionsScreenersProvider({
       {children}
     </OptionsScreenersContext.Provider>
   )
+}
+
+function addTickersToList(
+  listName: OptionsScreenerTickerList,
+  tickers: string[],
+  settings: OptionsScreenerSettingsResponse | null,
+  saveTickers: (
+    listName: OptionsScreenerTickerList,
+    nextTickers: string[],
+  ) => Promise<void>,
+) {
+  const current = settings?.ticker_lists[listName] ?? []
+  return saveTickers(listName, [
+    ...current,
+    ...tickers.filter((item) => !current.includes(item)),
+  ])
+}
+
+function nextSort<Key extends string>(
+  current: { key: Key; direction: 'asc' | 'desc' },
+  key: Key,
+) {
+  return {
+    key,
+    direction: current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
+  } as const
+}
+
+function draftWithField<Draft extends ScreenerFilterDraft>(
+  draft: Draft,
+  field: keyof ScreenerFilterDraft,
+  value: string,
+) {
+  return {
+    ...draft,
+    [field]: value,
+  }
 }
 
 export function useOptionsScreeners() {

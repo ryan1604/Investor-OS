@@ -53,10 +53,10 @@ class FakeScanService:
         try:
             while not self.release.wait(0.01):
                 if cancel_event.is_set():
-                    return []
+                    return OptionsScreenerTickerResult()
             if ticker in self.failures:
                 raise RuntimeError(self.failures[ticker])
-            return self.results.get(ticker, [])
+            return self.results.get(ticker, OptionsScreenerTickerResult())
         finally:
             with self.lock:
                 self.active -= 1
@@ -81,7 +81,9 @@ def test_scan_captures_settings_and_processes_all_tickers_with_bounded_work(tmp_
     store.replace_ticker_list("csp_cc", ["AAPL", "MSFT", "NVDA", "AMD", "META"])
     store.save_filters("csp", OptionsScreenerFilters(minimum_dte=10))
     service = FakeScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     manager = OptionsScreenerScanManager(store, service, max_workers=2)
 
     job = manager.start("csp")
@@ -171,7 +173,9 @@ def test_ticker_failures_count_as_terminal_without_failing_job(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL", "FAIL", "EMPTY"])
     service = FakeScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     service.failures["FAIL"] = "market unavailable"
     manager = OptionsScreenerScanManager(store, service)
 
@@ -189,7 +193,9 @@ def test_cancelled_and_fatal_scans_preserve_previous_snapshot(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL", "FAIL"])
     service = FakeScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     service.failures["FAIL"] = "market unavailable"
     manager = OptionsScreenerScanManager(store, service)
 
@@ -257,7 +263,9 @@ def test_successful_zero_match_scan_replaces_previous_snapshot(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL"])
     service = FakeScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     manager = OptionsScreenerScanManager(store, service)
 
     first = wait_for_terminal(manager, manager.start("csp").id)
@@ -304,7 +312,9 @@ def test_new_manager_has_no_jobs_or_completed_snapshots(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL"])
     service = FakeScanService()
-    service.results["AAPL"] = [candidate("AAPL")]
+    service.results["AAPL"] = OptionsScreenerTickerResult(
+        candidates=[candidate("AAPL")]
+    )
     manager = OptionsScreenerScanManager(store, service)
     wait_for_terminal(manager, manager.start("csp").id)
 

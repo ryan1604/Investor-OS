@@ -3,7 +3,7 @@ import threading
 from zoneinfo import ZoneInfo
 
 from app.options.client import (
-    FullPutChainSnapshot,
+    FullOptionChainSnapshot,
     OptionsClient,
     ScannerContractSelection,
     ScannerOptionContract,
@@ -137,8 +137,9 @@ def test_full_put_chain_scans_every_otm_strike_and_inclusive_expiration(tmp_path
         current_date_provider=lambda: date(2026, 6, 15),
     )
 
-    snapshot = client.get_full_put_chain(
+    snapshot = client.get_full_option_chain(
         "AAPL",
+        right="P",
         minimum_dte=7,
         maximum_dte=45,
         cancel_event=threading.Event(),
@@ -165,7 +166,7 @@ class FullChainClient:
 
     def get_full_option_chain(self, ticker, **kwargs):
         self.requests.append((ticker, kwargs))
-        return FullPutChainSnapshot(
+        return FullOptionChainSnapshot(
             ticker=ticker,
             underlying_price=100,
             underlying_price_captured_at=datetime(

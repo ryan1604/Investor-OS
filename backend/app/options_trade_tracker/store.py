@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.sqlite import connect_row_database
+
 
 class OptionsTradeTrackerDuplicateNameError(ValueError):
     pass
@@ -331,9 +333,7 @@ class OptionsTradeTrackerStore:
         return self.list_strategy_options()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        return connection
+        return connect_row_database(self.database_path)
 
     def _initialize_trade_rows(self, connection: sqlite3.Connection) -> None:
         existing_table = connection.execute(

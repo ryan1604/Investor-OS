@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.config import Settings
-from app.main import create_app
+from app.main import AppFactories, create_app
+from app.options.client import OptionsDataUnavailable
 from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.options_screeners.service import OptionsScreenerService
@@ -150,6 +151,34 @@ class FakeIbOrderApp:
         self.execution_requests.append((req_id, execution_filter))
 
 
+class FakeUnavailableOptionsClient:
+    def get_analysis(self, ticker: str):
+        raise OptionsDataUnavailable(
+            "Options historical data provider is not configured."
+        )
+
+    def get_underlying_price(self, ticker: str):
+        raise OptionsDataUnavailable("Underlying price is unavailable.")
+
+    def get_expirations(self, ticker: str):
+        raise OptionsDataUnavailable(
+            "Options metadata provider is not configured."
+        )
+
+    def get_chain(self, ticker: str, expiration: str):
+        raise OptionsDataUnavailable("Options chain provider is not configured.")
+
+    def stream_chain(self, ticker: str, expiration: str, *, stop_event):
+        raise OptionsDataUnavailable(
+            "Options chain stream provider is not configured."
+        )
+
+    def stream_chart(self, ticker: str, *, stop_event):
+        raise OptionsDataUnavailable(
+            "Options chart stream provider is not configured."
+        )
+
+
 def make_api(
     portfolio_client: FakePortfolioClient | None = None,
     *,
@@ -188,22 +217,20 @@ def make_api(
             )
         )
 
-    return create_app(
-        lambda _settings: explicit_portfolio_client,
-        options_client_factory=(
-            (lambda _settings, _client: options_client)
-            if options_client is not None
-            else None
+    return create_app(AppFactories(
+        client=lambda _settings: explicit_portfolio_client,
+        options_client=lambda _settings, _client: (
+            options_client or FakeUnavailableOptionsClient()
         ),
-        stock_analysis_store_factory=stock_analysis_store_factory,
-        portfolio_chart_values_store_factory=portfolio_chart_values_store_factory,
-        options_trade_tracker_store_factory=options_trade_tracker_store_factory,
-        options_screener_settings_store_factory=(
+        stock_analysis_store=stock_analysis_store_factory,
+        portfolio_chart_values_store=portfolio_chart_values_store_factory,
+        options_trade_tracker_store=options_trade_tracker_store_factory,
+        options_screener_settings_store=(
             options_screener_settings_store_factory
         ),
-        options_screener_scan_service_factory=(
+        options_screener_scan_service=(
             (lambda _settings: options_screener_scan_service)
             if options_screener_scan_service is not None
             else None
         ),
-    )
+    ))
