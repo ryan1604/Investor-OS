@@ -46,31 +46,24 @@ class OptionsScreenerScanService(Protocol):
     def cancel(self) -> None: ...
 
 
-class OptionsScreenerService(Protocol):
-    def prepare_scan(
-        self,
-        screener: OptionsScreener,
-        tickers: tuple[str, ...],
-        filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
-        cancel_event: threading.Event,
-    ) -> None: ...
-
-    def scan_ticker(
-        self,
-        screener: OptionsScreener,
-        ticker: str,
-        filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
-        cancel_event: threading.Event,
-    ) -> OptionsScreenerTickerResult: ...
-
-    def cancel(self) -> None: ...
-
+class OptionsScreenerQuoteRefreshService(Protocol):
     def refresh_quote(
         self,
         request: OptionsScreenerQuoteRefreshRequest,
     ) -> OptionsScreenerQuoteRefreshResponse: ...
 
+
+class OptionsScreenerSpreadQuoteRefreshService(Protocol):
     def refresh_spread_quote(
         self,
         request: OptionsScreenerSpreadQuoteRefreshRequest,
     ) -> OptionsScreenerSpreadQuoteRefreshResponse: ...
+
+
+class OptionsScreenerService(
+    OptionsScreenerScanService,
+    OptionsScreenerQuoteRefreshService,
+    OptionsScreenerSpreadQuoteRefreshService,
+    Protocol,
+):
+    pass

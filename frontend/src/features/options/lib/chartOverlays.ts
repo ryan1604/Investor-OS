@@ -25,12 +25,6 @@ export type ChartCostBasisOverlay = {
 
 export type ChartOverlay = ChartCostBasisOverlay | ChartOptionStrikeOverlay
 
-const ACTIVE_ORDER_STATUSES = new Set([
-  'submitted',
-  'working',
-  'partially_filled',
-])
-
 export function chartOverlays({
   draftLegs,
   orders,
@@ -98,26 +92,29 @@ function optionStrikeOverlays({
 }) {
   const overlays = new Map<string, ChartOptionStrikeOverlay>()
 
-  for (const leg of draftLegs) {
-    if (leg.ticker.toUpperCase() !== ticker) {
-      continue
+  if (selectedAccount) {
+    for (const leg of draftLegs) {
+      if (leg.ticker.toUpperCase() !== ticker) {
+        continue
+      }
+      addOptionOverlay(overlays, {
+        ticker,
+        expiration: leg.expiration,
+        right: leg.right,
+        strike: leg.strike,
+        signedQuantity: leg.signedQuantity,
+        source: 'draft',
+      })
     }
-    addOptionOverlay(overlays, {
-      ticker,
-      expiration: leg.expiration,
-      right: leg.right,
-      strike: leg.strike,
-      signedQuantity: leg.signedQuantity,
-      source: 'draft',
-    })
   }
 
   for (const order of orders) {
     if (
-      !ACTIVE_ORDER_STATUSES.has(order.status) ||
+      !selectedAccount ||
+      !order.is_open ||
       order.parent_order_id !== null ||
       order.preview.request.order_kind !== 'option_strategy' ||
-      (selectedAccount && order.account !== selectedAccount)
+      order.account !== selectedAccount
     ) {
       continue
     }
@@ -156,13 +153,14 @@ function optionPositionToLeg(
   ticker: string,
 ) {
   if (
+    !selectedAccount ||
     position.sec_type !== 'OPT' ||
     position.symbol.toUpperCase() !== ticker ||
     position.expiry === null ||
     position.right === null ||
     position.strike === null ||
     position.quantity === 0 ||
-    (selectedAccount && position.account !== selectedAccount)
+    position.account !== selectedAccount
   ) {
     return null
   }

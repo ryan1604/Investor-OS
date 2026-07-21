@@ -45,6 +45,46 @@ export async function responseErrorMessage(response: Response, label: string) {
   return `${label} request failed: ${response.status}`
 }
 
+export async function requestJson<TResponse>(
+  path: string,
+  label: string,
+  init?: RequestInit,
+) {
+  const response = await requestOk(path, label, init)
+
+  return response.json() as Promise<TResponse>
+}
+
+export async function requestOk(path: string, label: string, init?: RequestInit) {
+  const response =
+    init === undefined ? await fetch(apiUrl(path)) : await fetch(apiUrl(path), init)
+
+  if (!response.ok) {
+    throw new Error(await responseErrorMessage(response, label))
+  }
+
+  return response
+}
+
+export function jsonRequest<TResponse>(
+  path: string,
+  method: 'PATCH' | 'POST' | 'PUT',
+  body: unknown,
+  label: string,
+  signal?: AbortSignal,
+) {
+  return requestJson<TResponse>(path, label, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+}
+
 export function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
+}
+
+export function errorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback
 }

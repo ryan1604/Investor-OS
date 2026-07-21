@@ -2,27 +2,28 @@ import { useMemo } from 'react'
 
 import type { PortfolioResponse } from '@/api/portfolio'
 
+export function portfolioAccountIds(portfolio: PortfolioResponse | null) {
+  return Array.from(
+    new Set([
+      ...(portfolio?.accounts.map((account) => account.account) ?? []),
+      ...(portfolio?.positions.map((position) => position.account) ?? []),
+    ]),
+  ).sort()
+}
+
 export function useSelectedAccount(
   portfolio: PortfolioResponse | null,
   selectedAccount: string | null,
 ) {
-  const accounts = useMemo(() => {
-    return Array.from(
-      new Set([
-        ...(portfolio?.accounts.map((account) => account.account) ?? []),
-        ...(portfolio?.positions.map((position) => position.account) ?? []),
-      ]),
-    ).sort()
-  }, [portfolio])
+  const accounts = useMemo(() => portfolioAccountIds(portfolio), [portfolio])
 
-  const activeAccount =
-    selectedAccount && accounts.includes(selectedAccount)
-      ? selectedAccount
-      : accounts[0]
+  const activeAccount = accounts.includes(selectedAccount ?? '')
+    ? selectedAccount ?? undefined
+    : undefined
 
   const accountPositions = useMemo(() => {
     if (!activeAccount) {
-      return portfolio?.positions ?? []
+      return []
     }
 
     return (

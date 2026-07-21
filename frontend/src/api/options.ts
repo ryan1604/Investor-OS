@@ -1,7 +1,6 @@
 import {
-  apiUrl,
   apiWebSocketUrl,
-  responseErrorMessage,
+  requestJson,
   tickerPathSegment,
 } from '@/api/client'
 
@@ -99,16 +98,11 @@ export type OptionsChartLiveMessage = {
 }
 
 export async function fetchOptionsAnalysis(ticker: string, signal?: AbortSignal) {
-  const response = await fetch(
-    apiUrl(`/options/${tickerPathSegment(ticker)}/analysis`),
+  return requestJson<OptionsAnalysisResponse>(
+    `/options/${tickerPathSegment(ticker)}/analysis`,
+    'Options analysis',
     { signal },
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Options analysis'))
-  }
-
-  return response.json() as Promise<OptionsAnalysisResponse>
 }
 
 export async function fetchOptionChain(
@@ -117,29 +111,19 @@ export async function fetchOptionChain(
   signal?: AbortSignal,
 ) {
   const params = new URLSearchParams({ expiration })
-  const response = await fetch(
-    apiUrl(`/options/${tickerPathSegment(ticker)}/chain?${params}`),
+  return requestJson<OptionChainResponse>(
+    `/options/${tickerPathSegment(ticker)}/chain?${params}`,
+    'Option chain',
     { signal },
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Option chain'))
-  }
-
-  return response.json() as Promise<OptionChainResponse>
 }
 
 export async function fetchOptionExpirations(ticker: string, signal?: AbortSignal) {
-  const response = await fetch(
-    apiUrl(`/options/${tickerPathSegment(ticker)}/expirations`),
+  return requestJson<OptionExpirationsResponse>(
+    `/options/${tickerPathSegment(ticker)}/expirations`,
+    'Option expirations',
     { signal },
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Option expirations'))
-  }
-
-  return response.json() as Promise<OptionExpirationsResponse>
 }
 
 export function getOptionChainWsUrl(ticker: string, expiration: string) {

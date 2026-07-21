@@ -1,4 +1,9 @@
-import { apiUrl, encodePathSegment, responseErrorMessage } from '@/api/client'
+import {
+  encodePathSegment,
+  jsonRequest,
+  requestJson,
+  requestOk,
+} from '@/api/client'
 
 export type OptionsTradeStatus = 'In Progress' | 'Completed'
 
@@ -107,13 +112,11 @@ function optionsTradeStrategyOptionsPath() {
 }
 
 export async function fetchOptionsTradeTrackers(signal?: AbortSignal) {
-  const response = await fetch(apiUrl(optionsTradeTrackersPath()), { signal })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Options trade trackers'))
-  }
-
-  return response.json() as Promise<OptionsTradeTrackerListResponse>
+  return requestJson<OptionsTradeTrackerListResponse>(
+    optionsTradeTrackersPath(),
+    'Options trade trackers',
+    { signal },
+  )
 }
 
 export async function createOptionsTradeTracker(
@@ -124,6 +127,7 @@ export async function createOptionsTradeTracker(
     optionsTradeTrackersPath(),
     'POST',
     request,
+    'Options trade tracker',
     signal,
   )
 }
@@ -132,15 +136,11 @@ export async function fetchOptionsTradeTracker(
   trackerId: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(apiUrl(optionsTradeTrackerPath(trackerId)), {
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Options trade tracker'))
-  }
-
-  return response.json() as Promise<OptionsTradeTrackerDetailResponse>
+  return requestJson<OptionsTradeTrackerDetailResponse>(
+    optionsTradeTrackerPath(trackerId),
+    'Options trade tracker',
+    { signal },
+  )
 }
 
 export async function renameOptionsTradeTracker(
@@ -152,6 +152,7 @@ export async function renameOptionsTradeTracker(
     optionsTradeTrackerPath(trackerId),
     'PATCH',
     request,
+    'Options trade tracker',
     signal,
   )
 }
@@ -160,14 +161,10 @@ export async function deleteOptionsTradeTracker(
   trackerId: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(apiUrl(optionsTradeTrackerPath(trackerId)), {
+  await requestOk(optionsTradeTrackerPath(trackerId), 'Options trade tracker', {
     method: 'DELETE',
     signal,
   })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Options trade tracker'))
-  }
 }
 
 export async function replaceOptionsTradeTrackerTrades(
@@ -179,6 +176,7 @@ export async function replaceOptionsTradeTrackerTrades(
     optionsTradeTrackerTradesPath(trackerId),
     'PUT',
     request,
+    'Options trade tracker',
     signal,
   )
 }
@@ -192,22 +190,17 @@ export async function updateOptionsTradeTrackerNotes(
     optionsTradeTrackerNotesPath(trackerId),
     'PUT',
     request,
+    'Options trade tracker',
     signal,
   )
 }
 
 export async function fetchOptionsTradeStrategyOptions(signal?: AbortSignal) {
-  const response = await fetch(apiUrl(optionsTradeStrategyOptionsPath()), {
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(
-      await responseErrorMessage(response, 'Options trade strategy options'),
-    )
-  }
-
-  return response.json() as Promise<OptionsTradeStrategyOptionsResponse>
+  return requestJson<OptionsTradeStrategyOptionsResponse>(
+    optionsTradeStrategyOptionsPath(),
+    'Options trade strategy options',
+    { signal },
+  )
 }
 
 export async function replaceOptionsTradeStrategyOptions(
@@ -218,30 +211,11 @@ export async function replaceOptionsTradeStrategyOptions(
     optionsTradeStrategyOptionsPath(),
     'PUT',
     request,
+    'Options trade tracker',
     signal,
   )
 }
 
 function encodeTrackerId(trackerId: string) {
   return encodePathSegment(trackerId, 'Tracker id is required.')
-}
-
-async function jsonRequest<TResponse>(
-  path: string,
-  method: 'PATCH' | 'POST' | 'PUT',
-  request: unknown,
-  signal?: AbortSignal,
-) {
-  const response = await fetch(apiUrl(path), {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Options trade tracker'))
-  }
-
-  return response.json() as Promise<TResponse>
 }

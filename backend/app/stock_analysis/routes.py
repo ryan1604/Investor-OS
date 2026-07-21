@@ -1,12 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from app.dependencies import (
-    get_options_client,
-    get_request_limiter,
-    get_stock_analysis_store,
-)
 from app.options.client import OptionsDataUnavailable
-from app.request_limits import RequestCapacityExceeded
+from app.request_limits import RequestCapacityExceeded, request_limit_slot
 from app.schemas import (
     StockAnalysisCurrentPriceResponse,
     StockAnalysisModelRequest,
@@ -26,13 +21,8 @@ router = APIRouter()
     response_model=list[StockAnalysisModelResponse],
 )
 def stock_analysis_models(request: Request) -> list[StockAnalysisModelResponse]:
-    try:
-        with get_request_limiter(request, "stock_analysis_read").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            models = get_stock_analysis_store(request).list_models()
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    with request_limit_slot(request, "stock_analysis_read"):
+        models = request.app.state.stock_analysis_store.list_models()
 
     return [stock_analysis_response(model.ticker, model) for model in models]
 
@@ -44,13 +34,8 @@ def stock_analysis_models(request: Request) -> list[StockAnalysisModelResponse]:
 def refresh_stock_analysis_current_prices(
     request: Request,
 ) -> StockAnalysisPriceRefreshResponse:
-    try:
-        with get_request_limiter(request, "stock_analysis_read").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            models = get_stock_analysis_store(request).list_models()
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    with request_limit_slot(request, "stock_analysis_read"):
+        models = request.app.state.stock_analysis_store.list_models()
 
     results = [
         refresh_stock_analysis_current_price(request, model)
@@ -68,13 +53,8 @@ def stock_analysis_model(
     ticker: str,
 ) -> StockAnalysisModelResponse:
     normalized_ticker = required_ticker(ticker)
-    try:
-        with get_request_limiter(request, "stock_analysis_read").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            model = get_stock_analysis_store(request).get_model(normalized_ticker)
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    with request_limit_slot(request, "stock_analysis_read"):
+        model = request.app.state.stock_analysis_store.get_model(normalized_ticker)
     return stock_analysis_response(normalized_ticker, model)
 
 
@@ -89,27 +69,18 @@ def stock_analysis_current_price(
     normalized_ticker = required_ticker(ticker)
 
     try:
-        with get_request_limiter(request, "options_analysis").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            current_price = get_options_client(request).get_underlying_price(
+        with request_limit_slot(request, "options_analysis"):
+            current_price = request.app.state.options_client.get_underlying_price(
                 normalized_ticker
             )
     except OptionsDataUnavailable as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
-    try:
-        with get_request_limiter(request, "stock_analysis_write").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            get_stock_analysis_store(request).update_current_price(
-                normalized_ticker,
-                current_price,
-            )
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    with request_limit_slot(request, "stock_analysis_write"):
+        request.app.state.stock_analysis_store.update_current_price(
+            normalized_ticker,
+            current_price,
+        )
 
     return StockAnalysisCurrentPriceResponse(
         ticker=normalized_ticker,
@@ -127,17 +98,12 @@ def upsert_stock_analysis_model(
     model_request: StockAnalysisModelRequest,
 ) -> StockAnalysisModelResponse:
     normalized_ticker = required_ticker(ticker)
-    try:
-        with get_request_limiter(request, "stock_analysis_write").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            model = get_stock_analysis_store(request).upsert_model(
-                normalized_ticker,
-                version=model_request.version,
-                payload=model_request.payload,
-            )
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
+    with request_limit_slot(request, "stock_analysis_write"):
+        model = request.app.state.stock_analysis_store.upsert_model(
+            normalized_ticker,
+            version=model_request.version,
+            payload=model_request.payload,
+        )
     return stock_analysis_response(normalized_ticker, model)
 
 
@@ -146,10 +112,10 @@ def refresh_stock_analysis_current_price(
     model: StockAnalysisModel,
 ) -> StockAnalysisPriceRefreshResult:
     try:
-        with get_request_limiter(request, "options_analysis").slot(
+        with request.app.state.request_limiters["options_analysis"].slot(
             timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
         ):
-            current_price = get_options_client(request).get_underlying_price(
+            current_price = request.app.state.options_client.get_underlying_price(
                 model.ticker
             )
     except OptionsDataUnavailable as error:
@@ -163,10 +129,10 @@ def refresh_stock_analysis_current_price(
         )
 
     try:
-        with get_request_limiter(request, "stock_analysis_write").slot(
+        with request.app.state.request_limiters["stock_analysis_write"].slot(
             timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
         ):
-            updated_model = get_stock_analysis_store(request).update_current_price(
+            updated_model = request.app.state.stock_analysis_store.update_current_price(
                 model.ticker,
                 current_price,
             )

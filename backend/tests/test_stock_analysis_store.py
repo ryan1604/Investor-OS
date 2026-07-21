@@ -1,5 +1,3 @@
-import json
-import sqlite3
 from datetime import UTC, datetime
 
 from app.stock_analysis.store import StockAnalysisStore
@@ -152,40 +150,3 @@ def test_update_current_price_inserts_empty_model_for_new_ticker(tmp_path):
     assert model.current_price == 42.5
     assert model.payload == {"bull": {}, "base": {}, "bear": {}}
 
-
-def test_store_reads_legacy_rows_without_current_price_column(tmp_path):
-    database_path = tmp_path / "stock-analysis.sqlite3"
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            CREATE TABLE stock_analysis_models (
-                ticker TEXT PRIMARY KEY,
-                version INTEGER NOT NULL,
-                payload_json TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        connection.execute(
-            """
-            INSERT INTO stock_analysis_models (
-                ticker,
-                version,
-                payload_json,
-                updated_at
-            )
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                "AAPL",
-                1,
-                json.dumps({"bull": {}, "base": {}, "bear": {}}),
-                "2026-06-04T01:02:03+00:00",
-            ),
-        )
-
-    store = StockAnalysisStore(database_path)
-    model = store.get_model("AAPL")
-
-    assert model is not None
-    assert model.current_price is None

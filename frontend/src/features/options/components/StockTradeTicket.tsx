@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
+import { useState } from 'react'
 
-import { LoaderCircle, Send, Ticket } from 'lucide-react'
+import { Ticket } from 'lucide-react'
 
 import type { PortfolioPosition, PortfolioResponse } from '@/api/portfolio'
 import {
@@ -19,7 +19,6 @@ import {
   Sheet,
   SheetContent,
   SheetDescription,
-  SheetFooter,
   SheetHeader,
   SheetTitle,
 } from '@/components/ui/sheet'
@@ -30,11 +29,13 @@ import {
 } from '@/features/orders/lib/orderEntry'
 import { useOrderTicketFlow } from '@/features/orders/lib/orderTicketFlow'
 import {
-  accountOptions,
+  OrderTicketFooter,
+  ReadOnlyTicketAccount,
+} from '@/features/options/components/OrderTicketParts'
+import {
   orderErrorMessage,
   parsePositiveInteger,
   parsePositiveNumber,
-  portfolioAccounts,
 } from '@/features/orders/lib/orderEntryUtils'
 import { formatOptionalPrice } from '@/lib/format'
 
@@ -51,13 +52,8 @@ export function StockTradeTicket({
   portfolio,
   selectedAccount,
 }: StockTradeTicketProps) {
-  const accounts = useMemo(() => portfolioAccounts(portfolio), [portfolio])
-  const defaultAccount =
-    selectedAccount && accounts.includes(selectedAccount)
-      ? selectedAccount
-      : accounts[0] ?? ''
   const [open, setOpen] = useState(false)
-  const [account, setAccount] = useState(defaultAccount)
+  const account = selectedAccount ?? ''
   const [action, setAction] = useState<OrderAction>('BUY')
   const [quantity, setQuantity] = useState('1')
   const [orderType, setOrderType] = useState<OrderType>('MARKET')
@@ -87,8 +83,6 @@ export function StockTradeTicket({
     setOpen(nextOpen)
     if (!nextOpen) {
       ticket.resetTicketState()
-    } else {
-      setAccount(defaultAccount)
     }
   }
 
@@ -133,12 +127,7 @@ export function StockTradeTicket({
               <StockConfirmationPreview preview={ticket.preview} />
             ) : (
               <div className="grid gap-4">
-                <SelectField
-                  label="Account"
-                  value={account}
-                  onValueChange={setAccount}
-                  options={accountOptions(portfolio)}
-                />
+                <ReadOnlyTicketAccount account={account} label="Account" />
 
                 <Field>
                   <FieldLabel>Action</FieldLabel>
@@ -219,71 +208,15 @@ export function StockTradeTicket({
             )}
           </div>
 
-          <SheetFooter>
-            {ticket.step === 'submitted' ? (
-              <Button
-                type="button"
-                onClick={() => resetDraft(false)}
-                className="cursor-pointer active:cursor-pointer"
-              >
-                Close
-              </Button>
-            ) : ticket.step === 'confirm' ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => ticket.setStep('draft')}
-                  disabled={ticket.isSubmitting}
-                  className="cursor-pointer active:cursor-pointer"
-                >
-                  Edit
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void handleTransmit()}
-                  disabled={ticket.isSubmitting}
-                  className="cursor-pointer active:cursor-pointer"
-                >
-                  {ticket.isSubmitting ? (
-                    <LoaderCircle
-                      className="animate-spin"
-                      data-icon="inline-start"
-                    />
-                  ) : (
-                    <Send data-icon="inline-start" />
-                  )}
-                  Transmit
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => resetDraft(false)}
-                  disabled={ticket.isSubmitting}
-                  className="cursor-pointer active:cursor-pointer"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="button"
-                  onClick={() => void handleReview()}
-                  disabled={Boolean(validationError) || ticket.isSubmitting}
-                  className="cursor-pointer active:cursor-pointer disabled:cursor-not-allowed"
-                >
-                  {ticket.isSubmitting ? (
-                    <LoaderCircle
-                      className="animate-spin"
-                      data-icon="inline-start"
-                    />
-                  ) : null}
-                  Review
-                </Button>
-              </>
-            )}
-          </SheetFooter>
+          <OrderTicketFooter
+            step={ticket.step}
+            isSubmitting={ticket.isSubmitting}
+            reviewDisabled={Boolean(validationError)}
+            onClose={() => resetDraft(false)}
+            onEdit={() => ticket.setStep('draft')}
+            onReview={() => void handleReview()}
+            onTransmit={() => void handleTransmit()}
+          />
         </SheetContent>
       </Sheet>
     </>

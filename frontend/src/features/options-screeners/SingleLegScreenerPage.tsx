@@ -1,6 +1,7 @@
 import { LoaderCircle, Radar, Square } from 'lucide-react'
 
 import type { PortfolioResponse } from '@/api/portfolio'
+import { errorMessage as requestErrorMessage } from '@/api/client'
 import {
   refreshOptionsScreenerQuote,
   type OptionsScreenerFilters,
@@ -217,7 +218,8 @@ export function SingleLegScreenerPage<Candidate extends SingleLegCandidate>({
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : 'The selected option contract could not be refreshed.'
+  return requestErrorMessage(
+    error,
+    'The selected option contract could not be refreshed.',
+  )
 }

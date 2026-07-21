@@ -44,17 +44,17 @@ const POSITIONS_TABLE_COLUMNS: PositionsTableColumn[] = [
   { label: 'Change %', sortKey: 'change_percent', align: 'right' },
   { label: 'P&L', sortKey: 'pnl', align: 'right' },
   { label: 'P&L %', sortKey: 'pnl_percent', align: 'right' },
-  { label: 'Unrealized P&L', sortKey: 'unrealized_pnl', align: 'right' },
+  { label: 'Unreal. P&L', sortKey: 'unrealized_pnl', align: 'right' },
   {
-    label: 'Unrealized P&L %',
+    label: 'Unreal. P&L %',
     sortKey: 'unrealized_pnl_percent',
     align: 'right',
   },
   { label: 'Market Value', sortKey: 'market_value', align: 'right' },
   { label: 'Positions', sortKey: 'quantity', align: 'right' },
   { label: 'Cost Basis', sortKey: 'cost_basis', align: 'right' },
-  { label: 'Average Price', sortKey: 'average_price', align: 'right' },
-  { label: '% Net Liquidity', sortKey: 'net_liquidity_percent', align: 'right' },
+  { label: 'Avg Price', sortKey: 'average_price', align: 'right' },
+  { label: '% Net Liq', sortKey: 'net_liquidity_percent', align: 'right' },
 ]
 
 function SortableTableHead({
@@ -130,7 +130,7 @@ export function PositionsTable({
           </Alert>
         ) : null}
 
-        <Table>
+        <Table className="text-xs">
           <TableHeader>
             <TableRow>
               {POSITIONS_TABLE_COLUMNS.map((column) => (
@@ -159,7 +159,7 @@ export function PositionsTable({
             ) : positions.length ? (
               positions.map((position, index) => (
                 <TableRow key={stablePositionKeys[index]}>
-                  <TableCell className="min-w-56 font-medium">
+                  <TableCell className="min-w-40 font-medium">
                     <div className="flex flex-col gap-0.5">
                       <span>{position.instrumentTitle}</span>
                       {position.instrumentDetail ? (

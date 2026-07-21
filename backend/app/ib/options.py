@@ -42,6 +42,17 @@ def raise_invalid_ticker_if_needed(app, req_id: int, ticker: str) -> None:
         raise OptionsDataUnavailable(f"Invalid ticker: {ticker}.")
 
 
+def pop_invalid_contract_error(app, req_id: int) -> bool:
+    request_errors = getattr(app, "request_errors_by_req_id", None)
+    if request_errors is None:
+        return False
+
+    with app.lock:
+        request_error = request_errors.pop(req_id, None)
+
+    return bool(request_error and request_error[0] in IB_INVALID_CONTRACT_CODES)
+
+
 class IbHistoricalDailyBarProvider:
     def __init__(self, app: IbPortfolioApp, *, timeout_seconds: int = 8) -> None:
         self.app = app
@@ -342,25 +353,67 @@ class IbOptionChainSnapshotProvider:
         app: IbPortfolioApp,
         *,
         timeout_seconds: float = 4,
+        contract_timeout_seconds: float = 8,
     ) -> None:
         self.app = app
         self.timeout_seconds = timeout_seconds
+        self.contract_timeout_seconds = contract_timeout_seconds
 
-    def fetch_chain_quotes(
+    def fetch_chain_contracts(
         self,
         ticker: str,
         expiration: str,
         strikes: list[float],
-    ) -> dict[tuple[float, str], OptionQuote]:
+    ) -> list[ScannerOptionContract]:
         if not self.app.isConnected() or not strikes:
-            return {}
+            return []
 
         normalized_ticker = normalize_ticker(ticker)
+        allowed_strikes = set(strikes)
+        contracts: list[ScannerOptionContract] = []
+        for right in OPTION_RIGHTS:
+            try:
+                selection = fetch_standard_option_contracts(
+                    self.app,
+                    normalized_ticker,
+                    expiration,
+                    allowed_strikes,
+                    right,
+                    timeout_seconds=self.contract_timeout_seconds,
+                )
+                contracts.extend(selection.contracts)
+            except OptionsDataUnavailable as error:
+                if not is_contract_timeout(error):
+                    raise
+                logger.info(
+                    "Broad option contract request timed out; falling back "
+                    "to exact contracts ticker=%s expiration=%s right=%s",
+                    normalized_ticker,
+                    expiration,
+                    right,
+                )
+                contracts.extend(
+                    fetch_exact_chain_contracts(
+                        self.app,
+                        normalized_ticker,
+                        expiration,
+                        strikes,
+                        right,
+                        timeout_seconds=self.contract_timeout_seconds,
+                    )
+                )
+        return select_chain_contracts(contracts)
+
+    def fetch_chain_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+    ) -> dict[tuple[float, str], OptionQuote]:
+        if not self.app.isConnected() or not contracts:
+            return {}
+
         subscriptions = OptionMarketDataSubscriptions(
             self.app,
-            normalized_ticker,
-            expiration,
-            strikes,
+            contracts,
             snapshot=False,
         )
 
@@ -388,21 +441,16 @@ class IbOptionChainStreamProvider:
 
     def stream_chain_quotes(
         self,
-        ticker: str,
-        expiration: str,
-        strikes: list[float],
+        contracts: list[ScannerOptionContract],
         stop_event: Event,
     ) -> Iterable[tuple[tuple[float, str], OptionQuote]]:
-        if not self.app.isConnected() or not strikes:
+        if not self.app.isConnected() or not contracts:
             return
 
-        normalized_ticker = normalize_ticker(ticker)
         latest_values: dict[tuple[float, str], dict[str, float | int | None]] = {}
         subscriptions = OptionMarketDataSubscriptions(
             self.app,
-            normalized_ticker,
-            expiration,
-            strikes,
+            contracts,
             snapshot=False,
         )
 
@@ -434,8 +482,8 @@ class IbOptionChainStreamProvider:
                 logger.info(
                     "Option chain stream updates ticker=%s expiration=%s "
                     "changed_quotes=%s update_ms=%.1f",
-                    normalized_ticker,
-                    expiration,
+                    subscriptions.ticker,
+                    subscriptions.expiration,
                     len(changed_quotes),
                     elapsed_ms(updates_started_at),
                 )
@@ -561,46 +609,13 @@ class IbOptionScannerProvider:
         allowed_strikes: set[float],
         right: str,
     ) -> ScannerContractSelection:
-        with self.app.lock:
-            req_id = self.app.next_contract_details_req_id
-            self.app.next_contract_details_req_id += 1
-            self.app.contract_details[req_id] = []
-            ready = Event()
-            self.app.contract_details_ready_by_req_id[req_id] = ready
-
-        self.app.reqContractDetails(
-            req_id,
-            us_option_universe_contract(
-                ticker,
-                expiration=expiration,
-                right=right,
-            ),
-        )
-        completed = ready.wait(timeout=self.contract_timeout_seconds)
-        with self.app.lock:
-            details = self.app.contract_details.pop(req_id, [])
-            self.app.contract_details_ready_by_req_id.pop(req_id, None)
-
-        raise_invalid_ticker_if_needed(self.app, req_id, ticker)
-        if not completed:
-            raise OptionsDataUnavailable(
-                f"Option contract request timed out for {ticker} {expiration}."
-            )
-
-        contracts = [
-            scanner_contract(detail.contract)
-            for detail in details
-            if is_standard_option_contract(
-                detail.contract,
-                ticker=ticker,
-                expiration=expiration,
-                allowed_strikes=allowed_strikes,
-                right=right,
-            )
-        ]
-        return ScannerContractSelection(
-            contracts=contracts,
-            excluded_contracts=len(details) - len(contracts),
+        return fetch_standard_option_contracts(
+            self.app,
+            ticker,
+            expiration,
+            allowed_strikes,
+            right,
+            timeout_seconds=self.contract_timeout_seconds,
         )
 
     def _resolve_option_contracts(
@@ -725,10 +740,168 @@ def is_standard_option_contract(
         == expiration.replace("-", "")
         and contract.strike in allowed_strikes
         and contract.strike > 0
-        and contract.tradingClass == ticker
+        and has_usable_trading_class(contract)
         and contract.conId > 0
         and bool(contract.localSymbol)
     )
+
+
+def fetch_standard_option_contracts(
+    app: IbPortfolioApp,
+    ticker: str,
+    expiration: str,
+    allowed_strikes: set[float],
+    right: str,
+    *,
+    timeout_seconds: float,
+) -> ScannerContractSelection:
+    with app.lock:
+        req_id = app.next_contract_details_req_id
+        app.next_contract_details_req_id += 1
+        app.contract_details[req_id] = []
+        ready = Event()
+        app.contract_details_ready_by_req_id[req_id] = ready
+
+    app.reqContractDetails(
+        req_id,
+        us_option_universe_contract(
+            ticker,
+            expiration=expiration,
+            right=right,
+        ),
+    )
+    completed = ready.wait(timeout=timeout_seconds)
+    with app.lock:
+        details = app.contract_details.pop(req_id, [])
+        app.contract_details_ready_by_req_id.pop(req_id, None)
+
+    raise_invalid_ticker_if_needed(app, req_id, ticker)
+    if not completed:
+        raise OptionsDataUnavailable(
+            f"Option contract request timed out for {ticker} {expiration}."
+        )
+
+    contracts = [
+        scanner_contract(detail.contract)
+        for detail in details
+        if is_standard_option_contract(
+            detail.contract,
+            ticker=ticker,
+            expiration=expiration,
+            allowed_strikes=allowed_strikes,
+            right=right,
+        )
+    ]
+    return ScannerContractSelection(
+        contracts=contracts,
+        excluded_contracts=len(details) - len(contracts),
+    )
+
+
+def fetch_exact_chain_contracts(
+    app: IbPortfolioApp,
+    ticker: str,
+    expiration: str,
+    strikes: list[float],
+    right: str,
+    *,
+    timeout_seconds: float,
+) -> list[ScannerOptionContract]:
+    contracts: list[ScannerOptionContract] = []
+    for strike in strikes:
+        try:
+            contracts.extend(
+                fetch_exact_option_contracts(
+                    app,
+                    ticker,
+                    expiration,
+                    strike,
+                    right,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+        except OptionsDataUnavailable as error:
+            if not is_contract_timeout(error):
+                raise
+            logger.info(
+                "Exact option contract request timed out ticker=%s "
+                "expiration=%s strike=%s right=%s",
+                ticker,
+                expiration,
+                strike,
+                right,
+            )
+    return contracts
+
+
+def fetch_exact_option_contracts(
+    app: IbPortfolioApp,
+    ticker: str,
+    expiration: str,
+    strike: float,
+    right: str,
+    *,
+    timeout_seconds: float,
+) -> list[ScannerOptionContract]:
+    with app.lock:
+        req_id = app.next_contract_details_req_id
+        app.next_contract_details_req_id += 1
+        app.contract_details[req_id] = []
+        ready = Event()
+        app.contract_details_ready_by_req_id[req_id] = ready
+
+    app.reqContractDetails(
+        req_id,
+        us_option_contract(
+            ticker,
+            expiration=expiration,
+            strike=strike,
+            right=right,
+        ),
+    )
+    completed = ready.wait(timeout=timeout_seconds)
+    with app.lock:
+        details = app.contract_details.pop(req_id, [])
+        app.contract_details_ready_by_req_id.pop(req_id, None)
+
+    if pop_invalid_contract_error(app, req_id):
+        return []
+    if not completed:
+        raise OptionsDataUnavailable(
+            f"Option contract request timed out for {ticker} {expiration}."
+        )
+
+    return [
+        scanner_contract(detail.contract)
+        for detail in details
+        if is_exact_standard_option_contract(
+            detail.contract,
+            ticker=ticker,
+            expiration=expiration,
+            strike=strike,
+            right=right,
+        )
+    ]
+
+
+def select_chain_contracts(
+    contracts: list[ScannerOptionContract],
+) -> list[ScannerOptionContract]:
+    selected: dict[tuple[float, str], ScannerOptionContract] = {}
+    for contract in contracts:
+        key = (contract.strike, option_right_code(contract.right))
+        current = selected.get(key)
+        if current is None or contract_sort_key(contract) < contract_sort_key(current):
+            selected[key] = contract
+    return sorted(selected.values(), key=lambda contract: (contract.strike, contract.right))
+
+
+def is_contract_timeout(error: OptionsDataUnavailable) -> bool:
+    return "Option contract request timed out" in str(error)
+
+
+def contract_sort_key(contract: ScannerOptionContract) -> tuple[int, int]:
+    return (0 if contract.exchange == "SMART" else 1, contract.con_id)
 
 
 def is_exact_standard_option_contract(
@@ -748,10 +921,14 @@ def is_exact_standard_option_contract(
         and contract.lastTradeDateOrContractMonth[:8]
         == expiration.replace("-", "")
         and contract.strike == strike
-        and contract.tradingClass == ticker
+        and has_usable_trading_class(contract)
         and contract.conId > 0
         and bool(contract.localSymbol)
     )
+
+
+def has_usable_trading_class(contract: Contract) -> bool:
+    return bool(contract.tradingClass)
 
 
 def select_refreshed_contract(
@@ -823,6 +1000,10 @@ def scanner_market_data_contract(contract: ScannerOptionContract) -> Contract:
     return ib_contract
 
 
+def option_right_code(right: str) -> str:
+    return "C" if right == "CALL" else "P" if right == "PUT" else right
+
+
 def clean_quote_value(value: float | int | None) -> float | None:
     if value is None:
         return None
@@ -836,16 +1017,15 @@ class OptionMarketDataSubscriptions:
     def __init__(
         self,
         app: IbPortfolioApp,
-        ticker: str,
-        expiration: str,
-        strikes: list[float],
+        contracts: list[ScannerOptionContract],
         *,
         snapshot: bool,
     ) -> None:
         self.app = app
-        self.ticker = ticker
-        self.expiration = expiration
-        self.strikes = strikes
+        self.contracts = contracts
+        first_contract = contracts[0] if contracts else None
+        self.ticker = first_contract.ticker if first_contract else ""
+        self.expiration = first_contract.expiration if first_contract else ""
         self.snapshot = snapshot
         self.req_ids: list[int] = []
 
@@ -855,29 +1035,25 @@ class OptionMarketDataSubscriptions:
         with self.app.lock:
             self.app.option_market_data_ready.clear()
 
-            for strike in self.strikes:
-                for right in OPTION_RIGHTS:
-                    req_id = self.app.next_option_market_req_id
-                    self.app.next_option_market_req_id += 1
-                    option_key = (strike, right)
-                    self.app.option_market_req_to_key[req_id] = option_key
-                    self.app.option_market_data[req_id] = {}
-                    self.req_ids.append(req_id)
-                    requests.append(
-                        (
-                            req_id,
-                            us_option_contract(
-                                self.ticker,
-                                expiration=self.expiration,
-                                strike=strike,
-                                right=right,
-                            ),
-                            OPTION_MARKET_DATA_GENERIC_TICKS,
-                            self.snapshot,
-                            False,
-                            [],
-                        )
+            for contract in self.contracts:
+                req_id = self.app.next_option_market_req_id
+                self.app.next_option_market_req_id += 1
+                option_key = (contract.strike, option_right_code(contract.right))
+                self.app.option_market_req_to_key[req_id] = option_key
+                self.app.option_market_data[req_id] = {
+                    "local_symbol": contract.local_symbol,
+                }
+                self.req_ids.append(req_id)
+                requests.append(
+                    (
+                        req_id,
+                        scanner_market_data_contract(contract),
+                        OPTION_MARKET_DATA_GENERIC_TICKS,
+                        self.snapshot,
+                        False,
+                        [],
                     )
+                )
 
         for request in requests:
             self.app.reqMktData(*request)
@@ -887,7 +1063,7 @@ class OptionMarketDataSubscriptions:
             "expiration=%s strikes=%s subscriptions=%s open_ms=%.1f",
             self.ticker,
             self.expiration,
-            len(self.strikes),
+            len({contract.strike for contract in self.contracts}),
             len(requests),
             elapsed_ms(started_at),
         )

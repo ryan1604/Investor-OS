@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
-from app.sqlite import connect_row_database
+from app.sqlite import RowDatabase
 
 
 class OptionsTradeTrackerDuplicateNameError(ValueError):
@@ -45,10 +45,9 @@ class OptionsTrade:
     updated_at: str
 
 
-class OptionsTradeTrackerStore:
+class OptionsTradeTrackerStore(RowDatabase):
     def __init__(self, database_path: str | Path) -> None:
-        self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(database_path)
         self.initialize()
 
     def initialize(self) -> None:
@@ -65,7 +64,7 @@ class OptionsTradeTrackerStore:
                 )
                 """
             )
-            self._initialize_trade_rows(connection)
+            create_trade_rows_table(connection)
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS options_trade_strategy_options (
@@ -332,74 +331,6 @@ class OptionsTradeTrackerStore:
 
         return self.list_strategy_options()
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect_row_database(self.database_path)
-
-    def _initialize_trade_rows(self, connection: sqlite3.Connection) -> None:
-        existing_table = connection.execute(
-            """
-            SELECT 1
-            FROM sqlite_master
-            WHERE type = 'table' AND name = 'options_trade_rows'
-            """
-        ).fetchone()
-        if existing_table is None:
-            create_trade_rows_table(connection)
-            return
-
-        primary_key_columns = [
-            row["name"]
-            for row in sorted(
-                connection.execute(
-                    "PRAGMA table_info(options_trade_rows)"
-                ).fetchall(),
-                key=lambda row: row["pk"],
-            )
-            if row["pk"] > 0
-        ]
-        if primary_key_columns == ["tracker_id", "id"]:
-            return
-
-        connection.execute(
-            "ALTER TABLE options_trade_rows RENAME TO options_trade_rows_legacy"
-        )
-        create_trade_rows_table(connection)
-        connection.execute(
-            """
-            INSERT INTO options_trade_rows (
-                tracker_id,
-                id,
-                display_order,
-                status,
-                strategy,
-                ticker,
-                month,
-                size,
-                strike_price,
-                credit_debit,
-                exit,
-                created_at,
-                updated_at
-            )
-            SELECT
-                tracker_id,
-                id,
-                display_order,
-                status,
-                strategy,
-                ticker,
-                month,
-                size,
-                strike_price,
-                credit_debit,
-                exit,
-                created_at,
-                updated_at
-            FROM options_trade_rows_legacy
-            """
-        )
-        connection.execute("DROP TABLE options_trade_rows_legacy")
-
     def _tracker_exists(
         self,
         connection: sqlite3.Connection,
@@ -443,7 +374,7 @@ def trade_from_row(row: sqlite3.Row) -> OptionsTrade:
 def create_trade_rows_table(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
-        CREATE TABLE options_trade_rows (
+        CREATE TABLE IF NOT EXISTS options_trade_rows (
             tracker_id TEXT NOT NULL,
             id TEXT NOT NULL,
             display_order INTEGER NOT NULL,

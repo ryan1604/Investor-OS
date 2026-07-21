@@ -31,6 +31,7 @@ import {
   type OptionsScreenerScanState,
   type OptionsScreenerSettingsResponse,
 } from '@/api/optionsScreeners'
+import { errorMessage as requestErrorMessage } from '@/api/client'
 import type {
   CashSecuredPutCandidate,
   CoveredCallCandidate,
@@ -65,6 +66,8 @@ export type CsSortKey =
   | 'distance_percentage'
 
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'invalid' | 'error'
+type SortDirection = 'asc' | 'desc'
+type SortState<Key extends string> = { key: Key; direction: SortDirection }
 
 type OptionsScreenersContextValue = {
   isLoading: boolean
@@ -172,18 +175,11 @@ export function OptionsScreenersProvider({
   const [confirmedCsFilters, setConfirmedCsFilters] =
     useState(defaultCsFilters)
   const [scanActionError, setScanActionError] = useState<string | null>(null)
-  const [cspSort, setCspSortState] = useState<{
-    key: CspSortKey
-    direction: 'asc' | 'desc'
-  }>({ key: 'annualized_return', direction: 'desc' })
-  const [ccSort, setCcSortState] = useState<{
-    key: CcSortKey
-    direction: 'asc' | 'desc'
-  }>({ key: 'annualized_return', direction: 'desc' })
-  const [csSort, setCsSortState] = useState<{
-    key: CsSortKey
-    direction: 'asc' | 'desc'
-  }>({ key: 'annualized_return', direction: 'desc' })
+  const [sorts, setSorts] = useState({
+    csp: { key: 'annualized_return', direction: 'desc' } as SortState<CspSortKey>,
+    cc: { key: 'annualized_return', direction: 'desc' } as SortState<CcSortKey>,
+    cs: { key: 'annualized_return', direction: 'desc' } as SortState<CsSortKey>,
+  })
   const confirmedTickersRef = useRef<Record<OptionsScreenerTickerList, string[]>>({
     csp_cc: [],
     cs: [],
@@ -390,33 +386,33 @@ export function OptionsScreenersProvider({
       cspFilterDraft,
       cspFilters: confirmedCspFilters,
       cspFilterError: validation.error,
-      cspFilterSaveStatus: validation.error
-        ? 'invalid'
-        : validation.filters &&
-            sameFilters(validation.filters, confirmedCspFilters) &&
-            cspFilterSaveStatus !== 'saving'
-          ? 'saved'
-          : cspFilterSaveStatus,
+      cspFilterSaveStatus: displaySaveStatus(
+        validation.error,
+        validation.filters,
+        confirmedCspFilters,
+        cspFilterSaveStatus,
+        sameFilters,
+      ),
       ccFilterDraft,
       ccFilters: confirmedCcFilters,
       ccFilterError: ccValidation.error,
-      ccFilterSaveStatus: ccValidation.error
-        ? 'invalid'
-        : ccValidation.filters &&
-            sameFilters(ccValidation.filters, confirmedCcFilters) &&
-            ccFilterSaveStatus !== 'saving'
-          ? 'saved'
-          : ccFilterSaveStatus,
+      ccFilterSaveStatus: displaySaveStatus(
+        ccValidation.error,
+        ccValidation.filters,
+        confirmedCcFilters,
+        ccFilterSaveStatus,
+        sameFilters,
+      ),
       csFilterDraft,
       csFilters: confirmedCsFilters,
       csFilterError: csValidation.error,
-      csFilterSaveStatus: csValidation.error
-        ? 'invalid'
-        : csValidation.filters &&
-            sameCreditSpreadFilters(csValidation.filters, confirmedCsFilters) &&
-            csFilterSaveStatus !== 'saving'
-          ? 'saved'
-          : csFilterSaveStatus,
+      csFilterSaveStatus: displaySaveStatus(
+        csValidation.error,
+        csValidation.filters,
+        confirmedCsFilters,
+        csFilterSaveStatus,
+        sameCreditSpreadFilters,
+      ),
       tickerSaveError,
       isTickerUpdatePending,
       scanActionError,
@@ -427,9 +423,9 @@ export function OptionsScreenersProvider({
       cspSnapshot: scanState.completed_snapshots.csp,
       ccSnapshot: scanState.completed_snapshots.cc,
       csSnapshot: scanState.completed_snapshots.cs,
-      cspSort,
-      ccSort,
-      csSort,
+      cspSort: sorts.csp,
+      ccSort: sorts.cc,
+      csSort: sorts.cs,
       addCspTickers,
       addCsTickers,
       removeCspTicker: (ticker) =>
@@ -488,12 +484,18 @@ export function OptionsScreenersProvider({
       startCcScan,
       startCsScan,
       cancelActiveScan,
-      setCspSort: (key) =>
-        setCspSortState((current) => nextSort(current, key)),
-      setCcSort: (key) =>
-        setCcSortState((current) => nextSort(current, key)),
-      setCsSort: (key) =>
-        setCsSortState((current) => nextSort(current, key)),
+      setCspSort: (key) => setSorts((current) => ({
+        ...current,
+        csp: nextSort(current.csp, key),
+      })),
+      setCcSort: (key) => setSorts((current) => ({
+        ...current,
+        cc: nextSort(current.cc, key),
+      })),
+      setCsSort: (key) => setSorts((current) => ({
+        ...current,
+        cs: nextSort(current.cs, key),
+      })),
     }),
     [
       addCspTickers,
@@ -502,15 +504,12 @@ export function OptionsScreenersProvider({
       cspFilterDraft,
       cspFilterSaveStatus,
       confirmedCspFilters,
-      cspSort,
       ccFilterDraft,
       ccFilterSaveStatus,
-      ccSort,
       ccValidation.error,
       ccValidation.filters,
       csFilterDraft,
       csFilterSaveStatus,
-      csSort,
       csValidation.error,
       csValidation.filters,
       confirmedCcFilters,
@@ -522,6 +521,7 @@ export function OptionsScreenersProvider({
       scanActionError,
       scanState,
       settings,
+      sorts,
       startCspScan,
       startCcScan,
       startCsScan,
@@ -555,13 +555,29 @@ function addTickersToList(
 }
 
 function nextSort<Key extends string>(
-  current: { key: Key; direction: 'asc' | 'desc' },
+  current: SortState<Key>,
   key: Key,
 ) {
   return {
     key,
     direction: current.key === key && current.direction === 'desc' ? 'asc' : 'desc',
   } as const
+}
+
+function displaySaveStatus<Filters>(
+  error: string | null,
+  filters: Filters | null,
+  confirmedFilters: Filters,
+  currentStatus: SaveStatus,
+  same: (first: Filters, second: Filters) => boolean,
+): SaveStatus {
+  if (error) {
+    return 'invalid'
+  }
+  if (filters && same(filters, confirmedFilters) && currentStatus !== 'saving') {
+    return 'saved'
+  }
+  return currentStatus
 }
 
 function draftWithField<Draft extends ScreenerFilterDraft>(
@@ -768,7 +784,7 @@ function toggleValue<Value extends string | number>(
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Unexpected screener error.'
+  return requestErrorMessage(error, 'Unexpected screener error.')
 }
 
 export function cspCandidates(

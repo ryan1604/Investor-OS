@@ -20,17 +20,20 @@ Avoid `--reload` while connected to IB unless needed, because reload workers can
 
 ## Runtime Settings
 
-Runtime settings are fixed local Python defaults in `app/config.py`. They are not loaded from `.env` files or environment variables.
+Runtime settings are fixed local Python defaults in `app/config.py`; only `alpha_vantage_api_key` is read from `.env` or `../.env`.
 
 ```text
 Settings.ib_host = "127.0.0.1"
 Settings.ib_port = 7496
-Settings.ib_client_id = 1
+Settings.ib_client_id = 0
 Settings.options_database_path = "data/options.sqlite3"
 Settings.options_screeners_database_path = "data/options_screeners.sqlite3"
 Settings.options_trade_trackers_database_path = "data/options_trade_trackers.sqlite3"
+Settings.orders_database_path = "data/orders.sqlite3"
 Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
+Settings.earnings_watch_database_path = "data/earnings_watch.sqlite3"
+Settings.alpha_vantage_api_key = ALPHA_VANTAGE_API_KEY from .env
 Settings.allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -45,9 +48,13 @@ Settings.allowed_origins = [
 
 `Settings.portfolio_chart_values_database_path` stores manual account-scoped Portfolio history by month. Replacing one account's rows is transactional and does not affect other accounts.
 
-`Settings.options_trade_trackers_database_path` stores named trackers, tracker-scoped trade rows and notes, and global strategy options. Trade row identity is scoped by tracker, and startup migrates the legacy global row-id schema when present.
+`Settings.options_trade_trackers_database_path` stores named trackers, tracker-scoped trade rows and notes, and global strategy options. Trade row identity is scoped by tracker.
 
-All five local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization and compatibility migrations are handled by the stores.
+`Settings.orders_database_path` stores local order previews and reconciled order records.
+
+`Settings.earnings_watch_database_path` stores Earnings Watch tickers, review flags, and refresh state.
+
+All seven local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization is handled by the stores.
 
 ## Portfolio API
 
@@ -112,6 +119,8 @@ WS    /orders/ws
 Order requests require an explicit account. Stock orders support whole-share buy and sell tickets with market or limit order types and DAY or GTC time-in-force. Option strategy orders support one or more signed legs with a required limit price and optional take-profit and stop-loss prices.
 
 `/orders/preview` validates and summarizes a ticket without transmitting it. `/orders/transmit` submits the ticket to IB. Amendments can update editable order prices and time-in-force values, and cancellation requires the submitted account. Order records are reconciled with IB and use IB-authoritative status updates; `/orders/ws` sends snapshots and incremental updates for active orders and current-day terminal history.
+
+External IBKR orders are discovered through the API open-order feed. The backend connects with client ID `0`, enables automatic binding for manual TWS orders, and requests all open orders after connecting. TWS or IB Gateway must allow API writes, and read-only API mode must be disabled before externally created orders can be edited. Some orders may be visible without being bindable by this session; those orders stay visible but read-only. Binding manual orders can assign or change API order IDs, so IB permanent IDs are treated as the durable identity when available. Only reconstructed stock market/limit orders, single-option limit orders, and fully described supported option combo limit orders are marked editable; other IB order types remain read-only.
 
 ## Stock Analysis API
 

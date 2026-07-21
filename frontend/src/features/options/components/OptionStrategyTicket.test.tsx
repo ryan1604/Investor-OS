@@ -122,6 +122,8 @@ describe('OptionStrategyTicket', () => {
     vi.mocked(previewOrder).mockResolvedValue(previewResponse())
 
     renderTicket()
+    expect(screen.queryByRole('combobox', { name: /strategy account/i })).toBeNull()
+    expect(screen.getByText('DU222')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /review/i }))
 
     await waitFor(() => {
@@ -215,7 +217,9 @@ describe('OptionStrategyTicket', () => {
     )
 
     expect(screen.getByText('Option strategy')).toBeTruthy()
+    expect(screen.getByText('No account selected')).toBeTruthy()
     expect(screen.getByText('Select an account.')).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: /strategy account/i })).toBeNull()
     expect(
       (screen.getByRole('button', { name: /review/i }) as HTMLButtonElement)
         .disabled,
@@ -307,11 +311,14 @@ describe('OptionStrategyTicket', () => {
         parent_order_id: null,
         account: 'DU222',
         status: 'submitted',
+        reconciliation_status: 'confirmed',
         editable: true,
         filled: 0,
         remaining: null,
         avg_fill_price: null,
         rejection_message: null,
+        is_open: true,
+        is_current_day_history: false,
         submitted_at: '2026-06-03T00:00:00Z',
         updated_at: '2026-06-03T00:00:00Z',
         preview,

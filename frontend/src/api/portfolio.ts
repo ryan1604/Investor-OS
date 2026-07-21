@@ -1,4 +1,4 @@
-import { apiUrl, apiWebSocketUrl, responseErrorMessage } from '@/api/client'
+import { apiWebSocketUrl, requestJson } from '@/api/client'
 
 export type IbStatus = {
   connected: boolean
@@ -59,11 +59,5 @@ export type PortfolioResponse = {
 export const PORTFOLIO_WS_URL = apiWebSocketUrl('/portfolio/ws')
 
 export async function fetchPortfolio() {
-  const response = await fetch(apiUrl('/portfolio'))
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Portfolio'))
-  }
-
-  return response.json() as Promise<PortfolioResponse>
+  return requestJson<PortfolioResponse>('/portfolio', 'Portfolio')
 }

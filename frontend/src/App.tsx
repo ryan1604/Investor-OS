@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { AppSidebar } from '@/components/AppSidebar'
 import {
@@ -7,6 +7,7 @@ import {
 } from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
+import { EarningsWatchPage } from '@/features/earnings-watch/EarningsWatchPage'
 import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
 import { OptionsPage } from '@/features/options/OptionsPage'
 import { CspScreenerPage } from '@/features/options-screeners/CspScreenerPage'
@@ -17,6 +18,7 @@ import { OrdersPage } from '@/features/orders/OrdersPage'
 import { useOrders } from '@/features/orders/hooks/useOrders'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
 import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
+import { portfolioAccountIds } from '@/features/portfolio/hooks/useSelectedAccount'
 import { RankStocksPage } from '@/features/rank-stocks/RankStocksPage'
 import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
 
@@ -29,13 +31,34 @@ export type AppPage =
   | 'options-trade-tracker'
   | 'orders'
   | 'stock-analysis'
+  | 'earnings-watch'
   | 'rank-stocks'
 
 function App() {
   const [activePage, setActivePage] = useState<AppPage>('portfolio')
-  const [selectedPortfolioAccount, setSelectedPortfolioAccount] = useState<
+  const [selectedAccount, setSelectedAccount] = useState<
     string | null
   >(null)
+  const portfolioState = usePortfolio()
+  const accounts = useMemo(
+    () => portfolioAccountIds(portfolioState.portfolio),
+    [portfolioState.portfolio],
+  )
+
+  useEffect(() => {
+    // Keep the session-only selected account valid as portfolio accounts load.
+    if (!accounts.length) {
+      if (selectedAccount !== null) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect
+        setSelectedAccount(null)
+      }
+      return
+    }
+
+    if (!selectedAccount || !accounts.includes(selectedAccount)) {
+      setSelectedAccount(accounts[0])
+    }
+  }, [accounts, selectedAccount])
 
   return (
     <TooltipProvider>
@@ -45,24 +68,45 @@ function App() {
 
           <SidebarInset className="min-w-0 p-6">
             {activePage === 'portfolio' ? (
-              <PortfolioRoute
-                selectedAccount={selectedPortfolioAccount}
-                onSelectedAccountChange={setSelectedPortfolioAccount}
+              <PortfolioPage
+                portfolioState={portfolioState}
+                selectedAccount={selectedAccount}
+                onSelectedAccountChange={setSelectedAccount}
               />
             ) : activePage === 'options' ? (
-              <OptionsRoute selectedAccount={selectedPortfolioAccount} />
+              <OptionsRoute
+                accounts={accounts}
+                portfolioState={portfolioState}
+                selectedAccount={selectedAccount}
+                onSelectedAccountChange={setSelectedAccount}
+              />
             ) : activePage === 'csp-screener' ? (
-              <CspScreenerRoute selectedAccount={selectedPortfolioAccount} />
+              <CspScreenerPage
+                portfolio={portfolioState.portfolio}
+                selectedAccount={selectedAccount}
+              />
             ) : activePage === 'cc-screener' ? (
-              <CcScreenerRoute selectedAccount={selectedPortfolioAccount} />
+              <CcScreenerPage
+                portfolio={portfolioState.portfolio}
+                selectedAccount={selectedAccount}
+              />
             ) : activePage === 'cs-screener' ? (
-              <CsScreenerRoute selectedAccount={selectedPortfolioAccount} />
+              <CsScreenerPage
+                portfolio={portfolioState.portfolio}
+                selectedAccount={selectedAccount}
+              />
             ) : activePage === 'orders' ? (
-              <OrdersRoute />
+              <OrdersRoute
+                accounts={accounts}
+                selectedAccount={selectedAccount}
+                onSelectedAccountChange={setSelectedAccount}
+              />
             ) : activePage === 'options-trade-tracker' ? (
               <OptionsTradeTrackerPage />
             ) : activePage === 'stock-analysis' ? (
               <StockAnalysisPage />
+            ) : activePage === 'earnings-watch' ? (
+              <EarningsWatchPage />
             ) : (
               <RankStocksPage />
             )}
@@ -74,86 +118,50 @@ function App() {
   )
 }
 
-function PortfolioRoute({
+function OptionsRoute({
+  accounts,
+  portfolioState,
   selectedAccount,
   onSelectedAccountChange,
 }: {
+  accounts: string[]
+  portfolioState: ReturnType<typeof usePortfolio>
   selectedAccount: string | null
   onSelectedAccountChange: (account: string) => void
 }) {
-  const portfolioState = usePortfolio()
+  const { orders } = useOrders()
 
   return (
-    <PortfolioPage
-      portfolioState={portfolioState}
+    <OptionsPage
+      accounts={accounts}
+      orders={orders}
+      portfolio={portfolioState.portfolio}
       selectedAccount={selectedAccount}
       onSelectedAccountChange={onSelectedAccountChange}
     />
   )
 }
 
-function OptionsRoute({ selectedAccount }: { selectedAccount: string | null }) {
-  const orders = useOrders()
-  const portfolioState = usePortfolio()
+function OrdersRoute({
+  accounts,
+  selectedAccount,
+  onSelectedAccountChange,
+}: {
+  accounts: string[]
+  selectedAccount: string | null
+  onSelectedAccountChange: (account: string) => void
+}) {
+  const { orders, warning } = useOrders()
 
   return (
-    <OptionsPage
+    <OrdersPage
+      accounts={accounts}
       orders={orders}
-      portfolio={portfolioState.portfolio}
+      warning={warning}
       selectedAccount={selectedAccount}
+      onSelectedAccountChange={onSelectedAccountChange}
     />
   )
-}
-
-function CspScreenerRoute({
-  selectedAccount,
-}: {
-  selectedAccount: string | null
-}) {
-  const portfolioState = usePortfolio()
-
-  return (
-    <CspScreenerPage
-      portfolio={portfolioState.portfolio}
-      selectedAccount={selectedAccount}
-    />
-  )
-}
-
-function CcScreenerRoute({
-  selectedAccount,
-}: {
-  selectedAccount: string | null
-}) {
-  const portfolioState = usePortfolio()
-
-  return (
-    <CcScreenerPage
-      portfolio={portfolioState.portfolio}
-      selectedAccount={selectedAccount}
-    />
-  )
-}
-
-function CsScreenerRoute({
-  selectedAccount,
-}: {
-  selectedAccount: string | null
-}) {
-  const portfolioState = usePortfolio()
-
-  return (
-    <CsScreenerPage
-      portfolio={portfolioState.portfolio}
-      selectedAccount={selectedAccount}
-    />
-  )
-}
-
-function OrdersRoute() {
-  const orders = useOrders()
-
-  return <OrdersPage orders={orders} />
 }
 
 export default App

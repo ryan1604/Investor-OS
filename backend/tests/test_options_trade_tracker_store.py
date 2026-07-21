@@ -1,4 +1,3 @@
-import sqlite3
 from datetime import UTC, datetime
 
 import pytest
@@ -226,84 +225,6 @@ def test_replace_trades_rolls_back_integrity_failures(tmp_path):
     saved_trades = store.list_trades(tracker.id)
     assert [trade.id for trade in saved_trades] == ["existing-row"]
     assert saved_trades[0].ticker == "AAPL"
-
-
-def test_store_migrates_legacy_global_trade_row_primary_key(tmp_path):
-    database_path = tmp_path / "options-trade-trackers.sqlite3"
-    with sqlite3.connect(database_path) as connection:
-        connection.executescript(
-            """
-            CREATE TABLE options_trade_trackers (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL COLLATE NOCASE UNIQUE,
-                notes TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-            CREATE TABLE options_trade_rows (
-                id TEXT PRIMARY KEY,
-                tracker_id TEXT NOT NULL,
-                display_order INTEGER NOT NULL,
-                status TEXT NOT NULL,
-                strategy TEXT,
-                ticker TEXT,
-                month TEXT,
-                size REAL,
-                strike_price REAL,
-                credit_debit REAL,
-                exit REAL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                UNIQUE (tracker_id, display_order)
-            );
-            INSERT INTO options_trade_trackers
-                (id, name, notes, created_at, updated_at)
-            VALUES
-                ('tracker-1', 'Income', '', 'created', 'updated'),
-                ('tracker-2', 'Growth', '', 'created', 'updated');
-            INSERT INTO options_trade_rows
-                (id, tracker_id, display_order, status, ticker, created_at, updated_at)
-            VALUES
-                ('legacy-row', 'tracker-1', 1, 'In Progress', 'AAPL', 'created', 'updated');
-            """
-        )
-
-    store = OptionsTradeTrackerStore(database_path)
-    store.replace_trades(
-        "tracker-2",
-        [
-            OptionsTrade(
-                "legacy-row",
-                "tracker-2",
-                1,
-                "In Progress",
-                None,
-                "MSFT",
-                None,
-                None,
-                None,
-                None,
-                None,
-                "",
-                "",
-            )
-        ],
-    )
-
-    assert store.list_trades("tracker-1")[0].ticker == "AAPL"
-    assert store.list_trades("tracker-2")[0].ticker == "MSFT"
-    with sqlite3.connect(database_path) as connection:
-        primary_key_columns = [
-            row[1]
-            for row in sorted(
-                connection.execute(
-                    "PRAGMA table_info(options_trade_rows)"
-                ).fetchall(),
-                key=lambda row: row[5],
-            )
-            if row[5] > 0
-        ]
-    assert primary_key_columns == ["tracker_id", "id"]
 
 
 def test_strategy_options_are_global_and_survive_tracker_deletion(tmp_path):

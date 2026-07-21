@@ -1,5 +1,6 @@
 import { LoaderCircle, Radar, Square } from 'lucide-react'
 
+import { errorMessage as requestErrorMessage } from '@/api/client'
 import type { PortfolioResponse } from '@/api/portfolio'
 import { refreshOptionsScreenerSpreadQuote } from '@/api/optionsScreeners'
 import { Alert } from '@/components/ui/alert'
@@ -227,7 +228,8 @@ function refreshedCandidateWarning(
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : 'The selected credit spread could not be refreshed.'
+  return requestErrorMessage(
+    error,
+    'The selected credit spread could not be refreshed.',
+  )
 }

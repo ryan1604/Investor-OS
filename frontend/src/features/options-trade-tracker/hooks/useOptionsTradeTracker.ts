@@ -13,7 +13,7 @@ import {
   type OptionsTradeTrackerDetailResponse,
   type OptionsTradeTrackerSummary,
 } from '@/api/optionsTradeTrackers'
-import { isAbortError } from '@/api/client'
+import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
 import {
   newTradeDraftRow,
   normalizeStrategyOption,
@@ -615,9 +615,7 @@ function sortTrackers(trackers: OptionsTradeTrackerSummary[]) {
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : 'Options trade tracker request failed.'
+  return requestErrorMessage(error, 'Options trade tracker request failed.')
 }
 
 function createLocalTradeId() {

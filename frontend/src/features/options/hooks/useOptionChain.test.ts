@@ -96,13 +96,7 @@ describe('useOptionChain', () => {
       }),
     )
     vi.stubGlobal('cancelAnimationFrame', vi.fn())
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => chain,
-      })),
-    )
+    vi.stubGlobal('fetch', vi.fn())
   })
 
   afterEach(() => {
@@ -110,16 +104,28 @@ describe('useOptionChain', () => {
   })
 
   it('does not restart transports when a live chart update replaces analysis', async () => {
-    const { rerender, unmount } = renderHook(
+    const { result, rerender, unmount } = renderHook(
       ({ currentAnalysis }) =>
         useOptionChain(currentAnalysis, '2026-06-19', false),
       { initialProps: { currentAnalysis: analysis } },
     )
 
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+    expect(result.current.isChainLoading).toBe(true)
+    expect(fetch).not.toHaveBeenCalled()
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [],
+        message: 'Streaming 0 strike(s).',
+      })
     })
-    expect(FakeWebSocket.sockets).toHaveLength(1)
+
+    expect(result.current.chain?.rows).toEqual([])
+    expect(result.current.isChainLoading).toBe(false)
 
     rerender({
       currentAnalysis: {
@@ -129,7 +135,7 @@ describe('useOptionChain', () => {
       },
     })
 
-    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(fetch).not.toHaveBeenCalled()
     expect(FakeWebSocket.sockets).toHaveLength(1)
 
     unmount()
@@ -144,21 +150,24 @@ describe('useOptionChain', () => {
         { strike: 105, call: null, put: null },
       ],
     }
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => ({
-        ok: true,
-        json: async () => chainWithRows,
-      })),
-    )
 
     const { result } = renderHook(() =>
       useOptionChain(analysis, '2026-06-19', false),
     )
 
-    await waitFor(() => {
-      expect(result.current.chain?.rows).toHaveLength(2)
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: chainWithRows.ticker,
+        expiration: chainWithRows.expiration,
+        rows: chainWithRows.rows,
+        message: chainWithRows.message,
+      })
     })
+
+    expect(result.current.chain?.rows).toHaveLength(2)
 
     act(() => {
       FakeWebSocket.sockets[0].receive({
@@ -194,20 +203,101 @@ describe('useOptionChain', () => {
     expect(result.current.chain?.rows[1].put?.bid).toBe(2)
   })
 
-  it('aborts an in-flight chain request on cleanup', async () => {
-    const { unmount } = renderHook(() =>
+  it('replaces fallback rows when a delta-window snapshot arrives', async () => {
+    const { result } = renderHook(() =>
       useOptionChain(analysis, '2026-06-19', false),
     )
 
-    await waitFor(() => {
-      expect(fetch).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [
+          { strike: 90, call: quote({ delta: 0.02 }), put: null },
+          { strike: 95, call: quote({ delta: 0.1 }), put: null },
+          { strike: 100, call: null, put: quote({ delta: -0.1 }) },
+        ],
+        message: null,
+      })
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [
+          { strike: 95, call: quote({ delta: 0.1 }), put: null },
+          { strike: 100, call: null, put: quote({ delta: -0.1 }) },
+        ],
+        message: null,
+      })
     })
 
-    const requestSignal = vi.mocked(fetch).mock.calls[0][1]?.signal
-    expect(requestSignal?.aborted).toBe(false)
+    expect(result.current.chain?.rows.map((row) => row.strike)).toEqual([
+      95,
+      100,
+    ])
+  })
+
+  it('clears stream errors after a valid active snapshot', async () => {
+    const { result } = renderHook(() =>
+      useOptionChain(analysis, '2026-06-19', false),
+    )
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    act(() => {
+      FakeWebSocket.sockets[0].onerror?.()
+    })
+    expect(result.current.chainError).toBe('Option chain stream disconnected.')
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [{ strike: 100, call: null, put: null }],
+        message: null,
+      })
+    })
+
+    expect(result.current.chainError).toBeNull()
+
+    act(() => {
+      FakeWebSocket.sockets[0].onerror?.()
+    })
+    expect(result.current.chainError).toBe('Option chain stream disconnected.')
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        row: { strike: 100, call: quote({ bid: 1 }), put: null },
+      })
+    })
+
+    expect(result.current.chainError).toBeNull()
+  })
+
+  it('closes the old stream when expiration changes', async () => {
+    const { rerender, unmount } = renderHook(
+      ({ expiration }) => useOptionChain(analysis, expiration, false),
+      { initialProps: { expiration: '2026-06-19' } },
+    )
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    rerender({ expiration: '2026-06-26' })
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(2))
+    expect(FakeWebSocket.sockets[0].closed).toBe(true)
+    expect(FakeWebSocket.sockets[1].closed).toBe(false)
+    expect(fetch).not.toHaveBeenCalled()
 
     unmount()
 
-    expect(requestSignal?.aborted).toBe(true)
+    expect(FakeWebSocket.sockets[1].closed).toBe(true)
   })
 })

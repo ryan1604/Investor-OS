@@ -24,6 +24,7 @@ from app.options.domain import (
     chunk_date_range,
     days_to_expiration,
     missing_completed_ranges,
+    option_chain_has_delta_window,
     option_chain_rows,
     same_month_day_years_ago,
     sorted_expirations,
@@ -77,6 +78,9 @@ class OptionMetadataProvider(Protocol):
 
 OPTION_METADATA_CACHE_TTL_SECONDS = 15 * 60
 ANALYSIS_UNDERLYING_PRICE_CACHE_TTL_SECONDS = 60
+OPTION_CHAIN_CONTRACT_CACHE_TTL_SECONDS = 15 * 60
+OPTION_CHAIN_QUOTE_CACHE_TTL_SECONDS = 5
+OPTION_CHAIN_PREFETCH_EXPIRATION_COUNT = 3
 UNDERLYING_PRICE_LOOKBACK_DAYS = 7
 US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 
@@ -138,6 +142,26 @@ class CachedUnderlyingPrice:
     expires_at: float
 
 
+@dataclass(frozen=True)
+class CachedOptionChainContracts:
+    contracts: list[ScannerOptionContract]
+    expires_at: float
+
+
+@dataclass(frozen=True)
+class CachedOptionChainQuote:
+    quote: OptionQuote
+    cached_at: float
+    expires_at: float
+
+
+@dataclass
+class OptionChainContractsInFlight:
+    ready: Event
+    contracts: list[ScannerOptionContract] | None = None
+    error: BaseException | None = None
+
+
 class AnalysisUnderlyingPriceCache:
     def __init__(
         self,
@@ -173,11 +197,17 @@ class AnalysisUnderlyingPriceCache:
 
 
 class OptionChainSnapshotProvider(Protocol):
-    def fetch_chain_quotes(
+    def fetch_chain_contracts(
         self,
         ticker: str,
         expiration: str,
         strikes: list[float],
+    ) -> list[ScannerOptionContract]:
+        ...
+
+    def fetch_chain_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
     ) -> dict[tuple[float, str], OptionQuote]:
         ...
 
@@ -185,9 +215,7 @@ class OptionChainSnapshotProvider(Protocol):
 class OptionChainStreamProvider(Protocol):
     def stream_chain_quotes(
         self,
-        ticker: str,
-        expiration: str,
-        strikes: list[float],
+        contracts: list[ScannerOptionContract],
         stop_event: Event,
     ) -> Iterable[tuple[tuple[float, str], OptionQuote]]:
         ...
@@ -287,6 +315,7 @@ class OptionChainContext:
     expiration: str
     underlying_price: float | None
     strikes: list[float]
+    contracts: list[ScannerOptionContract]
 
 
 class OptionsClient:
@@ -313,6 +342,28 @@ class OptionsClient:
         self.scanner_provider = scanner_provider
         self.current_date_provider = current_date_provider
         self.max_chain_stream_strikes = max(1, max_chain_stream_strikes)
+        self.contract_cache_ttl_seconds = OPTION_CHAIN_CONTRACT_CACHE_TTL_SECONDS
+        self.contract_cache: dict[
+            tuple[str, str, tuple[float, ...]],
+            CachedOptionChainContracts,
+        ] = {}
+        self.contract_cache_in_flight: dict[
+            tuple[str, str, tuple[float, ...]],
+            OptionChainContractsInFlight,
+        ] = {}
+        self.contract_cache_lock = Lock()
+        self.quote_cache_ttl_seconds = OPTION_CHAIN_QUOTE_CACHE_TTL_SECONDS
+        self.quote_cache: dict[
+            tuple[str, str, float, str, int],
+            CachedOptionChainQuote,
+        ] = {}
+        self.quote_cache_lock = Lock()
+        self.chain_prefetch_generation = 0
+        self.chain_prefetch_lock = Lock()
+        self.chain_prefetch_executor = ThreadPoolExecutor(
+            max_workers=1,
+            thread_name_prefix="option-chain-prefetch",
+        )
         self.chain_context_executor = ThreadPoolExecutor(
             max_workers=max(1, chain_context_workers),
             thread_name_prefix="option-chain-context",
@@ -321,6 +372,7 @@ class OptionsClient:
     def shutdown(self) -> None:
         if self.scanner_provider is not None:
             self.scanner_provider.cancel()
+        self.chain_prefetch_executor.shutdown(wait=False, cancel_futures=True)
         self.chain_context_executor.shutdown(wait=False, cancel_futures=True)
 
     def get_full_option_chain(
@@ -496,9 +548,9 @@ class OptionsClient:
         if not normalized_ticker:
             raise OptionsDataUnavailable("Ticker is required.")
 
-        expirations = sorted_expirations(
-            self.metadata_provider.fetch_expirations(normalized_ticker)
-        )
+        metadata = self.metadata_provider.fetch_option_metadata(normalized_ticker)
+        expirations = sorted_expirations(metadata.expirations)
+        self.prefetch_chain_contracts(normalized_ticker, metadata, expirations)
 
         return OptionExpirationsResponse(
             ticker=normalized_ticker,
@@ -512,6 +564,92 @@ class OptionsClient:
             selected_expiration=expirations[0] if expirations else None,
             message=f"Loaded expirations for {normalized_ticker}.",
         )
+
+    def prefetch_chain_contracts(
+        self,
+        ticker: str,
+        metadata: OptionMetadata,
+        expirations: list[str],
+    ) -> None:
+        selected_expirations = expirations[:OPTION_CHAIN_PREFETCH_EXPIRATION_COUNT]
+        underlying_price = self.analysis_underlying_price_cache.get(ticker)
+        if underlying_price is None or not selected_expirations:
+            logger.info(
+                "Option chain prefetch skipped ticker=%s reason=%s",
+                ticker,
+                "missing_underlying_price"
+                if underlying_price is None
+                else "missing_expirations",
+            )
+            return
+
+        strikes = bounded_strikes(metadata.strikes, underlying_price)
+        if not strikes:
+            logger.info(
+                "Option chain prefetch skipped ticker=%s reason=missing_strikes",
+                ticker,
+            )
+            return
+
+        with self.chain_prefetch_lock:
+            self.chain_prefetch_generation += 1
+            generation = self.chain_prefetch_generation
+
+        logger.info(
+            "Option chain prefetch queued ticker=%s expirations=%s strikes=%s",
+            ticker,
+            len(selected_expirations),
+            len(strikes),
+        )
+        self.chain_prefetch_executor.submit(
+            self._prefetch_chain_contracts,
+            ticker,
+            selected_expirations,
+            strikes,
+            generation,
+        )
+
+    def _prefetch_chain_contracts(
+        self,
+        ticker: str,
+        expirations: list[str],
+        strikes: list[float],
+        generation: int,
+    ) -> None:
+        for expiration in expirations:
+            with self.chain_prefetch_lock:
+                if generation != self.chain_prefetch_generation:
+                    logger.info(
+                        "Option chain prefetch cancelled ticker=%s expiration=%s",
+                        ticker,
+                        expiration,
+                    )
+                    return
+
+            started_at = perf_counter()
+            try:
+                contracts = self.chain_contracts(
+                    ticker,
+                    expiration,
+                    strikes,
+                    cacheable=True,
+                )
+            except Exception:
+                logger.exception(
+                    "Option chain prefetch failed ticker=%s expiration=%s",
+                    ticker,
+                    expiration,
+                )
+                continue
+
+            logger.info(
+                "Option chain prefetch complete ticker=%s expiration=%s "
+                "contracts=%s elapsed_ms=%.1f",
+                ticker,
+                expiration,
+                len(contracts),
+                elapsed_ms(started_at),
+            )
 
     def get_chain(
         self,
@@ -531,11 +669,8 @@ class OptionsClient:
             expiration,
             current_date=current_date,
         )
-        quotes = self.chain_provider.fetch_chain_quotes(
-            context.ticker,
-            context.expiration,
-            context.strikes,
-        )
+        quotes = self.chain_provider.fetch_chain_quotes(context.contracts)
+        self.remember_chain_quotes(context.contracts, quotes)
 
         return OptionChainResponse(
             ticker=context.ticker,
@@ -567,7 +702,17 @@ class OptionsClient:
             expiration,
             current_date=current_date,
         )
-        stream_strikes = context.strikes[: self.max_chain_stream_strikes]
+        stream_strikes = capped_chain_strikes(
+            context.strikes,
+            context.underlying_price,
+            self.max_chain_stream_strikes,
+        )
+        stream_strike_set = set(stream_strikes)
+        stream_contracts = [
+            contract
+            for contract in context.contracts
+            if contract.strike in stream_strike_set
+        ]
         if len(stream_strikes) < len(context.strikes):
             logger.info(
                 "Options chain stream strikes capped ticker=%s expiration=%s "
@@ -577,7 +722,8 @@ class OptionsClient:
                 len(context.strikes),
                 len(stream_strikes),
             )
-        quotes: dict[tuple[float, str], OptionQuote] = {}
+        quotes = self.cached_chain_quotes(stream_contracts)
+        has_delta_window = option_chain_has_delta_window(stream_strikes, quotes)
 
         yield OptionChainLiveMessage(
             type="snapshot",
@@ -591,20 +737,47 @@ class OptionsClient:
         )
 
         for key, quote in self.chain_stream_provider.stream_chain_quotes(
-            context.ticker,
-            context.expiration,
-            stream_strikes,
+            stream_contracts,
             stop_event,
         ):
             if stop_event.is_set():
                 break
 
             quotes[key] = quote
+            self.remember_chain_quotes(stream_contracts, {key: quote})
+            rows = option_chain_rows(stream_strikes, quotes)
+            next_has_delta_window = option_chain_has_delta_window(
+                stream_strikes,
+                quotes,
+            )
+            if next_has_delta_window and not has_delta_window:
+                has_delta_window = True
+                yield OptionChainLiveMessage(
+                    type="snapshot",
+                    ticker=context.ticker,
+                    expiration=context.expiration,
+                    rows=rows,
+                    message=(
+                        f"Streaming {len(stream_strikes)} strike(s) for "
+                        f"{context.ticker} {context.expiration}."
+                    ),
+                )
+                continue
+            row = next(
+                (
+                    row
+                    for row in rows
+                    if row.strike == key[0]
+                ),
+                None,
+            )
+            if row is None:
+                continue
             yield OptionChainLiveMessage(
                 type="update",
                 ticker=context.ticker,
                 expiration=context.expiration,
-                row=option_chain_rows([key[0]], quotes)[0],
+                row=row,
             )
 
     def stream_chart(
@@ -706,12 +879,191 @@ class OptionsClient:
                 f"Underlying price is unavailable for {ticker}."
             )
 
+        strikes = bounded_strikes(metadata.strikes, underlying_price)
+        contracts = self.chain_contracts(
+            ticker,
+            expiration,
+            strikes,
+            cacheable=not metadata.expirations or expiration in metadata.expirations,
+        )
+        contract_strikes = sorted({contract.strike for contract in contracts})
+
         return OptionChainContext(
             ticker=ticker,
             expiration=expiration,
             underlying_price=underlying_price,
-            strikes=bounded_strikes(metadata.strikes, underlying_price),
+            strikes=contract_strikes,
+            contracts=contracts,
         )
+
+    def chain_contracts(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+        *,
+        cacheable: bool,
+    ) -> list[ScannerOptionContract]:
+        if not cacheable:
+            self.clear_contract_cache(ticker, expiration)
+            return self.chain_provider.fetch_chain_contracts(ticker, expiration, strikes)
+
+        key = (ticker, expiration, tuple(strikes))
+        current_time = monotonic()
+        with self.contract_cache_lock:
+            entry = self.contract_cache.get(key)
+            if entry is not None and current_time < entry.expires_at:
+                logger.info(
+                    "Option chain contract cache hit ticker=%s expiration=%s "
+                    "strikes=%s contracts=%s",
+                    ticker,
+                    expiration,
+                    len(strikes),
+                    len(entry.contracts),
+                )
+                return list(entry.contracts)
+            if entry is not None:
+                self.contract_cache.pop(key, None)
+
+            in_flight = self.contract_cache_in_flight.get(key)
+            if in_flight is None:
+                in_flight = OptionChainContractsInFlight(ready=Event())
+                self.contract_cache_in_flight[key] = in_flight
+                owner = True
+                logger.info(
+                    "Option chain contract cache miss ticker=%s expiration=%s "
+                    "strikes=%s",
+                    ticker,
+                    expiration,
+                    len(strikes),
+                )
+            else:
+                owner = False
+                logger.info(
+                    "Option chain contract cache sharing in-flight hydration "
+                    "ticker=%s expiration=%s strikes=%s",
+                    ticker,
+                    expiration,
+                    len(strikes),
+                )
+
+        if not owner:
+            in_flight.ready.wait()
+            if in_flight.error is not None:
+                raise in_flight.error
+            return list(in_flight.contracts or [])
+
+        started_at = perf_counter()
+        try:
+            contracts = self.chain_provider.fetch_chain_contracts(
+                ticker,
+                expiration,
+                strikes,
+            )
+        except BaseException as error:
+            with self.contract_cache_lock:
+                in_flight.error = error
+                self.contract_cache_in_flight.pop(key, None)
+                in_flight.ready.set()
+            raise
+
+        with self.contract_cache_lock:
+            in_flight.contracts = contracts
+            self.contract_cache[key] = CachedOptionChainContracts(
+                contracts=list(contracts),
+                expires_at=monotonic() + self.contract_cache_ttl_seconds,
+            )
+            self.contract_cache_in_flight.pop(key, None)
+            in_flight.ready.set()
+
+        logger.info(
+            "Option chain contract hydration complete ticker=%s expiration=%s "
+            "strikes=%s contracts=%s ib_wait_ms=%.1f",
+            ticker,
+            expiration,
+            len(strikes),
+            len(contracts),
+            elapsed_ms(started_at),
+        )
+        return list(contracts)
+
+    def clear_contract_cache(self, ticker: str, expiration: str) -> None:
+        with self.contract_cache_lock:
+            for key in list(self.contract_cache):
+                if key[0] == ticker and key[1] == expiration:
+                    self.contract_cache.pop(key, None)
+
+    def cached_chain_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+    ) -> dict[tuple[float, str], OptionQuote]:
+        current_time = monotonic()
+        quotes: dict[tuple[float, str], OptionQuote] = {}
+        expired_keys = []
+        newest_cached_at: float | None = None
+
+        with self.quote_cache_lock:
+            for contract in contracts:
+                key = option_quote_cache_key(contract)
+                entry = self.quote_cache.get(key)
+                if entry is None:
+                    continue
+                if current_time >= entry.expires_at:
+                    expired_keys.append(key)
+                    continue
+
+                newest_cached_at = max(
+                    newest_cached_at or entry.cached_at,
+                    entry.cached_at,
+                )
+                quotes[(contract.strike, contract.right)] = entry.quote.model_copy(
+                    deep=True,
+                )
+
+            for key in expired_keys:
+                self.quote_cache.pop(key, None)
+
+        age_ms = (
+            (current_time - newest_cached_at) * 1_000
+            if newest_cached_at is not None
+            else None
+        )
+        logger.info(
+            "Option chain quote cache ticker=%s expiration=%s hits=%s misses=%s "
+            "expired=%s newest_age_ms=%s",
+            contracts[0].ticker if contracts else "",
+            contracts[0].expiration if contracts else "",
+            len(quotes),
+            max(0, len(contracts) - len(quotes) - len(expired_keys)),
+            len(expired_keys),
+            f"{age_ms:.1f}" if age_ms is not None else None,
+        )
+        return quotes
+
+    def remember_chain_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+        quotes: dict[tuple[float, str], OptionQuote],
+    ) -> None:
+        contracts_by_quote_key = {
+            (contract.strike, contract.right): contract
+            for contract in contracts
+        }
+        current_time = monotonic()
+
+        with self.quote_cache_lock:
+            for quote_key, quote in quotes.items():
+                contract = contracts_by_quote_key.get(quote_key)
+                if contract is None:
+                    continue
+
+                self.quote_cache[option_quote_cache_key(contract)] = (
+                    CachedOptionChainQuote(
+                        quote=quote.model_copy(deep=True),
+                        cached_at=current_time,
+                        expires_at=current_time + self.quote_cache_ttl_seconds,
+                    )
+                )
 
     def load_daily_bars(
         self,
@@ -856,3 +1208,30 @@ def append_completed_bar(
         *[current_bar for current_bar in bars if current_bar.trading_date != bar.trading_date],
         bar,
     ]
+
+
+def capped_chain_strikes(
+    strikes: list[float],
+    underlying_price: float | None,
+    maximum_count: int,
+) -> list[float]:
+    if len(strikes) <= maximum_count or underlying_price is None:
+        return strikes[:maximum_count]
+
+    return sorted(
+        sorted(strikes, key=lambda strike: (abs(strike - underlying_price), strike))[
+            :maximum_count
+        ]
+    )
+
+
+def option_quote_cache_key(
+    contract: ScannerOptionContract,
+) -> tuple[str, str, float, str, int]:
+    return (
+        contract.ticker,
+        contract.expiration,
+        contract.strike,
+        contract.right,
+        contract.con_id,
+    )

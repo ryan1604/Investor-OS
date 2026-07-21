@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import queue
@@ -6,7 +7,9 @@ from uuid import uuid4
 
 from app.options_screeners.domain import sort_candidates
 from app.options_screeners.service import (
-    OptionsScreenerService,
+    OptionsScreenerQuoteRefreshService,
+    OptionsScreenerScanService,
+    OptionsScreenerSpreadQuoteRefreshService,
     OptionsScreenerTickerResult,
 )
 from app.options_screeners.store import OptionsScreenerSettingsStore
@@ -46,14 +49,33 @@ class OptionsScreenerScanManager:
     def __init__(
         self,
         settings_store: OptionsScreenerSettingsStore,
-        scan_service: OptionsScreenerService,
+        scan_services: (
+            Mapping[OptionsScreener, OptionsScreenerScanService]
+            | OptionsScreenerScanService
+        ),
+        quote_refresh_service: OptionsScreenerQuoteRefreshService | None = None,
+        spread_quote_refresh_service: OptionsScreenerSpreadQuoteRefreshService
+        | None = None,
         *,
         max_workers: int = 4,
         retention_minutes: int = 30,
         subscriber_queue_size: int = 64,
     ) -> None:
         self.settings_store = settings_store
-        self.scan_service = scan_service
+        if isinstance(scan_services, Mapping):
+            self.scan_services = dict(scan_services)
+            if quote_refresh_service is None or spread_quote_refresh_service is None:
+                raise ValueError("Quote refresh services are required.")
+            self.quote_refresh_service = quote_refresh_service
+            self.spread_quote_refresh_service = spread_quote_refresh_service
+        else:
+            self.scan_services = {
+                "csp": scan_services,
+                "cc": scan_services,
+                "cs": scan_services,
+            }
+            self.quote_refresh_service = scan_services
+            self.spread_quote_refresh_service = scan_services
         self.max_workers = max(1, max_workers)
         self.retention = timedelta(minutes=retention_minutes)
         self.subscriber_queue_size = max(1, subscriber_queue_size)
@@ -129,7 +151,7 @@ class OptionsScreenerScanManager:
                 )
             self.cancel_events[job_id].set()
             snapshot = job.model_copy(deep=True)
-        self.scan_service.cancel()
+        self._cancel_services()
         return snapshot
 
     def get_job(self, job_id: str) -> OptionsScreenerScanJob:
@@ -191,13 +213,13 @@ class OptionsScreenerScanManager:
         self,
         request: OptionsScreenerQuoteRefreshRequest,
     ) -> OptionsScreenerQuoteRefreshResponse:
-        return self.scan_service.refresh_quote(request)
+        return self.quote_refresh_service.refresh_quote(request)
 
     def refresh_spread_quote(
         self,
         request: OptionsScreenerSpreadQuoteRefreshRequest,
     ) -> OptionsScreenerSpreadQuoteRefreshResponse:
-        return self.scan_service.refresh_spread_quote(request)
+        return self.spread_quote_refresh_service.refresh_spread_quote(request)
 
     def shutdown(self) -> None:
         with self.lock:
@@ -205,7 +227,7 @@ class OptionsScreenerScanManager:
             threads = list(self.threads)
         for cancel_event in cancel_events:
             cancel_event.set()
-        self.scan_service.cancel()
+        self._cancel_services()
         for thread in threads:
             thread.join(timeout=1)
 
@@ -218,7 +240,7 @@ class OptionsScreenerScanManager:
     ) -> None:
         try:
             job = self.get_job(job_id)
-            self.scan_service.prepare_scan(
+            self._scan_service(job.screener).prepare_scan(
                 job.screener,
                 tickers,
                 filters,
@@ -271,7 +293,7 @@ class OptionsScreenerScanManager:
                 with self.lock:
                     job = self.jobs[job_id]
                     screener = job.screener
-                result = self.scan_service.scan_ticker(
+                result = self._scan_service(screener).scan_ticker(
                     screener,
                     ticker,
                     filters,
@@ -445,6 +467,18 @@ class OptionsScreenerScanManager:
             job = self.jobs.pop(job_id)
             if self.latest_job_ids[job.screener] == job_id:
                 self.latest_job_ids[job.screener] = None
+
+    def _scan_service(self, screener: OptionsScreener) -> OptionsScreenerScanService:
+        return self.scan_services[screener]
+
+    def _cancel_services(self) -> None:
+        seen: set[int] = set()
+        for service in self.scan_services.values():
+            service_id = id(service)
+            if service_id in seen:
+                continue
+            seen.add(service_id)
+            service.cancel()
 
 
 def utc_now() -> str:

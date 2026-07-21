@@ -72,11 +72,18 @@ function orderRecord(overrides: Partial<OrderRecord> = {}): OrderRecord {
     parent_order_id: null,
     account: 'DU123',
     status: 'submitted',
+    reconciliation_status: 'confirmed',
     editable: true,
     filled: 0,
     remaining: 1,
     avg_fill_price: null,
     rejection_message: null,
+    is_open: ['submitted', 'working', 'partially_filled'].includes(
+      overrides.status ?? 'submitted',
+    ),
+    is_current_day_history: ['filled', 'cancelled', 'rejected'].includes(
+      overrides.status ?? 'submitted',
+    ),
     submitted_at: '2026-06-04T10:00:00Z',
     updated_at: '2026-06-04T10:00:00Z',
     preview: basePreview,
@@ -109,7 +116,20 @@ describe('useOrders', () => {
       await bootstrap.promise
     })
 
-    expect(result.current).toEqual([bootstrapOrder])
+    expect(result.current.orders).toEqual([bootstrapOrder])
+    expect(result.current.warning).toBeNull()
+  })
+
+  it('does not request reconciliation when the order stream opens', () => {
+    vi.mocked(fetchOrders).mockResolvedValue([])
+
+    renderHook(() => useOrders())
+
+    act(() => {
+      FakeWebSocket.sockets[0].onopen?.()
+    })
+
+    expect(fetchOrders).toHaveBeenCalledTimes(1)
   })
 
   it('does not let a delayed bootstrap REST snapshot overwrite a stream snapshot', async () => {
@@ -131,14 +151,14 @@ describe('useOrders', () => {
       })
     })
 
-    expect(result.current).toEqual([streamedOrder])
+    expect(result.current.orders).toEqual([streamedOrder])
 
     await act(async () => {
       bootstrap.resolve([orderRecord({ order_id: 700, status: 'submitted' })])
       await bootstrap.promise
     })
 
-    expect(result.current).toEqual([streamedOrder])
+    expect(result.current.orders).toEqual([streamedOrder])
   })
 
   it('does not let a delayed bootstrap REST snapshot overwrite a stream update', async () => {
@@ -161,14 +181,14 @@ describe('useOrders', () => {
       })
     })
 
-    expect(result.current).toEqual([streamedOrder])
+    expect(result.current.orders).toEqual([streamedOrder])
 
     await act(async () => {
       bootstrap.resolve([orderRecord({ status: 'working' })])
       await bootstrap.promise
     })
 
-    expect(result.current).toEqual([streamedOrder])
+    expect(result.current.orders).toEqual([streamedOrder])
   })
 
   it('upserts single-order stream updates after a stream snapshot', () => {
@@ -196,7 +216,118 @@ describe('useOrders', () => {
       })
     })
 
-    expect(result.current).toEqual([workingOrder])
+    expect(result.current.orders).toEqual([workingOrder])
+  })
+
+  it('rekeys stream updates by perm_id instead of appending duplicate rows', () => {
+    vi.mocked(fetchOrders).mockReturnValue(new Promise(() => undefined))
+    const staleOrder = orderRecord({
+      order_id: 0,
+      perm_id: 60285899,
+      account: 'U6985190',
+    })
+    const boundOrder = orderRecord({
+      order_id: -23,
+      perm_id: 60285899,
+      account: 'U6985190',
+      status: 'working',
+      updated_at: '2026-06-04T10:03:00Z',
+    })
+
+    const { result } = renderHook(() => useOrders())
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        orders: [staleOrder],
+        order: null,
+      })
+    })
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        orders: null,
+        order: boundOrder,
+      })
+    })
+
+    expect(result.current.orders).toEqual([boundOrder])
+  })
+
+  it('applies stream updates that move orders from open to current-day history', () => {
+    vi.mocked(fetchOrders).mockReturnValue(new Promise(() => undefined))
+    const openOrder = orderRecord({
+      status: 'working',
+      is_open: true,
+      is_current_day_history: false,
+    })
+    const filledOrder = orderRecord({
+      status: 'filled',
+      filled: 1,
+      remaining: 0,
+      is_open: false,
+      is_current_day_history: true,
+      updated_at: '2026-06-04T10:04:00Z',
+    })
+
+    const { result } = renderHook(() => useOrders())
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        orders: [openOrder],
+        order: null,
+      })
+    })
+    expect(result.current.orders.filter((order) => order.is_open)).toEqual([openOrder])
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        orders: null,
+        order: filledOrder,
+      })
+    })
+
+    expect(result.current.orders.filter((order) => order.is_open)).toEqual([])
+    expect(
+      result.current.orders.filter((order) => order.is_current_day_history),
+    ).toEqual([filledOrder])
+  })
+
+  it('surfaces bootstrap load failures until a stream update recovers', async () => {
+    vi.mocked(fetchOrders).mockRejectedValue(new Error('Order load failed.'))
+    const streamedOrder = orderRecord({ status: 'working' })
+
+    const { result } = renderHook(() => useOrders())
+
+    await act(async () => {
+      await Promise.resolve()
+    })
+
+    expect(result.current.warning).toBe('Order load failed.')
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        orders: [streamedOrder],
+        order: null,
+      })
+    })
+
+    expect(result.current.warning).toBeNull()
+    expect(result.current.orders).toEqual([streamedOrder])
+  })
+
+  it('does not poll orders after the bootstrap snapshot', () => {
+    vi.mocked(fetchOrders).mockResolvedValue([])
+
+    renderHook(() => useOrders())
+    act(() => {
+      vi.advanceTimersByTime(60_000)
+    })
+
+    expect(fetchOrders).toHaveBeenCalledTimes(1)
   })
 
   it('does not reconnect after cleanup', () => {

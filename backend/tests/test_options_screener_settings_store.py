@@ -1,4 +1,3 @@
-import json
 import sqlite3
 
 import pytest
@@ -67,41 +66,6 @@ def test_settings_survive_store_recreation(tmp_path):
 
     assert reopened_store.get_ticker_list("csp_cc") == ["AAPL", "MSFT"]
     assert reopened_store.get_filters("csp").minimum_annualized_return == 15
-
-
-def test_legacy_partial_filter_payload_uses_current_defaults(tmp_path):
-    database_path = tmp_path / "options-screeners.sqlite3"
-    store = OptionsScreenerSettingsStore(database_path)
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO screener_filters (screener, version, settings_json)
-            VALUES (?, ?, ?)
-            """,
-            ("csp", 1, json.dumps({"version": 1, "minimum_dte": 12})),
-        )
-
-    filters = store.get_filters("csp")
-
-    assert filters.minimum_dte == 12
-    assert filters.maximum_dte == 45
-    assert filters.minimum_absolute_delta == 0.15
-    assert filters.minimum_annualized_return == 10
-
-
-def test_invalid_stored_filter_payload_falls_back_to_defaults(tmp_path):
-    database_path = tmp_path / "options-screeners.sqlite3"
-    store = OptionsScreenerSettingsStore(database_path)
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            """
-            INSERT INTO screener_filters (screener, version, settings_json)
-            VALUES (?, ?, ?)
-            """,
-            ("cs", 1, '{"strategy_types": []}'),
-        )
-
-    assert store.get_filters("cs") == CreditSpreadScreenerFilters()
 
 
 def test_database_only_contains_settings_tables(store):

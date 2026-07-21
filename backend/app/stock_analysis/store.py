@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import cast
 
 from app.schemas import StockAnalysisPayload, empty_stock_analysis_payload
-from app.sqlite import connect_row_database
+from app.sqlite import RowDatabase
 from app.tickers import normalize_ticker
 
 
@@ -19,10 +19,9 @@ class StockAnalysisModel:
     updated_at: str
 
 
-class StockAnalysisStore:
+class StockAnalysisStore(RowDatabase):
     def __init__(self, database_path: str | Path) -> None:
-        self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(database_path)
         self.initialize()
 
     def initialize(self) -> None:
@@ -38,16 +37,6 @@ class StockAnalysisStore:
                 )
                 """
             )
-            columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(stock_analysis_models)"
-                ).fetchall()
-            }
-            if "current_price" not in columns:
-                connection.execute(
-                    "ALTER TABLE stock_analysis_models ADD COLUMN current_price REAL"
-                )
 
     def get_model(self, ticker: str) -> StockAnalysisModel | None:
         with self._connect() as connection:
@@ -162,10 +151,6 @@ class StockAnalysisStore:
         if model is None:
             raise RuntimeError("Stock analysis price update did not persist.")
         return model
-
-    def _connect(self) -> sqlite3.Connection:
-        return connect_row_database(self.database_path)
-
 
 def stock_analysis_model_from_row(row: sqlite3.Row) -> StockAnalysisModel:
     return StockAnalysisModel(

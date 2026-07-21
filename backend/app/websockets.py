@@ -19,7 +19,8 @@ async def send_websocket_iterator(
     async def cleanup() -> None:
         stop_event.set()
         if hasattr(iterator, "close"):
-            await asyncio.to_thread(iterator.close)
+            with suppress(ValueError):
+                await asyncio.to_thread(iterator.close)
 
     await send_websocket_updates(websocket, next_message, cleanup=cleanup)
 

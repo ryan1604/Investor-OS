@@ -1,10 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.dependencies import (
-    get_portfolio_cache,
-    get_portfolio_chart_values_store,
-    get_portfolio_refresh_service,
-)
 from app.portfolio.chart_values_store import PortfolioChartValue
 from app.schemas import (
     PortfolioChartValueResponse,
@@ -19,7 +14,7 @@ router = APIRouter()
 
 @router.get("/portfolio", response_model=PortfolioResponse)
 def portfolio(request: Request) -> PortfolioResponse:
-    return get_portfolio_cache(request).get()
+    return request.app.state.portfolio_cache.get()
 
 
 @router.get("/portfolio/chart-values", response_model=PortfolioChartValuesResponse)
@@ -28,7 +23,9 @@ def portfolio_chart_values(
     account: str = Query(...),
 ) -> PortfolioChartValuesResponse:
     normalized_account = required_account(account)
-    rows = get_portfolio_chart_values_store(request).list_values(normalized_account)
+    rows = request.app.state.portfolio_chart_values_store.list_values(
+        normalized_account,
+    )
     return PortfolioChartValuesResponse(
         account=normalized_account,
         rows=[portfolio_chart_value_response(row) for row in rows],
@@ -52,7 +49,7 @@ def replace_portfolio_chart_values(
         )
         for row in chart_values_request.rows
     ]
-    rows = get_portfolio_chart_values_store(request).replace_values(
+    rows = request.app.state.portfolio_chart_values_store.replace_values(
         normalized_account,
         values,
     )
@@ -65,7 +62,7 @@ def replace_portfolio_chart_values(
 @router.websocket("/portfolio/ws")
 async def portfolio_ws(websocket: WebSocket):
     await websocket.accept()
-    service = get_portfolio_refresh_service(websocket)
+    service = websocket.app.state.portfolio_refresh_service
     snapshot, queue = service.subscribe()
 
     try:

@@ -1,7 +1,7 @@
 import {
-  apiUrl,
   apiWebSocketUrl,
-  responseErrorMessage,
+  jsonRequest,
+  requestJson,
 } from '@/api/client'
 import type {
   OptionContractIdentity,
@@ -151,7 +151,11 @@ const settingsPath = '/options-screeners/settings'
 const screenersPath = '/options-screeners'
 
 export async function fetchOptionsScreenerSettings(signal?: AbortSignal) {
-  return request<OptionsScreenerSettingsResponse>(settingsPath, { signal })
+  return requestJson<OptionsScreenerSettingsResponse>(
+    settingsPath,
+    'Options screener settings',
+    { signal },
+  )
 }
 
 export async function replaceOptionsScreenerTickerList(
@@ -159,14 +163,12 @@ export async function replaceOptionsScreenerTickerList(
   tickers: string[],
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerTickerListResponse>(
+  return jsonRequest<OptionsScreenerTickerListResponse>(
     `${settingsPath}/ticker-lists/${listName}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tickers }),
-      signal,
-    },
+    'PUT',
+    { tickers },
+    'Options screener settings',
+    signal,
   )
 }
 
@@ -185,27 +187,30 @@ export async function saveOptionsScreenerFilters(
   filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerFilters | CreditSpreadScreenerFilters>(
+  return jsonRequest<OptionsScreenerFilters | CreditSpreadScreenerFilters>(
     `${settingsPath}/filters/${screener}`,
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(filters),
-      signal,
-    },
+    'PUT',
+    filters,
+    'Options screener settings',
+    signal,
   )
 }
 
 export async function fetchOptionsScreenerScanState(signal?: AbortSignal) {
-  return request<OptionsScreenerScanState>(`${screenersPath}/state`, { signal })
+  return requestJson<OptionsScreenerScanState>(
+    `${screenersPath}/state`,
+    'Options screener settings',
+    { signal },
+  )
 }
 
 export async function startOptionsScreenerScan(
   screener: OptionsScreener,
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerScanJob>(
+  return requestJson<OptionsScreenerScanJob>(
     `${screenersPath}/scans/${screener}`,
+    'Options screener settings',
     { method: 'POST', signal },
   )
 }
@@ -214,8 +219,9 @@ export async function cancelOptionsScreenerScan(
   jobId: string,
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerScanJob>(
+  return requestJson<OptionsScreenerScanJob>(
     `${screenersPath}/scans/${encodeURIComponent(jobId)}/cancel`,
+    'Options screener settings',
     { method: 'POST', signal },
   )
 }
@@ -224,14 +230,12 @@ export async function refreshOptionsScreenerQuote(
   quoteRequest: OptionsScreenerQuoteRefreshRequest,
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerQuoteRefreshResponse>(
+  return jsonRequest<OptionsScreenerQuoteRefreshResponse>(
     `${screenersPath}/quotes/refresh`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(quoteRequest),
-      signal,
-    },
+    'POST',
+    quoteRequest,
+    'Options screener settings',
+    signal,
   )
 }
 
@@ -239,32 +243,15 @@ export async function refreshOptionsScreenerSpreadQuote(
   quoteRequest: OptionsScreenerSpreadQuoteRefreshRequest,
   signal?: AbortSignal,
 ) {
-  return request<OptionsScreenerSpreadQuoteRefreshResponse>(
+  return jsonRequest<OptionsScreenerSpreadQuoteRefreshResponse>(
     `${screenersPath}/quotes/refresh-spread`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(quoteRequest),
-      signal,
-    },
+    'POST',
+    quoteRequest,
+    'Options screener settings',
+    signal,
   )
 }
 
 export function getOptionsScreenerScansWsUrl() {
   return apiWebSocketUrl(`${screenersPath}/scans/ws`)
-}
-
-async function request<ResponsePayload>(
-  path: string,
-  init?: RequestInit,
-) {
-  const response = await fetch(apiUrl(path), init)
-
-  if (!response.ok) {
-    throw new Error(
-      await responseErrorMessage(response, 'Options screener settings'),
-    )
-  }
-
-  return response.json() as Promise<ResponsePayload>
 }

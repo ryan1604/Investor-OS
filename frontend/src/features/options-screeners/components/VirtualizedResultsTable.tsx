@@ -38,6 +38,7 @@ export function VirtualizedResultsTable<Candidate, SortKey extends string>({
     () => sortCandidates(candidates, sort.key, sort.direction, rowValue),
     [candidates, rowValue, sort],
   )
+  // eslint-disable-next-line react-hooks/incompatible-library -- TanStack Virtual intentionally returns mutable helpers.
   const virtualizer = useVirtualizer({
     count: sorted.length,
     getScrollElement: () => scrollRef.current,

@@ -1,23 +1,25 @@
-from datetime import date, datetime
+from datetime import date
 import threading
-from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.options.client import (
-    FullOptionChainSnapshot,
     OptionsClient,
     ScannerContractSelection,
-    ScannerOptionContract,
     ScannerOptionQuote,
 )
 from app.options.domain import OptionMetadata
 from app.options.store import CompletedDailyBar, OptionsDailyBarStore
 from app.options_screeners.single_leg import SingleLegOptionsScreenerScanService
 from app.schemas import (
-    OptionContractIdentity,
     OptionsScreenerFilters,
-    OptionsScreenerQuoteRefreshRequest,
+)
+from options_screener_helpers import (
+    FullChainClient,
+    call_contract,
+    call_quote,
+    put_quote,
+    refresh_request,
 )
 
 
@@ -70,7 +72,7 @@ class ScannerProvider:
         self.contract_request = (ticker, expirations, strikes, right)
         return ScannerContractSelection(
             contracts=[
-                contract(expiration, strike, con_id=index)
+                call_contract(expiration, strike, con_id=index)
                 for index, (expiration, strike) in enumerate(
                     (
                         (expiration, strike)
@@ -146,40 +148,11 @@ def test_full_call_chain_scans_every_otm_strike_and_inclusive_expiration(
     assert snapshot.underlying_price == 100
 
 
-class FullChainClient:
-    def __init__(self, quotes):
-        self.quotes = quotes
-        self.requests = []
-        self.cancelled = False
-
-    def get_full_option_chain(self, ticker, **kwargs):
-        self.requests.append((ticker, kwargs))
-        return FullOptionChainSnapshot(
-            ticker=ticker,
-            underlying_price=100,
-            underlying_price_captured_at=datetime(
-                2026,
-                6,
-                15,
-                10,
-                tzinfo=ZoneInfo("America/New_York"),
-            ),
-            contracts=self.quotes,
-        )
-
-    def cancel_scanner(self):
-        self.cancelled = True
-
-    def refresh_option_quote(self, **kwargs):
-        self.requests.append(("refresh", kwargs))
-        return self.quotes[0]
-
-
 def test_cc_scanner_uses_stock_price_return_and_gain_without_positions():
     client = FullChainClient(
         [
-            quote("2026-07-15", 110, 1, bid=1.9, ask=2.1, delta=0.2),
-            quote("2026-07-15", 120, 2, bid=0.9, ask=1.1, delta=0.15),
+            call_quote("2026-07-15", 110, 1, bid=1.9, ask=2.1, delta=0.2),
+            call_quote("2026-07-15", 120, 2, bid=0.9, ask=1.1, delta=0.15),
         ]
     )
     service = SingleLegOptionsScreenerScanService(
@@ -204,14 +177,14 @@ def test_cc_scanner_uses_stock_price_return_and_gain_without_positions():
 
 def test_cc_scanner_applies_shared_exclusions_deduplication_and_filters():
     quotes = [
-        quote("2026-07-15", 110, 1, exchange="CBOE"),
-        quote("2026-07-15", 110, 2, exchange="SMART"),
-        quote("2026-07-15", 100, 3),
-        quote("2026-07-15", 105, 4, right="P"),
-        quote("2026-07-15", 115, 5, bid=0),
-        quote("2026-07-15", 120, 6, delta=0.5),
-        quote("2026-06-15", 125, 7),
-        quote("2026-07-15", 130, 8, multiplier="10"),
+        call_quote("2026-07-15", 110, 1, exchange="CBOE"),
+        call_quote("2026-07-15", 110, 2, exchange="SMART"),
+        call_quote("2026-07-15", 100, 3),
+        put_quote("2026-07-15", 105, 4),
+        call_quote("2026-07-15", 115, 5, bid=0),
+        call_quote("2026-07-15", 120, 6, delta=0.5),
+        call_quote("2026-06-15", 125, 7),
+        call_quote("2026-07-15", 130, 8, multiplier="10"),
     ]
     service = SingleLegOptionsScreenerScanService(
         FullChainClient(quotes),
@@ -252,77 +225,13 @@ def test_cc_scanner_reports_no_matches_and_propagates_cancellation():
 
 def test_cc_quote_refresh_resolves_call_identity_and_current_midpoint():
     client = FullChainClient(
-        [quote("2026-07-17", 110, 456, bid=1, ask=1.4)]
+        [call_quote("2026-07-17", 110, 456, bid=1, ask=1.4)]
     )
     service = SingleLegOptionsScreenerScanService(client)
 
-    refreshed = service.refresh_quote(
-        OptionsScreenerQuoteRefreshRequest(
-            ticker="AAPL",
-            expiration="2026-07-17",
-            strike=110,
-            right="CALL",
-            contract=OptionContractIdentity(
-                con_id=123,
-                local_symbol="AAPL 2026-07-17 110 C",
-            ),
-        )
-    )
+    refreshed = service.refresh_quote(refresh_request(strike=110, right="CALL"))
 
     assert client.requests[-1][1]["right"] == "C"
     assert refreshed.contract.con_id == 456
     assert refreshed.right == "CALL"
     assert refreshed.midpoint == pytest.approx(1.2)
-
-
-def contract(
-    expiration,
-    strike,
-    *,
-    con_id,
-    right="C",
-    exchange="SMART",
-    multiplier="100",
-    trading_class="AAPL",
-):
-    return ScannerOptionContract(
-        con_id=con_id,
-        ticker="AAPL",
-        expiration=expiration,
-        strike=strike,
-        right=right,
-        exchange=exchange,
-        currency="USD",
-        multiplier=multiplier,
-        trading_class=trading_class,
-        local_symbol=f"AAPL {expiration} {strike} {right}",
-    )
-
-
-def quote(
-    expiration,
-    strike,
-    con_id,
-    *,
-    right="C",
-    exchange="SMART",
-    multiplier="100",
-    trading_class="AAPL",
-    bid=1,
-    ask=1.1,
-    delta=0.2,
-):
-    return ScannerOptionQuote(
-        contract=contract(
-            expiration,
-            strike,
-            con_id=con_id,
-            right=right,
-            exchange=exchange,
-            multiplier=multiplier,
-            trading_class=trading_class,
-        ),
-        bid=bid,
-        ask=ask,
-        delta=delta,
-    )

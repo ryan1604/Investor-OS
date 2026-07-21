@@ -1,19 +1,23 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic import BaseModel
 
 
 class Settings(BaseModel):
-    """Fixed local backend defaults; these are not loaded from environment."""
+    """Fixed local backend defaults plus explicit .env-backed secrets."""
 
     ib_host: str = "127.0.0.1"
     ib_port: int = 7496
-    ib_client_id: int = 1
+    ib_client_id: int = 0
     options_database_path: str = "data/options.sqlite3"
     options_screeners_database_path: str = "data/options_screeners.sqlite3"
     options_trade_trackers_database_path: str = "data/options_trade_trackers.sqlite3"
+    orders_database_path: str = "data/orders.sqlite3"
     stock_analysis_database_path: str = "data/stock_analysis.sqlite3"
     portfolio_chart_values_database_path: str = "data/portfolio_chart_values.sqlite3"
+    earnings_watch_database_path: str = "data/earnings_watch.sqlite3"
+    alpha_vantage_api_key: str | None = None
     ib_request_queue_timeout_seconds: float = 0.25
     max_concurrent_options_analysis: int = 2
     max_concurrent_option_chains: int = 2
@@ -34,4 +38,16 @@ class Settings(BaseModel):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings(alpha_vantage_api_key=alpha_vantage_api_key())
+
+
+def alpha_vantage_api_key() -> str | None:
+    alpha_vantage_api = "ALPHA_VANTAGE_API_KEY"
+    for path in (Path(".env"), Path("..") / ".env"):
+        if not path.is_file():
+            continue
+        for line in path.read_text(encoding="utf-8").splitlines():
+            name, separator, value = line.partition("=")
+            if separator and name.strip() == alpha_vantage_api:
+                return value.strip().strip("'\"") or None
+    return None

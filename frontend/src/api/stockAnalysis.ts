@@ -1,4 +1,4 @@
-import { apiUrl, responseErrorMessage, tickerPathSegment } from '@/api/client'
+import { jsonRequest, requestJson, tickerPathSegment } from '@/api/client'
 
 export type StockAnalysisJsonValue =
   | string
@@ -53,63 +53,42 @@ export type StockAnalysisPriceRefreshResponse = {
 }
 
 export async function fetchStockAnalysisModels(signal?: AbortSignal) {
-  const response = await fetch(apiUrl('/stock-analysis'), { signal })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Stock analysis'))
-  }
-
-  return response.json() as Promise<StockAnalysisModel[]>
+  return requestJson<StockAnalysisModel[]>('/stock-analysis', 'Stock analysis', {
+    signal,
+  })
 }
 
 export async function fetchStockAnalysisModel(
   ticker: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(
-    apiUrl(`/stock-analysis/${tickerPathSegment(ticker)}`),
+  return requestJson<StockAnalysisModel>(
+    `/stock-analysis/${tickerPathSegment(ticker)}`,
+    'Stock analysis',
     { signal },
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Stock analysis'))
-  }
-
-  return response.json() as Promise<StockAnalysisModel>
 }
 
 export async function fetchStockAnalysisCurrentPrice(
   ticker: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(
-    apiUrl(`/stock-analysis/${tickerPathSegment(ticker)}/current-price`),
+  return requestJson<StockAnalysisCurrentPriceResponse>(
+    `/stock-analysis/${tickerPathSegment(ticker)}/current-price`,
+    'Stock analysis price',
     { signal },
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Stock analysis price'))
-  }
-
-  return response.json() as Promise<StockAnalysisCurrentPriceResponse>
 }
 
 export async function refreshStockAnalysisCurrentPrices(signal?: AbortSignal) {
-  const response = await fetch(
-    apiUrl('/stock-analysis/current-prices/refresh'),
+  return requestJson<StockAnalysisPriceRefreshResponse>(
+    '/stock-analysis/current-prices/refresh',
+    'Stock analysis price refresh',
     {
       method: 'POST',
       signal,
     },
   )
-
-  if (!response.ok) {
-    throw new Error(
-      await responseErrorMessage(response, 'Stock analysis price refresh'),
-    )
-  }
-
-  return response.json() as Promise<StockAnalysisPriceRefreshResponse>
 }
 
 export async function upsertStockAnalysisModel(
@@ -117,19 +96,11 @@ export async function upsertStockAnalysisModel(
   request: StockAnalysisModelRequest,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(
-    apiUrl(`/stock-analysis/${tickerPathSegment(ticker)}`),
-    {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-      signal,
-    },
+  return jsonRequest<StockAnalysisModel>(
+    `/stock-analysis/${tickerPathSegment(ticker)}`,
+    'PUT',
+    request,
+    'Stock analysis',
+    signal,
   )
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Stock analysis'))
-  }
-
-  return response.json() as Promise<StockAnalysisModel>
 }

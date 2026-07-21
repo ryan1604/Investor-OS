@@ -12,6 +12,7 @@ import type { PortfolioResponse } from '@/api/portfolio'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
 import { ExpirationTabs } from '@/features/options/components/ExpirationTabs'
 import { OptionChainTable } from '@/features/options/components/OptionChainTable'
 import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
@@ -33,15 +34,19 @@ import {
 import { chartOverlays } from '@/features/options/lib/chartOverlays'
 
 type OptionsPageProps = {
+  accounts: string[]
   orders: OrderRecord[]
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
+  onSelectedAccountChange: (account: string) => void
 }
 
 export function OptionsPage({
+  accounts,
   orders,
   portfolio,
   selectedAccount,
+  onSelectedAccountChange,
 }: OptionsPageProps) {
   const [priceChart, setPriceChart] = useState<IChartApi | null>(null)
   const [rsiChart, setRsiChart] = useState<IChartApi | null>(null)
@@ -110,9 +115,16 @@ export function OptionsPage({
   return (
     <main className="flex min-w-0 w-full flex-col gap-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          Options
-        </h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+            Options
+          </h1>
+          <AccountSelector
+            accounts={accounts}
+            activeAccount={selectedAccount ?? undefined}
+            onAccountChange={onSelectedAccountChange}
+          />
+        </div>
 
         <div className="flex w-full items-center gap-2 sm:max-w-xl sm:justify-end">
           <form
@@ -151,7 +163,7 @@ export function OptionsPage({
               <Button
                 type="button"
                 variant="outline"
-                disabled={!draftOptionLegs.length}
+                disabled={!draftOptionLegs.length || !selectedAccount}
                 onClick={() => setIsStrategyTicketOpen(true)}
                 className="cursor-pointer active:cursor-pointer disabled:cursor-not-allowed"
               >
@@ -159,12 +171,24 @@ export function OptionsPage({
                 Strategy
                 {draftOptionLegs.length ? ` (${draftOptionLegs.length})` : ''}
               </Button>
-              <StockTradeTicket
-                ticker={analysis.ticker}
-                latestPrice={analysis.underlying_price}
-                portfolio={portfolio}
-                selectedAccount={selectedAccount}
-              />
+              {selectedAccount ? (
+                <StockTradeTicket
+                  ticker={analysis.ticker}
+                  latestPrice={analysis.underlying_price}
+                  portfolio={portfolio}
+                  selectedAccount={selectedAccount}
+                />
+              ) : (
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled
+                  className="cursor-not-allowed"
+                >
+                  <Tickets data-icon="inline-start" />
+                  Trade
+                </Button>
+              )}
             </>
           ) : null}
         </div>

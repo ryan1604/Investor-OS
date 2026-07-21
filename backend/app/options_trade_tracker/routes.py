@@ -1,6 +1,5 @@
 from fastapi import APIRouter, HTTPException, Request
 
-from app.dependencies import get_options_trade_tracker_store
 from app.options_trade_tracker.store import (
     OptionsTrade,
     OptionsTradeTracker,
@@ -26,7 +25,7 @@ router = APIRouter(prefix="/options-trade-trackers")
 
 @router.get("", response_model=OptionsTradeTrackerListResponse)
 def list_options_trade_trackers(request: Request) -> OptionsTradeTrackerListResponse:
-    trackers = get_options_trade_tracker_store(request).list_trackers()
+    trackers = request.app.state.options_trade_tracker_store.list_trackers()
     return OptionsTradeTrackerListResponse(
         trackers=[tracker_summary_response(tracker) for tracker in trackers],
     )
@@ -38,7 +37,7 @@ def create_options_trade_tracker(
     tracker_request: OptionsTradeTrackerCreateRequest,
 ) -> OptionsTradeTrackerDetailResponse:
     try:
-        tracker = get_options_trade_tracker_store(request).create_tracker(
+        tracker = request.app.state.options_trade_tracker_store.create_tracker(
             tracker_request.name,
         )
     except OptionsTradeTrackerDuplicateNameError as error:
@@ -54,7 +53,7 @@ def create_options_trade_tracker(
 def list_options_trade_strategy_options(
     request: Request,
 ) -> OptionsTradeStrategyOptionsResponse:
-    strategies = get_options_trade_tracker_store(request).list_strategy_options()
+    strategies = request.app.state.options_trade_tracker_store.list_strategy_options()
     return OptionsTradeStrategyOptionsResponse(strategies=strategies)
 
 
@@ -66,7 +65,7 @@ def replace_options_trade_strategy_options(
     request: Request,
     strategies_request: OptionsTradeStrategiesRequest,
 ) -> OptionsTradeStrategyOptionsResponse:
-    strategies = get_options_trade_tracker_store(request).replace_strategy_options(
+    strategies = request.app.state.options_trade_tracker_store.replace_strategy_options(
         strategies_request.strategies,
     )
     return OptionsTradeStrategyOptionsResponse(strategies=strategies)
@@ -88,7 +87,7 @@ def rename_options_trade_tracker(
     tracker_request: OptionsTradeTrackerRenameRequest,
 ) -> OptionsTradeTrackerDetailResponse:
     try:
-        tracker = get_options_trade_tracker_store(request).rename_tracker(
+        tracker = request.app.state.options_trade_tracker_store.rename_tracker(
             tracker_id,
             tracker_request.name,
         )
@@ -102,7 +101,7 @@ def rename_options_trade_tracker(
 @router.delete("/{tracker_id}", status_code=204)
 def delete_options_trade_tracker(request: Request, tracker_id: str) -> None:
     try:
-        get_options_trade_tracker_store(request).delete_tracker(tracker_id)
+        request.app.state.options_trade_tracker_store.delete_tracker(tracker_id)
     except OptionsTradeTrackerNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
 
@@ -136,7 +135,10 @@ def replace_options_trade_tracker_trades(
     ]
 
     try:
-        get_options_trade_tracker_store(request).replace_trades(tracker_id, trades)
+        request.app.state.options_trade_tracker_store.replace_trades(
+            tracker_id,
+            trades,
+        )
     except OptionsTradeTrackerNotFoundError as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except OptionsTradeTrackerValidationError as error:
@@ -156,7 +158,7 @@ def update_options_trade_tracker_notes(
     notes_request: OptionsTradeNotesRequest,
 ) -> OptionsTradeTrackerDetailResponse:
     try:
-        tracker = get_options_trade_tracker_store(request).update_notes(
+        tracker = request.app.state.options_trade_tracker_store.update_notes(
             tracker_id,
             notes_request.notes,
         )
@@ -167,7 +169,7 @@ def update_options_trade_tracker_notes(
 
 
 def require_tracker(request: Request, tracker_id: str) -> OptionsTradeTracker:
-    tracker = get_options_trade_tracker_store(request).get_tracker(tracker_id)
+    tracker = request.app.state.options_trade_tracker_store.get_tracker(tracker_id)
     if tracker is None:
         raise HTTPException(status_code=404, detail="Tracker not found.")
     return tracker
@@ -177,7 +179,7 @@ def tracker_detail_response(
     request: Request,
     tracker: OptionsTradeTracker,
 ) -> OptionsTradeTrackerDetailResponse:
-    store = get_options_trade_tracker_store(request)
+    store = request.app.state.options_trade_tracker_store
     trades = store.list_trades(tracker.id)
     strategies = store.list_strategy_options()
     return OptionsTradeTrackerDetailResponse(

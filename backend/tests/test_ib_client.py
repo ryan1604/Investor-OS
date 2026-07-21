@@ -97,6 +97,12 @@ class FakeIbApp:
     def disconnect(self) -> None:
         self.disconnects += 1
 
+    def reqAutoOpenOrders(self, auto_bind: bool) -> None:
+        pass
+
+    def reqAllOpenOrders(self) -> None:
+        pass
+
     def reqPnLSingle(
         self,
         req_id: int,
@@ -179,6 +185,48 @@ def contract(con_id: int, symbol: str, sec_type: str) -> Contract:
     next_contract.symbol = symbol
     next_contract.secType = sec_type
     return next_contract
+
+
+def test_start_uses_client_zero_and_enables_open_order_binding():
+    class StartupIbApp:
+        def __init__(self) -> None:
+            self.connected = False
+            self.connected_ready = threading.Event()
+            self.connect_calls = []
+            self.market_data_types = []
+            self.auto_open_order_calls = []
+            self.all_open_order_requests = 0
+
+        def isConnected(self) -> bool:
+            return self.connected
+
+        def connect(self, host: str, port: int, client_id: int) -> None:
+            self.connect_calls.append((host, port, client_id))
+            self.connected = True
+            self.connected_ready.set()
+
+        def run(self) -> None:
+            pass
+
+        def reqMarketDataType(self, market_data_type: int) -> None:
+            self.market_data_types.append(market_data_type)
+
+        def reqAutoOpenOrders(self, auto_bind: bool) -> None:
+            self.auto_open_order_calls.append(auto_bind)
+
+        def reqAllOpenOrders(self) -> None:
+            self.all_open_order_requests += 1
+
+    client = IbPortfolioClient(Settings())
+    app = StartupIbApp()
+    client.app = app
+
+    client.start()
+
+    assert app.connect_calls == [("127.0.0.1", 7496, 0)]
+    assert app.market_data_types == [3]
+    assert app.auto_open_order_calls == [True]
+    assert app.all_open_order_requests == 0
 
 
 def test_subscribe_market_data_requests_streaming_data_for_positions():
@@ -1070,57 +1118,104 @@ def test_open_order_callback_forwards_account_and_parent_id():
 
     app.openOrder(901, contract(901, "AAPL", "OPT"), order, order_state)
 
-    assert updates == [
-        (
-            901,
-            "Submitted",
-            {
-                "filled": 0,
-                "remaining": 2,
-                "avg_fill_price": None,
-                "perm_id": 123,
-                "parent_order_id": 900,
-                "rejection_message": None,
-                "account": "DU1234567",
-            },
-        )
-    ]
+    assert updates[0][0] == 901
+    assert updates[0][1] == "Submitted"
+    payload = updates[0][2]
+    assert payload["filled"] == 0
+    assert payload["remaining"] == 2
+    assert payload["avg_fill_price"] is None
+    assert payload["perm_id"] == 123
+    assert payload["parent_order_id"] == 900
+    assert payload["rejection_message"] is None
+    assert payload["account"] == "DU1234567"
+    assert payload["contract"].symbol == "AAPL"
+    assert payload["order"] is order
+    assert payload["order_state"] is order_state
 
 
-def test_exec_details_callback_forwards_filled_order_payload():
+def test_open_order_end_callback_notifies_listeners():
     app = IbPortfolioApp()
-    updates = []
+    calls = []
+    app.add_open_order_end_listener(lambda: calls.append("done"))
+
+    app.openOrderEnd()
+
+    assert calls == ["done"]
+
+
+def test_exec_details_callback_forwards_execution_payload():
+    app = IbPortfolioApp()
+    status_updates = []
+    executions = []
     app.add_order_status_listener(
-        lambda order_id, status, **values: updates.append(
+        lambda order_id, status, **values: status_updates.append(
             (order_id, status, values),
         ),
     )
+    app.add_execution_listener(lambda **values: executions.append(values))
     execution = type(
         "Execution",
         (),
         {
+            "execId": "0001.abc",
             "orderId": 902,
             "shares": 3,
             "price": 1.25,
+            "avgPrice": 1.2,
+            "cumQty": 5,
             "permId": 456,
             "acctNumber": "DU1234567",
+            "side": "BOT",
+            "time": "2026-06-27T02:30:00+00:00",
         },
     )()
 
     app.execDetails(90_000, contract(902, "AAPL", "OPT"), execution)
 
-    assert updates == [
-        (
-            902,
-            "Filled",
-            {
-                "filled": 3,
-                "remaining": 0,
-                "avg_fill_price": 1.25,
-                "perm_id": 456,
-                "parent_order_id": None,
-                "rejection_message": None,
-                "account": "DU1234567",
-            },
-        )
+    assert status_updates == []
+    assert executions[0]["req_id"] == 90_000
+    assert executions[0]["execution_id"] == "0001.abc"
+    assert executions[0]["order_id"] == 902
+    assert executions[0]["shares"] == 3
+    assert executions[0]["price"] == 1.25
+    assert executions[0]["avg_price"] == 1.2
+    assert executions[0]["cumulative_quantity"] == 5
+    assert executions[0]["perm_id"] == 456
+    assert executions[0]["account"] == "DU1234567"
+    assert executions[0]["side"] == "BOT"
+    assert executions[0]["execution_time"] == "2026-06-27T02:30:00+00:00"
+
+
+def test_exec_details_end_notifies_listeners():
+    app = IbPortfolioApp()
+    completed_req_ids = []
+    app.add_execution_end_listener(completed_req_ids.append)
+
+    app.execDetailsEnd(90_000)
+
+    assert completed_req_ids == [90_000]
+
+
+def test_completed_order_callback_notifies_listeners():
+    app = IbPortfolioApp()
+    completed_orders = []
+    app.add_completed_order_listener(lambda **values: completed_orders.append(values))
+    next_contract = contract(903, "AAPL", "STK")
+    order = type("Order", (), {"permId": 12345})()
+    order_state = type("OrderState", (), {"completedStatus": "Filled"})()
+
+    app.completedOrder(next_contract, order, order_state)
+
+    assert completed_orders == [
+        {"contract": next_contract, "order": order, "order_state": order_state}
     ]
+
+
+def test_completed_orders_end_notifies_listeners():
+    app = IbPortfolioApp()
+    calls = []
+    app.add_completed_orders_end_listener(lambda: calls.append("done"))
+
+    app.completedOrdersEnd()
+
+    assert calls == ["done"]

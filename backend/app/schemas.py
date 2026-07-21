@@ -1,9 +1,18 @@
 from collections.abc import Hashable, Iterable
+from datetime import datetime
 import math
 import re
 from typing import Annotated, Any, Literal, NotRequired, Self, TypeVar, TypedDict
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, Field, StrictInt, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    Field,
+    StrictInt,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from app.tickers import require_ticker
 
@@ -496,6 +505,57 @@ class StockAnalysisPriceRefreshResponse(BaseModel):
     results: list[StockAnalysisPriceRefreshResult] = Field(default_factory=list)
 
 
+EarningsWatchRowStatus = Literal["upcoming", "last_known", "no_date"]
+EarningsWatchRefreshStatus = Literal[
+    "never_attempted",
+    "refreshing",
+    "succeeded",
+    "failed",
+    "cooldown",
+]
+
+
+class EarningsWatchRowResponse(BaseModel):
+    ticker: str
+    reviewed: bool
+    earnings_date: str | None = None
+    status: EarningsWatchRowStatus
+    created_at: str
+    updated_at: str
+
+
+class EarningsWatchRefreshState(BaseModel):
+    state: EarningsWatchRefreshStatus
+    last_attempt_at: str | None = None
+    last_success_at: str | None = None
+    last_success_date: str | None = None
+    error_category: str | None = None
+    next_eligible_retry_at: str | None = None
+
+
+class EarningsWatchResponse(BaseModel):
+    rows: list[EarningsWatchRowResponse] = Field(default_factory=list)
+    refresh: EarningsWatchRefreshState
+
+
+class EarningsWatchStateResponse(BaseModel):
+    rows: list[EarningsWatchRowResponse] = Field(default_factory=list)
+
+
+class EarningsWatchAddTickersRequest(BaseModel):
+    tickers: str
+
+
+class EarningsWatchAddTickersResponse(EarningsWatchStateResponse):
+    added: list[str] = Field(default_factory=list)
+    existing: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+
+
+class EarningsWatchReviewedRequest(BaseModel):
+    reviewed: bool
+
+
 OptionsScreenerTickerList = Literal["csp_cc", "cs"]
 OptionsScreener = Literal["csp", "cc", "cs"]
 CreditSpreadStrategy = Literal["put_credit_spread", "call_credit_spread"]
@@ -752,11 +812,16 @@ OrderStatus = Literal[
     "submitted",
     "working",
     "partially_filled",
+    "stale",
     "filled",
     "cancelled",
     "rejected",
 ]
+OrderReconciliationStatus = Literal["pending", "confirmed", "stale"]
 OptionRight = Literal["CALL", "PUT"]
+OPEN_ORDER_STATUSES = {"submitted", "working", "partially_filled"}
+TERMINAL_ORDER_STATUSES = {"filled", "cancelled", "rejected"}
+ORDER_SECTION_TIME_ZONE = ZoneInfo("America/New_York")
 
 
 def normalize_required_text(value: str, message: str) -> str:
@@ -775,6 +840,18 @@ def normalize_required_ticker(value: str) -> str:
 
 def normalize_required_account(value: str) -> str:
     return normalize_required_text(value, "Account is required.")
+
+
+def parse_order_section_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=ORDER_SECTION_TIME_ZONE)
+    return parsed.astimezone(ORDER_SECTION_TIME_ZONE)
 
 
 class StockOrderRequest(BaseModel):
@@ -849,6 +926,7 @@ class OptionStrategyOrderRequest(BaseModel):
     order_kind: Literal["option_strategy"] = "option_strategy"
     account: str
     legs: list[OptionStrategyLegRequest] = Field(min_length=1)
+    strategy_quantity: StrictInt = 1
     limit_price: float
     take_profit_price: float | None = None
     stop_loss_price: float | None = None
@@ -861,6 +939,8 @@ class OptionStrategyOrderRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_exit_prices(self):
+        if self.strategy_quantity <= 0:
+            raise ValueError("strategy_quantity must be greater than zero.")
         if self.take_profit_price is not None and self.take_profit_price <= 0:
             raise ValueError("take_profit_price must be greater than zero.")
         if self.stop_loss_price is not None and self.stop_loss_price <= 0:
@@ -890,14 +970,71 @@ class OrderRecord(BaseModel):
     parent_order_id: int | None = None
     account: str
     status: OrderStatus
+    reconciliation_status: OrderReconciliationStatus = "confirmed"
     editable: bool = True
+    read_only_reason: str | None = None
     filled: float = 0
     remaining: float | None = None
     avg_fill_price: float | None = None
     rejection_message: str | None = None
+    execution_id: str | None = None
+    execution_ids: list[str] = Field(default_factory=list)
+    execution_time: str | None = None
+    execution_side: str | None = None
+    execution_quantity: float | None = None
+    execution_price: float | None = None
+    execution_cumulative_quantity: float | None = None
+    completed_time: str | None = None
+    completed_status: str | None = None
+    terminal_at: str | None = None
     submitted_at: str
     updated_at: str
     preview: OrderPreviewResponse
+
+    @computed_field
+    @property
+    def display_details(self) -> list[str]:
+        details = []
+        if self.perm_id is not None:
+            details.append(f"Perm ID {self.perm_id}")
+        execution_id = self.execution_id or next(iter(self.execution_ids), None)
+        if execution_id:
+            details.append(f"Execution {execution_id}")
+        details.append(f"API order {self.order_id}")
+        return details
+
+    @computed_field
+    @property
+    def is_open(self) -> bool:
+        return (
+            self.status in OPEN_ORDER_STATUSES
+            and self.reconciliation_status != "stale"
+        )
+
+    @computed_field
+    @property
+    def is_current_day_history(self) -> bool:
+        if self.status not in TERMINAL_ORDER_STATUSES:
+            return False
+        timestamp = self.execution_time or self.completed_time or self.terminal_at
+        parsed = parse_order_section_time(timestamp)
+        if parsed is None:
+            return False
+        today = datetime.now(ORDER_SECTION_TIME_ZONE).date()
+        if parsed.date() == today:
+            return True
+        stored = parse_order_section_time_without_conversion(timestamp)
+        return stored is not None and stored.date() == today
+
+
+def parse_order_section_time_without_conversion(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed
 
 
 class OrderSubmissionResponse(BaseModel):
@@ -916,6 +1053,7 @@ class OrderCancellationRequest(BaseModel):
 
 class OrderAmendmentRequest(BaseModel):
     account: str
+    quantity: StrictInt | None = None
     limit_price: float | None = None
     take_profit_price: float | None = None
     stop_loss_price: float | None = None
@@ -928,6 +1066,8 @@ class OrderAmendmentRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_amendment_values(self):
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValueError("quantity must be greater than zero.")
         if self.limit_price is not None and self.limit_price <= 0:
             raise ValueError("limit_price must be greater than zero.")
         if self.take_profit_price is not None and self.take_profit_price <= 0:

@@ -6,7 +6,7 @@ import {
   upsertStockAnalysisModel,
   type StockAnalysisPayload,
 } from '@/api/stockAnalysis'
-import { isAbortError } from '@/api/client'
+import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
 import type { EditingCell } from '@/features/stock-analysis/components/ScenarioValuationTable'
 import {
   calculateValuationModel,
@@ -291,5 +291,5 @@ function toStockAnalysisPayload(
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Stock analysis request failed.'
+  return requestErrorMessage(error, 'Stock analysis request failed.')
 }

@@ -18,13 +18,11 @@ from app.options_screeners.domain import (
     spread_pricing,
 )
 from app.options_screeners.service import (
-    OptionsScreenerScanService,
     OptionsScreenerServiceUnavailable,
     OptionsScreenerTickerResult,
 )
 from app.options_screeners.single_leg import (
     FullOptionChainClient,
-    SingleLegOptionsScreenerScanService,
     US_MARKET_TIME_ZONE,
     contract_dte,
     quote_preference,
@@ -220,65 +218,6 @@ class CreditSpreadOptionsScreenerScanService:
             maximum_loss=width - pricing.midpoint,
             refreshed_at=datetime.now(US_MARKET_TIME_ZONE).isoformat(),
         )
-
-
-class CombinedOptionsScreenerScanService:
-    def __init__(
-        self,
-        single_leg_service: SingleLegOptionsScreenerScanService,
-        credit_spread_service: CreditSpreadOptionsScreenerScanService,
-    ) -> None:
-        self.single_leg_service = single_leg_service
-        self.credit_spread_service = credit_spread_service
-
-    def prepare_scan(
-        self,
-        screener: OptionsScreener,
-        tickers: tuple[str, ...],
-        filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
-        cancel_event: threading.Event,
-    ) -> None:
-        self._service(screener).prepare_scan(
-            screener,
-            tickers,
-            filters,
-            cancel_event,
-        )
-
-    def scan_ticker(
-        self,
-        screener: OptionsScreener,
-        ticker: str,
-        filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
-        cancel_event: threading.Event,
-    ) -> OptionsScreenerTickerResult:
-        return self._service(screener).scan_ticker(
-            screener,
-            ticker,
-            filters,
-            cancel_event,
-        )
-
-    def cancel(self) -> None:
-        self.single_leg_service.cancel()
-        self.credit_spread_service.cancel()
-
-    def refresh_quote(
-        self,
-        request: OptionsScreenerQuoteRefreshRequest,
-    ) -> OptionsScreenerQuoteRefreshResponse:
-        return self.single_leg_service.refresh_quote(request)
-
-    def refresh_spread_quote(
-        self,
-        request: OptionsScreenerSpreadQuoteRefreshRequest,
-    ) -> OptionsScreenerSpreadQuoteRefreshResponse:
-        return self.credit_spread_service.refresh_spread_quote(request)
-
-    def _service(self, screener: OptionsScreener) -> OptionsScreenerScanService:
-        if screener == "cs":
-            return self.credit_spread_service
-        return self.single_leg_service
 
 
 def strategy_requests(

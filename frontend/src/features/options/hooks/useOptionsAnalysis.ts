@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
-import { isAbortError } from '@/api/client'
+import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
 import {
   fetchOptionExpirations,
   fetchOptionsAnalysis,
@@ -9,7 +9,7 @@ import {
 } from '@/api/options'
 
 export function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Options request failed.'
+  return requestErrorMessage(error, 'Options request failed.')
 }
 
 export function hasAnalysisPriceData(analysis: OptionsAnalysisResponse) {

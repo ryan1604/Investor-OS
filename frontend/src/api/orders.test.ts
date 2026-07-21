@@ -105,7 +105,11 @@ describe('orders api', () => {
     vi.stubGlobal('fetch', fetchMock)
 
     await fetchOrders()
-    await amendOrder(700, { account: 'DU1234567', limit_price: 191.25 })
+    await amendOrder(700, {
+      account: 'DU1234567',
+      quantity: 12,
+      limit_price: 191.25,
+    })
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -117,7 +121,11 @@ describe('orders api', () => {
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ account: 'DU1234567', limit_price: 191.25 }),
+        body: JSON.stringify({
+          account: 'DU1234567',
+          quantity: 12,
+          limit_price: 191.25,
+        }),
       },
     )
   })

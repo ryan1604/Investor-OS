@@ -7,6 +7,7 @@ import {
   type StockAnalysisModel,
   type StockAnalysisPriceRefreshResult,
 } from '@/api/stockAnalysis'
+import { errorMessage, isAbortError } from '@/api/client'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -93,7 +94,7 @@ export function RankStocksPage() {
       }
 
       setRefreshStatus('error')
-      setError(errorMessage(requestError))
+      setError(errorMessage(requestError, 'Rank stocks request failed.'))
     } finally {
       if (refreshControllerRef.current === refreshController) {
         refreshControllerRef.current = null
@@ -118,7 +119,7 @@ export function RankStocksPage() {
         }
 
         setIsLoading(false)
-        setError(errorMessage(requestError))
+        setError(errorMessage(requestError, 'Rank stocks request failed.'))
       }
     }
 
@@ -340,12 +341,4 @@ function formatReturnPercent(value: number | null) {
     signDisplay: 'exceptZero',
     style: 'percent',
   }).format(value)
-}
-
-function isAbortError(error: unknown) {
-  return error instanceof DOMException && error.name === 'AbortError'
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Rank stocks request failed.'
 }

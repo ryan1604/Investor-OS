@@ -1,4 +1,4 @@
-import { apiUrl, apiWebSocketUrl, responseErrorMessage } from '@/api/client'
+import { apiWebSocketUrl, jsonRequest, requestJson } from '@/api/client'
 
 export type OrderAction = 'BUY' | 'SELL'
 export type OrderTimeInForce = 'DAY' | 'GTC'
@@ -7,9 +7,11 @@ export type OrderStatus =
   | 'submitted'
   | 'working'
   | 'partially_filled'
+  | 'stale'
   | 'filled'
   | 'cancelled'
   | 'rejected'
+export type OrderReconciliationStatus = 'pending' | 'confirmed' | 'stale'
 export type OptionRight = 'CALL' | 'PUT'
 
 export type StockOrderRequest = {
@@ -37,6 +39,7 @@ export type OptionStrategyOrderRequest = {
   order_kind: 'option_strategy'
   account: string
   legs: OptionStrategyLegRequest[]
+  strategy_quantity?: number
   limit_price: number
   take_profit_price?: number | null
   stop_loss_price?: number | null
@@ -63,11 +66,26 @@ export type OrderRecord = {
   parent_order_id: number | null
   account: string
   status: OrderStatus
+  reconciliation_status: OrderReconciliationStatus
   editable: boolean
+  read_only_reason?: string | null
   filled: number
   remaining: number | null
   avg_fill_price: number | null
   rejection_message: string | null
+  execution_id?: string | null
+  execution_ids?: string[]
+  execution_time?: string | null
+  execution_side?: string | null
+  execution_quantity?: number | null
+  execution_price?: number | null
+  execution_cumulative_quantity?: number | null
+  completed_time?: string | null
+  completed_status?: string | null
+  terminal_at?: string | null
+  display_details?: string[]
+  is_open: boolean
+  is_current_day_history: boolean
   submitted_at: string
   updated_at: string
   preview: OrderPreviewResponse
@@ -84,6 +102,7 @@ export type OrderCancellationRequest = {
 
 export type OrderAmendmentRequest = {
   account: string
+  quantity?: number | null
   limit_price?: number | null
   take_profit_price?: number | null
   stop_loss_price?: number | null
@@ -99,13 +118,7 @@ export type OrderStatusUpdate = {
 export const ORDERS_WS_URL = apiWebSocketUrl('/orders/ws')
 
 export async function fetchOrders() {
-  const response = await fetch(apiUrl('/orders'))
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Order'))
-  }
-
-  return response.json() as Promise<OrderRecord[]>
+  return requestJson<OrderRecord[]>('/orders', 'Order')
 }
 
 export async function previewOrder(request: OrderPreviewableRequest) {
@@ -140,15 +153,10 @@ async function postOrderRequest<Response>(
   body: OrderPreviewableRequest | OrderCancellationRequest | OrderAmendmentRequest,
   options: { method?: 'POST' | 'PATCH' } = {},
 ) {
-  const response = await fetch(apiUrl(path), {
-    method: options.method ?? 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Order'))
-  }
-
-  return response.json() as Promise<Response>
+  return jsonRequest<Response>(
+    path,
+    options.method ?? 'POST',
+    body,
+    'Order',
+  )
 }

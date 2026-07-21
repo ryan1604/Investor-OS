@@ -1,4 +1,4 @@
-import { apiUrl, responseErrorMessage } from '@/api/client'
+import { jsonRequest, requestJson } from '@/api/client'
 
 export type PortfolioChartValue = {
   month: string
@@ -38,15 +38,11 @@ export async function fetchPortfolioChartValues(
   account: string,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(apiUrl(portfolioChartValuesPath(account)), {
-    signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Portfolio chart values'))
-  }
-
-  return response.json() as Promise<PortfolioChartValuesResponse>
+  return requestJson<PortfolioChartValuesResponse>(
+    portfolioChartValuesPath(account),
+    'Portfolio chart values',
+    { signal },
+  )
 }
 
 export async function replacePortfolioChartValues(
@@ -54,16 +50,11 @@ export async function replacePortfolioChartValues(
   request: PortfolioChartValuesRequest,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(apiUrl(portfolioChartValuesPath(account)), {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
+  return jsonRequest<PortfolioChartValuesResponse>(
+    portfolioChartValuesPath(account),
+    'PUT',
+    request,
+    'Portfolio chart values',
     signal,
-  })
-
-  if (!response.ok) {
-    throw new Error(await responseErrorMessage(response, 'Portfolio chart values'))
-  }
-
-  return response.json() as Promise<PortfolioChartValuesResponse>
+  )
 }

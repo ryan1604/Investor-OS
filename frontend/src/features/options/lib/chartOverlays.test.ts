@@ -28,6 +28,30 @@ describe('chartOverlays', () => {
     ])
   })
 
+  it('falls back to absolute per-share cost basis for selected-account stock', () => {
+    const overlays = chartOverlays({
+      draftLegs: [],
+      orders: [],
+      portfolio: portfolio([
+        stockPosition({
+          account: 'DU1',
+          average_price: null,
+          cost_basis: -1050,
+          quantity: -10,
+        }),
+      ]),
+      selectedAccount: 'DU1',
+      ticker: 'AAPL',
+    })
+
+    expect(overlays).toEqual([
+      expect.objectContaining({
+        type: 'stock-cost-basis',
+        price: 105,
+      }),
+    ])
+  })
+
   it('hides stock cost basis when no account is explicitly selected', () => {
     const overlays = chartOverlays({
       draftLegs: [],
@@ -145,6 +169,84 @@ describe('chartOverlays', () => {
 
     expect(overlays).toEqual([])
   })
+
+  it('uses backend is_open instead of active-looking status for working overlays', () => {
+    const overlays = chartOverlays({
+      draftLegs: [],
+      orders: [
+        orderRecord({
+          order_id: 700,
+          status: 'working',
+          is_open: false,
+          parent_order_id: null,
+          request: optionStrategyRequest(),
+        }),
+      ],
+      portfolio: null,
+      selectedAccount: 'DU1',
+      ticker: 'AAPL',
+    })
+
+    expect(overlays).toEqual([])
+  })
+
+  it('filters held and working option strikes to the selected account', () => {
+    const overlays = chartOverlays({
+      draftLegs: [],
+      orders: [
+        orderRecord({
+          order_id: 700,
+          status: 'working',
+          parent_order_id: null,
+          request: optionStrategyRequest({ account: 'DU1' }),
+        }),
+        orderRecord({
+          order_id: 701,
+          status: 'working',
+          parent_order_id: null,
+          request: optionStrategyRequest({
+            account: 'DU2',
+            legs: [
+              {
+                ticker: 'AAPL',
+                expiration: '2026-06-19',
+                right: 'CALL',
+                strike: 210,
+                action: 'BUY',
+                quantity: 1,
+              },
+            ],
+          }),
+        }),
+      ],
+      portfolio: portfolio([
+        optionPosition({ account: 'DU1', quantity: 1 }),
+        optionPosition({ account: 'DU2', quantity: 1, strike: 210 }),
+      ]),
+      selectedAccount: 'DU1',
+      ticker: 'AAPL',
+    })
+
+    expect(overlays).toEqual([
+      expect.objectContaining({
+        key: 'option-strike:AAPL:20260619:CALL:200',
+        signedQuantity: 2,
+        sources: ['working', 'held'],
+      }),
+    ])
+  })
+
+  it('hides draft option strikes until an account is selected', () => {
+    const overlays = chartOverlays({
+      draftLegs: [draftLeg()],
+      orders: [],
+      portfolio: null,
+      selectedAccount: null,
+      ticker: 'AAPL',
+    })
+
+    expect(overlays).toEqual([])
+  })
 })
 
 function portfolio(positions: PortfolioPosition[]): PortfolioResponse {
@@ -252,10 +354,12 @@ function optionStrategyRequest(
 
 function orderRecord({
   order_id,
+  is_open,
   parent_order_id,
   request,
   status,
-}: Pick<OrderRecord, 'order_id' | 'parent_order_id' | 'status'> & {
+}: Pick<OrderRecord, 'order_id' | 'parent_order_id' | 'status'> &
+  Partial<Pick<OrderRecord, 'is_open'>> & {
   request: OptionStrategyOrderRequest
 }): OrderRecord {
   return {
@@ -264,11 +368,14 @@ function orderRecord({
     perm_id: null,
     account: request.account,
     status,
+    reconciliation_status: 'confirmed',
     editable: true,
     filled: 0,
     remaining: 1,
     avg_fill_price: null,
     rejection_message: null,
+    is_open: is_open ?? ['submitted', 'working', 'partially_filled'].includes(status),
+    is_current_day_history: ['filled', 'cancelled', 'rejected'].includes(status),
     submitted_at: '2026-06-03T00:00:00Z',
     updated_at: '2026-06-03T00:00:00Z',
     preview: {

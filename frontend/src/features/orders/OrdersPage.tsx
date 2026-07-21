@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
 import {
   Select,
   SelectContent,
@@ -42,45 +43,69 @@ import {
 } from '@/components/ui/table'
 import {
   orderErrorMessage,
+  parsePositiveInteger,
   parsePositiveNumber,
 } from '@/features/orders/lib/orderEntryUtils'
 
-const ACTIVE_STATUSES = new Set(['submitted', 'working', 'partially_filled'])
-const HISTORY_STATUSES = new Set(['filled', 'cancelled', 'rejected'])
-
 type OrdersPageProps = {
+  accounts: string[]
   orders: OrderRecord[]
+  selectedAccount: string | null
+  warning?: string | null
+  onSelectedAccountChange: (account: string) => void
 }
 
 type DraftEdit = {
+  quantity: string
   limitPrice: string
   takeProfitPrice: string
   stopLossPrice: string
   timeInForce: OrderTimeInForce
 }
 
-export function OrdersPage({ orders }: OrdersPageProps) {
-  const [editingOrderId, setEditingOrderId] = useState<number | null>(null)
+type OrderGroup = {
+  groupId: number
+  primary: OrderRecord
+  children: OrderRecord[]
+  records: OrderRecord[]
+  readOnlyReason: string | null
+}
+
+export function OrdersPage({
+  accounts,
+  orders,
+  selectedAccount,
+  warning,
+  onSelectedAccountChange,
+}: OrdersPageProps) {
+  const [editingGroupId, setEditingGroupId] = useState<number | null>(null)
   const [draftEdit, setDraftEdit] = useState<DraftEdit | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busyOrderId, setBusyOrderId] = useState<number | null>(null)
   const openOrders = useMemo(
-    () => orders.filter((order) => ACTIVE_STATUSES.has(order.status)),
-    [orders],
+    () =>
+      orders.filter(
+        (order) => order.is_open && order.account === selectedAccount,
+      ),
+    [orders, selectedAccount],
   )
   const historyOrders = useMemo(
     () =>
       orders.filter(
         (order) =>
-          HISTORY_STATUSES.has(order.status) && isToday(order.updated_at),
+          order.is_current_day_history && order.account === selectedAccount,
       ),
-    [orders],
+    [orders, selectedAccount],
   )
+  const openOrderGroups = useMemo(() => groupOrders(openOrders), [openOrders])
+  const historyOrderGroups = useMemo(() => groupOrders(historyOrders), [historyOrders])
 
-  function beginEdit(order: OrderRecord) {
+  function beginEdit(group: OrderGroup) {
+    const order = group.primary
     const request = order.preview.request
-    setEditingOrderId(order.order_id)
+    setEditingGroupId(group.groupId)
     setDraftEdit({
+      quantity: modeledQuantity(order).toString(),
       limitPrice: request.limit_price?.toString() ?? '',
       takeProfitPrice:
         request.order_kind === 'option_strategy'
@@ -108,8 +133,15 @@ export function OrdersPage({ orders }: OrdersPageProps) {
     }
   }
 
-  async function handleSave(order: OrderRecord) {
+  async function handleSave(group: OrderGroup) {
     if (!draftEdit) {
+      return
+    }
+
+    const order = group.primary
+    const quantity = parsePositiveInteger(draftEdit.quantity)
+    if (quantity === null) {
+      setError('Enter a whole quantity greater than zero.')
       return
     }
 
@@ -118,13 +150,14 @@ export function OrdersPage({ orders }: OrdersPageProps) {
     try {
       const response = await amendOrder(order.order_id, {
         account: order.account,
+        quantity,
         limit_price: parsePositiveNumber(draftEdit.limitPrice),
         take_profit_price: parsePositiveNumber(draftEdit.takeProfitPrice),
         stop_loss_price: parsePositiveNumber(draftEdit.stopLossPrice),
         time_in_force: draftEdit.timeInForce,
       })
       toast.success(response.message)
-      setEditingOrderId(null)
+      setEditingGroupId(null)
       setDraftEdit(null)
     } catch (requestError) {
       setError(orderErrorMessage(requestError))
@@ -136,29 +169,37 @@ export function OrdersPage({ orders }: OrdersPageProps) {
   return (
     <main className="flex min-w-0 w-full flex-col gap-6">
       <header className="flex flex-col gap-1">
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          Orders
-        </h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-3xl font-semibold tracking-tight text-foreground">
+            Orders
+          </h1>
+          <AccountSelector
+            accounts={accounts}
+            activeAccount={selectedAccount ?? undefined}
+            onAccountChange={onSelectedAccountChange}
+          />
+        </div>
         <p className="text-sm text-muted-foreground">
           Active IB orders and current-day terminal history.
         </p>
       </header>
 
       {error ? <Alert variant="destructive">{error}</Alert> : null}
+      {warning ? <Alert variant="muted">{warning}</Alert> : null}
 
       <OrderSection
         busyOrderId={busyOrderId}
         draftEdit={draftEdit}
-        editingOrderId={editingOrderId}
+        editingGroupId={editingGroupId}
         emptyMessage="No open orders."
-        orders={openOrders}
+        groups={openOrderGroups}
         title="Open"
         onCancel={handleCancel}
         onDraftEditChange={setDraftEdit}
         onEdit={beginEdit}
         onSave={handleSave}
         onStopEdit={() => {
-          setEditingOrderId(null)
+          setEditingGroupId(null)
           setDraftEdit(null)
         }}
       />
@@ -166,17 +207,17 @@ export function OrdersPage({ orders }: OrdersPageProps) {
       <OrderSection
         busyOrderId={busyOrderId}
         draftEdit={draftEdit}
-        editingOrderId={editingOrderId}
+        editingGroupId={editingGroupId}
         emptyMessage="No current-day order history."
         history
-        orders={historyOrders}
+        groups={historyOrderGroups}
         title="History"
         onCancel={handleCancel}
         onDraftEditChange={setDraftEdit}
         onEdit={beginEdit}
         onSave={handleSave}
         onStopEdit={() => {
-          setEditingOrderId(null)
+          setEditingGroupId(null)
           setDraftEdit(null)
         }}
       />
@@ -187,10 +228,10 @@ export function OrdersPage({ orders }: OrdersPageProps) {
 function OrderSection({
   busyOrderId,
   draftEdit,
-  editingOrderId,
+  editingGroupId,
   emptyMessage,
+  groups,
   history = false,
-  orders,
   title,
   onCancel,
   onDraftEditChange,
@@ -200,15 +241,15 @@ function OrderSection({
 }: {
   busyOrderId: number | null
   draftEdit: DraftEdit | null
-  editingOrderId: number | null
+  editingGroupId: number | null
   emptyMessage: string
+  groups: OrderGroup[]
   history?: boolean
-  orders: OrderRecord[]
   title: string
   onCancel: (order: OrderRecord) => void
   onDraftEditChange: (draft: DraftEdit) => void
-  onEdit: (order: OrderRecord) => void
-  onSave: (order: OrderRecord) => void
+  onEdit: (group: OrderGroup) => void
+  onSave: (group: OrderGroup) => void
   onStopEdit: () => void
 }) {
   return (
@@ -217,7 +258,7 @@ function OrderSection({
         <CardTitle>{title}</CardTitle>
       </CardHeader>
       <CardContent>
-        {orders.length ? (
+        {groups.length ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -229,14 +270,14 @@ function OrderSection({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {orders.map((order) => (
+              {groups.map((group) => (
                 <OrderRow
                   busyOrderId={busyOrderId}
                   draftEdit={draftEdit}
-                  editingOrderId={editingOrderId}
+                  editingGroupId={editingGroupId}
                   history={history}
-                  key={order.order_id}
-                  order={order}
+                  key={group.groupId}
+                  group={group}
                   onCancel={onCancel}
                   onDraftEditChange={onDraftEditChange}
                   onEdit={onEdit}
@@ -257,9 +298,9 @@ function OrderSection({
 function OrderRow({
   busyOrderId,
   draftEdit,
-  editingOrderId,
+  editingGroupId,
+  group,
   history,
-  order,
   onCancel,
   onDraftEditChange,
   onEdit,
@@ -268,33 +309,52 @@ function OrderRow({
 }: {
   busyOrderId: number | null
   draftEdit: DraftEdit | null
-  editingOrderId: number | null
+  editingGroupId: number | null
+  group: OrderGroup
   history: boolean
-  order: OrderRecord
   onCancel: (order: OrderRecord) => void
   onDraftEditChange: (draft: DraftEdit) => void
-  onEdit: (order: OrderRecord) => void
-  onSave: (order: OrderRecord) => void
+  onEdit: (group: OrderGroup) => void
+  onSave: (group: OrderGroup) => void
   onStopEdit: () => void
 }) {
-  const isEditing = editingOrderId === order.order_id && draftEdit !== null
+  const order = group.primary
+  const isEditing = editingGroupId === group.groupId && draftEdit !== null
   const isBusy = busyOrderId === order.order_id
-  const canEdit = order.editable !== false
+  const canEdit = group.readOnlyReason === null
+  const displayDetails = order.display_details ?? [`API order ${order.order_id}`]
 
   return (
     <TableRow>
       <TableCell>
-        <div className="font-medium">#{order.order_id}</div>
+        <div className="font-medium">{order.preview.summary}</div>
         <div className="max-w-md truncate text-xs text-muted-foreground">
-          {order.preview.summary}
+          {displayDetails.join(' | ')}
         </div>
         {order.parent_order_id ? (
           <div className="text-xs text-muted-foreground">
             Child of #{order.parent_order_id}
           </div>
         ) : null}
+        {group.children.length ? (
+          <div className="mt-1 space-y-0.5 text-xs text-muted-foreground">
+            <div>{linkedExitSummary(order)}</div>
+            {group.children.map((child) => (
+              <div key={child.order_id}>Linked order #{child.order_id}</div>
+            ))}
+          </div>
+        ) : null}
       </TableCell>
-      <TableCell className="capitalize">{order.status.replace('_', ' ')}</TableCell>
+      <TableCell>
+        <div className="capitalize">{order.status.replace('_', ' ')}</div>
+        {order.reconciliation_status === 'pending' ? (
+          <div className="text-xs text-muted-foreground">Pending IB confirmation</div>
+        ) : order.reconciliation_status === 'stale' ? (
+          <div className="text-xs text-muted-foreground">
+            Not in latest IB open orders
+          </div>
+        ) : null}
+      </TableCell>
       <TableCell className="tabular-nums">
         {formatQuantity(order.filled)}
         {order.remaining !== null
@@ -309,7 +369,7 @@ function OrderRow({
             onChange={onDraftEditChange}
           />
         ) : (
-          <EditableSummary order={order} />
+          <EditableSummary group={group} />
         )}
       </TableCell>
       <TableCell>
@@ -321,7 +381,7 @@ function OrderRow({
                 size="sm"
                 type="button"
                 disabled={isBusy}
-                onClick={() => onSave(order)}
+                onClick={() => onSave(group)}
                 className="cursor-pointer active:cursor-pointer"
               >
                 {isBusy ? (
@@ -350,7 +410,7 @@ function OrderRow({
                   size="sm"
                   variant="outline"
                   type="button"
-                  onClick={() => onEdit(order)}
+                  onClick={() => onEdit(group)}
                   className="cursor-pointer active:cursor-pointer"
                 >
                   Edit
@@ -411,6 +471,20 @@ function OrderEditFields({
   const request = order.preview.request
   return (
     <div className="grid min-w-[18rem] gap-2 sm:grid-cols-2">
+      <Field>
+        <FieldLabel className="sr-only">Quantity</FieldLabel>
+        <Input
+          aria-label={`Quantity ${order.order_id}`}
+          placeholder="Quantity"
+          type="number"
+          step="1"
+          min="1"
+          value={draft.quantity}
+          onChange={(event) =>
+            onChange({ ...draft, quantity: event.target.value })
+          }
+        />
+      </Field>
       <Field>
         <FieldLabel className="sr-only">Limit price</FieldLabel>
         <Input
@@ -481,17 +555,19 @@ function OrderEditFields({
   )
 }
 
-function EditableSummary({ order }: { order: OrderRecord }) {
+function EditableSummary({ group }: { group: OrderGroup }) {
+  const order = group.primary
   const request = order.preview.request
-  if (order.editable === false) {
+  if (group.readOnlyReason) {
     return (
       <span className="text-sm text-muted-foreground">
-        Reconciled from IB, not editable
+        {group.readOnlyReason}
       </span>
     )
   }
 
   const values = [
+    `Qty ${modeledQuantity(order)}`,
     request.limit_price !== undefined && request.limit_price !== null
       ? `Limit ${request.limit_price.toFixed(2)}`
       : null,
@@ -511,8 +587,73 @@ function formatQuantity(value: number) {
   return Number.isInteger(value) ? value.toFixed(0) : value.toString()
 }
 
-function isToday(value: string) {
-  const date = new Date(value)
-  const now = new Date()
-  return date.toDateString() === now.toDateString()
+function groupOrders(orders: OrderRecord[]): OrderGroup[] {
+  const byId = new Map(orders.map((order) => [order.order_id, order]))
+  const childIds = new Set(
+    orders
+      .filter((order) => order.parent_order_id !== null && byId.has(order.parent_order_id))
+      .map((order) => order.order_id),
+  )
+
+  return orders
+    .filter((order) => !childIds.has(order.order_id))
+    .map((order) => {
+      const children = orders
+        .filter((child) => child.parent_order_id === order.order_id)
+        .sort((left, right) => left.order_id - right.order_id)
+      const records = [order, ...children]
+      return {
+        groupId: order.parent_order_id ?? order.order_id,
+        primary: order,
+        children,
+        records,
+        readOnlyReason: groupReadOnlyReason(order, records),
+      }
+    })
+}
+
+function groupReadOnlyReason(primary: OrderRecord, records: OrderRecord[]) {
+  if (primary.parent_order_id !== null) {
+    return 'Linked parent order is missing.'
+  }
+  if (records.some((record) => record.reconciliation_status === 'stale')) {
+    return 'Order is not in the latest IB open-order snapshot.'
+  }
+  const readOnlyRecord = records.find((record) => record.editable === false)
+  if (readOnlyRecord) {
+    return readOnlyRecord.read_only_reason ?? 'Order is read-only.'
+  }
+  const request = primary.preview.request
+  const needsLinkedOrders =
+    request.order_kind === 'option_strategy' &&
+    (request.take_profit_price !== undefined ||
+      request.stop_loss_price !== undefined) &&
+    (request.take_profit_price !== null || request.stop_loss_price !== null)
+  if (needsLinkedOrders && records.length === 1) {
+    return 'Linked exit orders are incomplete.'
+  }
+  return null
+}
+
+function modeledQuantity(order: OrderRecord) {
+  const request = order.preview.request
+  if (request.order_kind === 'stock') {
+    return request.quantity
+  }
+  if (request.legs.length === 1) {
+    return request.legs[0].quantity
+  }
+  return request.strategy_quantity ?? 1
+}
+
+function linkedExitSummary(order: OrderRecord) {
+  const request = order.preview.request
+  if (request.order_kind !== 'option_strategy') {
+    return 'Linked exits'
+  }
+  const exits = [
+    request.take_profit_price ? `TP ${request.take_profit_price.toFixed(2)}` : null,
+    request.stop_loss_price ? `SL ${request.stop_loss_price.toFixed(2)}` : null,
+  ].filter(Boolean)
+  return exits.length ? `Linked exits: ${exits.join(' | ')}` : 'Linked exits'
 }

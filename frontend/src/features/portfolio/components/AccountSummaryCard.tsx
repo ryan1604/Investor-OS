@@ -69,6 +69,10 @@ export function AccountSummaryCard({
 }: AccountSummaryCardProps) {
   const summaryEquityPercent = summary ? equityPercent(summary) : null
 
+  if (!isLoading && !summary) {
+    return null
+  }
+
   return (
     <Card className="mt-6">
       <CardContent className="pt-0">
@@ -150,11 +154,7 @@ export function AccountSummaryCard({
               value={formatOptionalCurrency(summary.cash_total, summary.currency)}
             />
           </div>
-        ) : (
-          <div className="text-sm text-muted-foreground">
-            No account summary returned yet.
-          </div>
-        )}
+        ) : null}
       </CardContent>
     </Card>
   )

@@ -98,6 +98,8 @@ describe('StockTradeTicket', () => {
     fireEvent.click(screen.getByRole('button', { name: /trade/i }))
 
     expect(screen.queryByRole('button', { name: 'USD' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: /account/i })).toBeNull()
+    expect(screen.getByText('DU222')).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: /review/i }))
 
     await waitFor(() => {
@@ -129,6 +131,26 @@ describe('StockTradeTicket', () => {
     )
   })
 
+  it('blocks review when no selected account is available', () => {
+    render(
+      <StockTradeTicket
+        ticker="AAPL"
+        latestPrice={190.12}
+        portfolio={portfolio}
+        selectedAccount={null}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: /trade/i }))
+
+    expect(screen.getByText('No account selected')).toBeTruthy()
+    expect(screen.getByText('Select an account.')).toBeTruthy()
+    expect(screen.queryByRole('combobox', { name: /account/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /review/i })).toHaveProperty(
+      'disabled',
+      true,
+    )
+  })
+
   it('blocks stock sells above the selected account position', () => {
     renderTicket()
     fireEvent.click(screen.getByRole('button', { name: /trade/i }))
@@ -154,11 +176,14 @@ describe('StockTradeTicket', () => {
         parent_order_id: null,
         account: 'DU222',
         status: 'submitted',
+        reconciliation_status: 'confirmed',
         editable: true,
         filled: 0,
         remaining: null,
         avg_fill_price: null,
         rejection_message: null,
+        is_open: true,
+        is_current_day_history: false,
         submitted_at: '2026-06-03T00:00:00Z',
         updated_at: '2026-06-03T00:00:00Z',
         preview,

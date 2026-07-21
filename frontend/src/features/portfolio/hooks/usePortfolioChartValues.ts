@@ -6,12 +6,10 @@ import {
   type PortfolioChartValueRequest,
   type PortfolioChartValue,
 } from '@/api/portfolioChartValues'
-import { isAbortError } from '@/api/client'
+import { errorMessage, isAbortError } from '@/api/client'
 
 function portfolioChartValuesErrorMessage(error: unknown) {
-  return error instanceof Error
-    ? error.message
-    : 'Portfolio chart values request failed'
+  return errorMessage(error, 'Portfolio chart values request failed')
 }
 
 export function usePortfolioChartValues(account: string | undefined) {

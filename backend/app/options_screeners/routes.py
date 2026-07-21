@@ -6,10 +6,6 @@ from fastapi import (
     WebSocketDisconnect,
 )
 
-from app.dependencies import (
-    get_options_screener_scan_manager,
-    get_options_screener_settings_store,
-)
 from app.options_screeners.manager import (
     OptionsScreenerJobNotActive,
     OptionsScreenerJobNotFound,
@@ -41,9 +37,9 @@ router = APIRouter(prefix="/options-screeners")
 def get_options_screener_settings(
     request: Request,
 ) -> OptionsScreenerSettingsResponse:
-    ticker_lists, filters = get_options_screener_settings_store(
-        request
-    ).get_settings()
+    ticker_lists, filters = (
+        request.app.state.options_screener_settings_store.get_settings()
+    )
     return OptionsScreenerSettingsResponse(
         ticker_lists=ticker_lists,
         filters=filters,
@@ -60,7 +56,7 @@ def replace_options_screener_ticker_list(
     ticker_list_request: OptionsScreenerTickerListRequest,
 ) -> OptionsScreenerTickerListResponse:
     try:
-        tickers = get_options_screener_settings_store(request).replace_ticker_list(
+        tickers = request.app.state.options_screener_settings_store.replace_ticker_list(
             list_name,
             ticker_list_request.tickers,
         )
@@ -77,10 +73,7 @@ def save_csp_filters(
     request: Request,
     filters: OptionsScreenerFilters,
 ) -> OptionsScreenerFilters:
-    return get_options_screener_settings_store(request).save_filters(
-        "csp",
-        filters,
-    )
+    return save_screener_filters(request, "csp", filters)
 
 
 @router.put("/settings/filters/cc", response_model=OptionsScreenerFilters)
@@ -88,10 +81,7 @@ def save_cc_filters(
     request: Request,
     filters: OptionsScreenerFilters,
 ) -> OptionsScreenerFilters:
-    return get_options_screener_settings_store(request).save_filters(
-        "cc",
-        filters,
-    )
+    return save_screener_filters(request, "cc", filters)
 
 
 @router.put("/settings/filters/cs", response_model=CreditSpreadScreenerFilters)
@@ -99,17 +89,14 @@ def save_cs_filters(
     request: Request,
     filters: CreditSpreadScreenerFilters,
 ) -> CreditSpreadScreenerFilters:
-    return get_options_screener_settings_store(request).save_filters(
-        "cs",
-        filters,
-    )
+    return save_screener_filters(request, "cs", filters)
 
 
 @router.get("/state", response_model=OptionsScreenerScanState)
 def get_options_screener_scan_state(
     request: Request,
 ) -> OptionsScreenerScanState:
-    return get_options_screener_scan_manager(request).state()
+    return request.app.state.options_screener_scan_manager.state()
 
 
 @router.get("/jobs/{job_id}", response_model=OptionsScreenerScanJob)
@@ -118,7 +105,7 @@ def get_options_screener_job(
     job_id: str,
 ) -> OptionsScreenerScanJob:
     try:
-        return get_options_screener_scan_manager(request).get_job(job_id)
+        return request.app.state.options_screener_scan_manager.get_job(job_id)
     except OptionsScreenerJobNotFound as error:
         raise HTTPException(status_code=404, detail="Scan job not found.") from error
 
@@ -131,7 +118,7 @@ def get_options_screener_completed_snapshot(
     request: Request,
     screener: OptionsScreener,
 ) -> OptionsScreenerCompletedSnapshot | None:
-    return get_options_screener_scan_manager(request).completed_snapshot(screener)
+    return request.app.state.options_screener_scan_manager.completed_snapshot(screener)
 
 
 @router.post("/scans/{screener}", response_model=OptionsScreenerScanJob)
@@ -140,7 +127,7 @@ def start_options_screener_scan(
     screener: OptionsScreener,
 ) -> OptionsScreenerScanJob:
     try:
-        return get_options_screener_scan_manager(request).start(screener)
+        return request.app.state.options_screener_scan_manager.start(screener)
     except OptionsScreenerScanConflict as error:
         raise HTTPException(
             status_code=409,
@@ -161,7 +148,7 @@ def cancel_options_screener_scan(
     job_id: str,
 ) -> OptionsScreenerScanJob:
     try:
-        return get_options_screener_scan_manager(request).cancel(job_id)
+        return request.app.state.options_screener_scan_manager.cancel(job_id)
     except OptionsScreenerJobNotFound as error:
         raise HTTPException(status_code=404, detail="Scan job not found.") from error
     except OptionsScreenerJobNotActive as error:
@@ -177,7 +164,7 @@ def refresh_options_screener_quote(
     quote_request: OptionsScreenerQuoteRefreshRequest,
 ) -> OptionsScreenerQuoteRefreshResponse:
     try:
-        return get_options_screener_scan_manager(request).refresh_quote(
+        return request.app.state.options_screener_scan_manager.refresh_quote(
             quote_request
         )
     except OptionsScreenerServiceUnavailable as error:
@@ -193,7 +180,7 @@ def refresh_options_screener_spread_quote(
     quote_request: OptionsScreenerSpreadQuoteRefreshRequest,
 ) -> OptionsScreenerSpreadQuoteRefreshResponse:
     try:
-        return get_options_screener_scan_manager(request).refresh_spread_quote(
+        return request.app.state.options_screener_scan_manager.refresh_spread_quote(
             quote_request
         )
     except OptionsScreenerServiceUnavailable as error:
@@ -203,7 +190,7 @@ def refresh_options_screener_spread_quote(
 @router.websocket("/scans/ws")
 async def options_screener_scans_ws(websocket: WebSocket):
     await websocket.accept()
-    manager = get_options_screener_scan_manager(websocket)
+    manager = websocket.app.state.options_screener_scan_manager
     subscriber = manager.subscribe()
     try:
         await send_queue_websocket_updates(websocket, subscriber)
@@ -211,3 +198,14 @@ async def options_screener_scans_ws(websocket: WebSocket):
         return
     finally:
         manager.unsubscribe(subscriber)
+
+
+def save_screener_filters(
+    request: Request,
+    screener: OptionsScreener,
+    filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
+) -> OptionsScreenerFilters | CreditSpreadScreenerFilters:
+    return request.app.state.options_screener_settings_store.save_filters(
+        screener,
+        filters,
+    )

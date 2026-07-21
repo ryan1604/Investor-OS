@@ -1,5 +1,6 @@
 import {
   BriefcaseBusiness,
+  CalendarClock,
   ChartCandlestick,
   ChartNoAxesCombined,
   ClipboardList,
@@ -69,6 +70,11 @@ const navigationItems: {
     page: 'stock-analysis',
     label: 'Stock Analysis',
     icon: ChartNoAxesCombined,
+  },
+  {
+    page: 'earnings-watch',
+    label: 'Earnings Watch',
+    icon: CalendarClock,
   },
   {
     page: 'rank-stocks',

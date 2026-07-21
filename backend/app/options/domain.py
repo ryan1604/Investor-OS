@@ -7,6 +7,8 @@ from app.options.indicators import DailyClose
 from app.options.store import CompletedDailyBar, StoredDailyBar
 from app.schemas import OptionChainRow, OptionDailyBar, OptionQuote
 
+MIN_OPTION_CHAIN_DELTA = 0.095
+
 MAX_HISTORICAL_CHUNK_DAYS = 365
 
 
@@ -138,14 +140,70 @@ def option_chain_rows(
     strikes: list[float],
     quotes: dict[tuple[float, str], OptionQuote],
 ) -> list[OptionChainRow]:
+    sorted_strikes = sorted(strikes)
+    lower_bound, upper_bound = option_chain_delta_bounds(sorted_strikes, quotes)
+    if lower_bound is None or upper_bound is None or lower_bound > upper_bound:
+        return [
+            OptionChainRow(
+                strike=strike,
+                call=quotes.get((strike, "C")),
+                put=quotes.get((strike, "P")),
+            )
+            for strike in sorted_strikes
+            if quotes.get((strike, "C")) is not None
+            or quotes.get((strike, "P")) is not None
+        ]
+
     return [
         OptionChainRow(
             strike=strike,
             call=quotes.get((strike, "C")),
             put=quotes.get((strike, "P")),
         )
-        for strike in strikes
+        for strike in sorted_strikes
+        if lower_bound <= strike <= upper_bound
     ]
+
+
+def option_quote_above_minimum(quote: OptionQuote | None) -> bool:
+    if quote is None:
+        return False
+    return quote.delta is not None and abs(quote.delta) > MIN_OPTION_CHAIN_DELTA
+
+
+def option_chain_has_delta_window(
+    strikes: list[float],
+    quotes: dict[tuple[float, str], OptionQuote],
+) -> bool:
+    lower_bound, upper_bound = option_chain_delta_bounds(sorted(strikes), quotes)
+    return (
+        lower_bound is not None
+        and upper_bound is not None
+        and lower_bound <= upper_bound
+    )
+
+
+def option_chain_delta_bounds(
+    sorted_strikes: list[float],
+    quotes: dict[tuple[float, str], OptionQuote],
+) -> tuple[float | None, float | None]:
+    lower_bound = next(
+        (
+            strike
+            for strike in sorted_strikes
+            if option_quote_above_minimum(quotes.get((strike, "P")))
+        ),
+        None,
+    )
+    upper_bound = next(
+        (
+            strike
+            for strike in reversed(sorted_strikes)
+            if option_quote_above_minimum(quotes.get((strike, "C")))
+        ),
+        None,
+    )
+    return lower_bound, upper_bound
 
 
 def to_option_quote(

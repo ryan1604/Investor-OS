@@ -60,17 +60,13 @@ export function mergeLiveChainSnapshot(
   rows: OptionChainRow[],
   message: string | null,
 ): OptionChainResponse {
-  if (!chain || chain.expiration !== expiration || !chain.rows.length) {
-    return {
-      ticker,
-      expiration,
-      underlying_price: chain?.underlying_price ?? null,
-      rows,
-      message: message ?? chain?.message ?? null,
-    }
+  return {
+    ticker,
+    expiration,
+    underlying_price: chain?.underlying_price ?? null,
+    rows,
+    message: message ?? chain?.message ?? null,
   }
-
-  return mergeLiveChainRows(chain, ticker, expiration, rows, message)
 }
 
 export function mergeLiveChainRow(

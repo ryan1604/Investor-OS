@@ -15,7 +15,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.config import Settings
-from app.main import AppFactories, create_app
+from app.main import AppOverrides, create_app
 from app.schemas import (
     BollingerBandPoint,
     IbStatus,
@@ -33,7 +33,6 @@ from app.schemas import (
     RsiPoint,
     StockOrderRequest,
 )
-from app.stock_analysis.store import StockAnalysisStore
 
 
 DEFAULT_ITERATIONS = 10
@@ -279,15 +278,32 @@ def run_baseline(
         prefix="investor-os-baseline-",
         ignore_cleanup_errors=True,
     ) as directory:
-        database_path = Path(directory) / "stock-analysis.sqlite3"
-        api = create_app(AppFactories(
-            client=lambda _settings: portfolio_client,
-            options_client=lambda _settings, _client: options_client,
-            stock_analysis_store=stock_analysis_store_factory(
-                database_path,
-                recorder,
+        data_path = Path(directory)
+        api = create_app(
+            Settings(
+                options_database_path=str(data_path / "options.sqlite3"),
+                options_screeners_database_path=str(
+                    data_path / "options_screeners.sqlite3",
+                ),
+                options_trade_trackers_database_path=str(
+                    data_path / "options_trade_trackers.sqlite3",
+                ),
+                orders_database_path=str(data_path / "orders.sqlite3"),
+                stock_analysis_database_path=str(
+                    data_path / "stock-analysis.sqlite3",
+                ),
+                portfolio_chart_values_database_path=str(
+                    data_path / "portfolio_chart_values.sqlite3",
+                ),
+                earnings_watch_database_path=str(
+                    data_path / "earnings_watch.sqlite3",
+                ),
             ),
-        ))
+            AppOverrides(
+                client=portfolio_client,
+                options_client=options_client,
+            ),
+        )
 
         with TestClient(api) as client:
             time.sleep(0.05)
@@ -299,31 +315,6 @@ def run_baseline(
                 position_count=position_count,
                 chain_rows=chain_rows,
             )
-
-
-def stock_analysis_store_factory(
-    database_path: Path,
-    recorder: TimingRecorder,
-) -> Callable[[Settings], StockAnalysisStore]:
-    class BaselineStockAnalysisStore(StockAnalysisStore):
-        def get_model(self, ticker: str):
-            return recorder.measure(
-                "sqlite.stock_analysis_read_ms",
-                lambda: super(BaselineStockAnalysisStore, self).get_model(ticker),
-            )
-
-        def upsert_model(self, ticker: str, *, version, payload, updated_at=None):
-            return recorder.measure(
-                "sqlite.stock_analysis_write_ms",
-                lambda: super(BaselineStockAnalysisStore, self).upsert_model(
-                    ticker,
-                    version=version,
-                    payload=payload,
-                    updated_at=updated_at,
-                ),
-            )
-
-    return lambda _settings: BaselineStockAnalysisStore(database_path)
 
 
 def collect_metrics(

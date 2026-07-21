@@ -1,11 +1,12 @@
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from app.ib.app import IbPortfolioApp
-from app.ib.contracts import us_equity_contract
+from app.ib.contracts import us_equity_contract, us_option_contract
 from app.ib.options import (
     IbHistoricalDailyBarStreamProvider,
     IbOptionChainSnapshotProvider,
@@ -18,11 +19,14 @@ from app.options.client import (
     CachedOptionMetadataProvider,
     OptionsClient,
     OptionsDataUnavailable,
+    ScannerOptionContract,
+    capped_chain_strikes,
 )
 from app.options.domain import (
     OptionMetadata,
     bounded_strikes,
     chunk_date_range,
+    option_chain_rows,
     to_option_quote,
 )
 from app.options.store import CompletedDailyBar, OptionsDailyBarStore
@@ -143,22 +147,116 @@ class FakeChainProvider:
     def __init__(
         self,
         quotes: dict[tuple[float, str], OptionQuote] | None = None,
+        contract_strikes: list[float] | None = None,
     ) -> None:
         self.quotes = quotes or {}
+        self.contract_strikes = contract_strikes
         self.requests: list[tuple[str, str, list[float]]] = []
+        self.quote_requests: list[list[ScannerOptionContract]] = []
+        self.request_event = threading.Event()
 
-    def fetch_chain_quotes(
+    def fetch_chain_contracts(
         self,
         ticker: str,
         expiration: str,
         strikes: list[float],
-    ) -> dict[tuple[float, str], OptionQuote]:
+    ) -> list[ScannerOptionContract]:
+        self.request_event.set()
         self.requests.append((ticker, expiration, strikes))
+        actual_strikes = (
+            self.contract_strikes if self.contract_strikes is not None else strikes
+        )
+        return [
+            ScannerOptionContract(
+                con_id=index + 1,
+                ticker=ticker,
+                expiration=expiration,
+                strike=strike,
+                right=right,
+                exchange="SMART",
+                currency="USD",
+                multiplier="100",
+                trading_class=ticker,
+                local_symbol=f"{ticker}{index}{right}",
+            )
+            for index, (strike, right) in enumerate(
+                (strike, right)
+                for strike in actual_strikes
+                if strike in strikes
+                for right in ("C", "P")
+            )
+        ]
+
+    def fetch_chain_quotes(
+        self,
+        contracts: list[ScannerOptionContract],
+    ) -> dict[tuple[float, str], OptionQuote]:
+        self.quote_requests.append(list(contracts))
+        strikes = {contract.strike for contract in contracts}
         return {
             key: quote
             for key, quote in self.quotes.items()
             if key[0] in strikes
+            and any(
+                contract.strike == key[0] and contract.right == key[1]
+                for contract in contracts
+            )
         }
+
+
+class SlowChainProvider(FakeChainProvider):
+    def __init__(
+        self,
+        quotes: dict[tuple[float, str], OptionQuote] | None = None,
+        contract_strikes: list[float] | None = None,
+    ) -> None:
+        super().__init__(quotes, contract_strikes)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def fetch_chain_contracts(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+    ) -> list[ScannerOptionContract]:
+        self.started.set()
+        self.release.wait(timeout=1)
+        return super().fetch_chain_contracts(ticker, expiration, strikes)
+
+
+class BlockingFirstChainProvider(FakeChainProvider):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = threading.Event()
+        self.first_started = threading.Event()
+        self.lock = threading.Lock()
+        self.blocked_first_request = False
+
+    def fetch_chain_contracts(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+    ) -> list[ScannerOptionContract]:
+        with self.lock:
+            should_block = not self.blocked_first_request
+            self.blocked_first_request = True
+
+        if should_block:
+            self.first_started.set()
+            self.release.wait(timeout=1)
+
+        return super().fetch_chain_contracts(ticker, expiration, strikes)
+
+
+def wait_until(predicate, *, timeout_seconds: float = 1) -> None:
+    deadline = datetime.now().timestamp() + timeout_seconds
+    while datetime.now().timestamp() < deadline:
+        if predicate():
+            return
+        threading.Event().wait(0.01)
+    assert predicate()
 
 
 def test_option_metadata_cache_reuses_expirations_and_strikes():
@@ -230,7 +328,11 @@ class FakeChainStreamProvider:
         self.quotes = quotes or []
         self.requests: list[tuple[str, str, list[float]]] = []
 
-    def stream_chain_quotes(self, ticker, expiration, strikes, stop_event):
+    def stream_chain_quotes(self, contracts, stop_event):
+        first_contract = contracts[0] if contracts else None
+        ticker = first_contract.ticker if first_contract else ""
+        expiration = first_contract.expiration if first_contract else ""
+        strikes = sorted({contract.strike for contract in contracts})
         self.requests.append((ticker, expiration, strikes))
 
         for key, quote in self.quotes:
@@ -658,6 +760,91 @@ def test_get_expirations_returns_sorted_expirations(tmp_path):
     assert metadata_provider.requests == ["AAPL"]
 
 
+def test_get_expirations_prefetches_selected_and_nearby_contracts(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(
+        expirations=[
+            "2026-06-19",
+            "2026-06-26",
+            "2026-07-03",
+            "2026-07-10",
+        ],
+        strikes=[70, 80, 90, 100, 110, 120, 130],
+    )
+    chain_provider = FakeChainProvider()
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    client.get_analysis("AAPL", current_date=date(2026, 5, 30))
+    response = client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+
+    wait_until(lambda: len(chain_provider.requests) == 3)
+    client.shutdown()
+
+    assert response.selected_expiration == "2026-06-19"
+    assert chain_provider.requests == [
+        ("AAPL", "2026-06-19", [70, 80, 90, 100, 110, 120, 130]),
+        ("AAPL", "2026-06-26", [70, 80, 90, 100, 110, 120, 130]),
+        ("AAPL", "2026-07-03", [70, 80, 90, 100, 110, 120, 130]),
+    ]
+    assert chain_provider.quote_requests == []
+
+
+def test_get_expirations_skips_prefetch_without_analysis_price(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19"],
+        strikes=[100],
+    )
+    chain_provider = FakeChainProvider()
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    response = client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+
+    assert response.selected_expiration == "2026-06-19"
+    assert chain_provider.requests == []
+
+
+def test_visible_chain_request_does_not_wait_for_unrelated_prefetch(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19", "2026-07-17"],
+        strikes=[100],
+    )
+    chain_provider = BlockingFirstChainProvider()
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    client.get_analysis("AAPL", current_date=date(2026, 5, 30))
+    client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+    assert chain_provider.first_started.wait(timeout=1)
+
+    response = client.get_chain(
+        "AAPL",
+        "2026-07-17",
+        current_date=date(2026, 5, 30),
+    )
+    chain_provider.release.set()
+    wait_until(lambda: len(chain_provider.requests) == 2)
+    client.shutdown()
+
+    assert response.expiration == "2026-07-17"
+    assert chain_provider.requests[0] == ("AAPL", "2026-07-17", [100])
+
+
 def test_get_analysis_rejects_empty_ticker(tmp_path):
     provider = FakeHistoricalProvider()
     client, _store = make_client(tmp_path, provider)
@@ -690,10 +877,18 @@ def test_get_chain_returns_bounded_call_and_put_rows(tmp_path):
     )
     chain_provider = FakeChainProvider(
         {
-            (90, "C"): OptionQuote(bid=1, ask=1.4, mid=1.2, breakeven=91.4),
-            (90, "P"): OptionQuote(bid=0.8, ask=1.2, mid=1, breakeven=88.8),
-            (100, "C"): OptionQuote(bid=2, ask=2.4, mid=2.2, breakeven=102.4),
-            (100, "P"): OptionQuote(bid=1.8, ask=2.2, mid=2, breakeven=97.8),
+            (90, "C"): OptionQuote(
+                delta=0.2, bid=1, ask=1.4, mid=1.2, breakeven=91.4
+            ),
+            (90, "P"): OptionQuote(
+                delta=-0.2, bid=0.8, ask=1.2, mid=1, breakeven=88.8
+            ),
+            (100, "C"): OptionQuote(
+                delta=0.5, bid=2, ask=2.4, mid=2.2, breakeven=102.4
+            ),
+            (100, "P"): OptionQuote(
+                delta=-0.5, bid=1.8, ask=2.2, mid=2, breakeven=97.8
+            ),
         }
     )
     client, _store = make_client(
@@ -712,11 +907,11 @@ def test_get_chain_returns_bounded_call_and_put_rows(tmp_path):
     assert response.ticker == "AAPL"
     assert response.expiration == "2026-06-19"
     assert response.underlying_price == 100
-    assert [row.strike for row in response.rows] == [70, 80, 90, 100, 110, 120, 130]
-    assert response.rows[2].call is not None
-    assert response.rows[2].call.mid == 1.2
-    assert response.rows[2].put is not None
-    assert response.rows[2].put.breakeven == 88.8
+    assert [row.strike for row in response.rows] == [90, 100]
+    assert response.rows[0].call is not None
+    assert response.rows[0].call.mid == 1.2
+    assert response.rows[0].put is not None
+    assert response.rows[0].put.breakeven == 88.8
     assert chain_provider.requests == [
         ("AAPL", "2026-06-19", [70, 80, 90, 100, 110, 120, 130]),
     ]
@@ -760,6 +955,52 @@ def test_get_chain_uses_bounded_shared_chain_context_executor(tmp_path):
     assert client.chain_context_executor is executor
 
 
+def test_concurrent_chain_requests_share_contract_hydration(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19"],
+        strikes=[95, 100],
+    )
+    chain_provider = SlowChainProvider(
+        {
+            (95, "P"): OptionQuote(delta=-0.2, bid=1),
+            (100, "C"): OptionQuote(delta=0.2, bid=1),
+        }
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+    client.analysis_underlying_price_cache.set("AAPL", 100)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            client.get_chain,
+            "AAPL",
+            "2026-06-19",
+            current_date=date(2026, 5, 30),
+        )
+        assert chain_provider.started.wait(timeout=1)
+        second = executor.submit(
+            client.get_chain,
+            "AAPL",
+            "2026-06-19",
+            current_date=date(2026, 5, 30),
+        )
+        chain_provider.release.set()
+        first_response = first.result(timeout=1)
+        second_response = second.result(timeout=1)
+
+    assert [row.strike for row in first_response.rows] == [95, 100]
+    assert [row.strike for row in second_response.rows] == [95, 100]
+    assert chain_provider.requests == [
+        ("AAPL", "2026-06-19", [95, 100]),
+    ]
+    assert len(chain_provider.quote_requests) == 2
+
+
 def test_get_chain_does_not_cache_failed_metadata_refresh(tmp_path):
     barrier = threading.Barrier(2)
     provider = OverlapHistoricalProvider(barrier)
@@ -787,7 +1028,10 @@ def test_get_chain_reuses_metadata_but_fetches_live_quotes(tmp_path):
     provider = FakeHistoricalProvider()
     metadata_provider = FakeMetadataProvider(strikes=[100])
     chain_provider = FakeChainProvider(
-        {(100, "C"): OptionQuote(bid=1)},
+        {
+            (100, "C"): OptionQuote(delta=0.5, bid=1),
+            (100, "P"): OptionQuote(delta=-0.5, bid=1),
+        },
     )
     client, _store = make_client(
         tmp_path,
@@ -801,7 +1045,10 @@ def test_get_chain_reuses_metadata_but_fetches_live_quotes(tmp_path):
         "2026-06-19",
         current_date=date(2026, 5, 30),
     )
-    chain_provider.quotes = {(100, "C"): OptionQuote(bid=2)}
+    chain_provider.quotes = {
+        (100, "C"): OptionQuote(delta=0.5, bid=2),
+        (100, "P"): OptionQuote(delta=-0.5, bid=1),
+    }
     second_response = client.get_chain(
         "AAPL",
         "2026-06-19",
@@ -813,7 +1060,81 @@ def test_get_chain_reuses_metadata_but_fetches_live_quotes(tmp_path):
     assert second_response.rows[0].call is not None
     assert second_response.rows[0].call.bid == 2
     assert metadata_provider.requests == ["AAPL"]
-    assert len(chain_provider.requests) == 2
+    assert chain_provider.requests == [
+        ("AAPL", "2026-06-19", [100]),
+    ]
+    assert len(chain_provider.quote_requests) == 2
+
+
+def test_get_chain_omits_metadata_strikes_without_selected_expiration_contracts(
+    tmp_path,
+):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100])
+    chain_provider = FakeChainProvider(
+        {
+            (90, "P"): OptionQuote(delta=-0.2, bid=1),
+            (100, "C"): OptionQuote(delta=0.2, bid=1),
+            (95, "C"): OptionQuote(delta=0.2, bid=1),
+            (95, "P"): OptionQuote(delta=-0.2, bid=1),
+        },
+        contract_strikes=[90, 100],
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    response = client.get_chain(
+        "HIMS",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+
+    assert [row.strike for row in response.rows] == [90, 100]
+    assert chain_provider.requests == [
+        ("HIMS", "2026-06-19", [90, 95, 100]),
+    ]
+
+
+def test_get_chain_cached_contracts_still_exclude_unresolved_strikes(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100])
+    chain_provider = FakeChainProvider(
+        {
+            (90, "P"): OptionQuote(delta=-0.2, bid=1),
+            (100, "C"): OptionQuote(delta=0.2, bid=1),
+            (95, "C"): OptionQuote(delta=0.2, bid=1),
+            (95, "P"): OptionQuote(delta=-0.2, bid=1),
+        },
+        contract_strikes=[90, 100],
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    first_response = client.get_chain(
+        "HIMS",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+    chain_provider.contract_strikes = [90, 95, 100]
+    second_response = client.get_chain(
+        "HIMS",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+
+    assert [row.strike for row in first_response.rows] == [90, 100]
+    assert [row.strike for row in second_response.rows] == [90, 100]
+    assert chain_provider.requests == [
+        ("HIMS", "2026-06-19", [90, 95, 100]),
+    ]
 
 
 def test_analysis_chain_and_stream_setup_share_one_daily_bar_refresh(tmp_path):
@@ -843,6 +1164,61 @@ def test_analysis_chain_and_stream_setup_share_one_daily_bar_refresh(tmp_path):
     assert chain_response.underlying_price == 100
     assert stream_snapshot.type == "snapshot"
     assert provider.requests == []
+
+
+def test_rest_chain_and_stream_reuse_contracts_without_duplicate_streams(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19"],
+        strikes=[100],
+    )
+    chain_provider = FakeChainProvider(
+        {
+            (100, "C"): OptionQuote(delta=0.2, bid=1),
+            (100, "P"): OptionQuote(delta=-0.2, bid=1),
+        },
+    )
+    chain_stream_provider = FakeChainStreamProvider(
+        [((100, "C"), OptionQuote(delta=0.25, bid=2))],
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+        chain_stream_provider,
+    )
+    client.analysis_underlying_price_cache.set("AAPL", 100)
+
+    rest_response = client.get_chain(
+        "AAPL",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+    stream = client.stream_chain(
+        "AAPL",
+        "2026-06-19",
+        stop_event=threading.Event(),
+        current_date=date(2026, 5, 30),
+    )
+    stream_snapshot = next(stream)
+    stream_update = next(stream)
+
+    assert rest_response.rows[0].call is not None
+    assert rest_response.rows[0].call.bid == 1
+    assert stream_snapshot.rows is not None
+    assert stream_snapshot.rows[0].call is not None
+    assert stream_snapshot.rows[0].call.bid == 1
+    assert stream_update.row is not None
+    assert stream_update.row.call is not None
+    assert stream_update.row.call.bid == 2
+    assert chain_provider.requests == [
+        ("AAPL", "2026-06-19", [100]),
+    ]
+    assert len(chain_provider.quote_requests) == 1
+    assert chain_stream_provider.requests == [
+        ("AAPL", "2026-06-19", [100]),
+    ]
 
 
 def test_chain_refreshes_daily_bars_after_analysis_price_cache_expires(tmp_path):
@@ -886,10 +1262,78 @@ def test_bounded_strikes_keeps_atm_count_when_percent_range_is_sparse():
     ]
 
 
+def test_option_chain_rows_uses_put_floor_and_call_ceiling():
+    rows = option_chain_rows(
+        [90, 95, 100, 105, 110],
+        {
+            (90, "P"): OptionQuote(delta=-0.095, bid=1),
+            (95, "P"): OptionQuote(delta=-0.1, bid=1),
+            (100, "C"): OptionQuote(delta=0.08, bid=1),
+            (105, "C"): OptionQuote(delta=0.1, bid=1),
+            (110, "C"): OptionQuote(delta=0.095, bid=1),
+        },
+    )
+
+    assert [row.strike for row in rows] == [95, 100, 105]
+    assert rows[0].put is not None
+    assert rows[1].call is not None
+    assert rows[2].call is not None
+
+
+def test_option_chain_rows_keeps_quoted_rows_when_delta_is_missing():
+    rows = option_chain_rows(
+        [90, 95, 100],
+        {
+            (90, "C"): OptionQuote(delta=None, bid=1, ask=1.2),
+            (100, "P"): OptionQuote(delta=None, bid=0.8, ask=1),
+        },
+    )
+
+    assert [row.strike for row in rows] == [90, 100]
+    assert rows[0].call is not None
+    assert rows[0].put is None
+    assert rows[1].call is None
+    assert rows[1].put is not None
+
+
+def test_option_chain_rows_keeps_delta_window_when_bounds_exist():
+    rows = option_chain_rows(
+        [90, 95, 100, 105, 110],
+        {
+            (90, "C"): OptionQuote(delta=None, bid=1),
+            (95, "P"): OptionQuote(delta=-0.1, bid=1),
+            (100, "P"): OptionQuote(delta=None, bid=1),
+            (105, "C"): OptionQuote(delta=0.1, bid=1),
+            (110, "P"): OptionQuote(delta=None, bid=1),
+        },
+    )
+
+    assert [row.strike for row in rows] == [95, 100, 105]
+
+
+def test_option_chain_rows_keeps_quotes_for_inverted_partial_delta_bounds():
+    rows = option_chain_rows(
+        [90, 95, 100, 105],
+        {
+            (90, "C"): OptionQuote(delta=0.1, bid=1),
+            (105, "P"): OptionQuote(delta=-0.1, bid=1),
+        },
+    )
+
+    assert [row.strike for row in rows] == [90, 105]
+    assert rows[0].call is not None
+    assert rows[1].put is not None
+
+
 def test_get_chain_preserves_missing_quote_values(tmp_path):
     provider = FakeHistoricalProvider()
     metadata_provider = FakeMetadataProvider(strikes=[100])
-    chain_provider = FakeChainProvider({(100, "C"): OptionQuote(bid=1)})
+    chain_provider = FakeChainProvider(
+        {
+            (100, "C"): OptionQuote(delta=0.5, bid=1),
+            (100, "P"): OptionQuote(delta=-0.5, bid=1),
+        }
+    )
     client, _store = make_client(
         tmp_path,
         provider,
@@ -908,7 +1352,36 @@ def test_get_chain_preserves_missing_quote_values(tmp_path):
     assert response.rows[0].call.ask is None
     assert response.rows[0].call.mid is None
     assert response.rows[0].call.breakeven is None
-    assert response.rows[0].put is None
+    assert response.rows[0].put is not None
+
+
+def test_get_chain_keeps_contract_quotes_when_delta_is_missing(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[95, 100])
+    chain_provider = FakeChainProvider(
+        {
+            (95, "C"): OptionQuote(delta=None, bid=1, ask=1.2),
+            (100, "P"): OptionQuote(delta=None, bid=0.8, ask=1),
+        }
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+    )
+
+    response = client.get_chain(
+        "MSFT",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+
+    assert [row.strike for row in response.rows] == [95, 100]
+    assert response.rows[0].call is not None
+    assert response.rows[0].call.delta is None
+    assert response.rows[1].put is not None
+    assert response.rows[1].put.delta is None
 
 
 def test_get_chain_rejects_missing_underlying_price_before_quoting_options(tmp_path):
@@ -937,8 +1410,8 @@ def test_stream_chain_yields_snapshot_then_row_updates(tmp_path):
     metadata_provider = FakeMetadataProvider(strikes=[90, 100, 110])
     chain_stream_provider = FakeChainStreamProvider(
         [
-            ((100, "C"), OptionQuote(bid=1, ask=1.2, mid=1.1)),
-            ((100, "P"), OptionQuote(bid=0.8, ask=1, mid=0.9)),
+            ((100, "C"), OptionQuote(delta=None, bid=1, ask=1.2, mid=1.1)),
+            ((100, "P"), OptionQuote(delta=None, bid=0.8, ask=1, mid=0.9)),
         ]
     )
     client, _store = make_client(
@@ -960,11 +1433,14 @@ def test_stream_chain_yields_snapshot_then_row_updates(tmp_path):
 
     assert messages[0].type == "snapshot"
     assert messages[0].ticker == "MSFT"
-    assert [row.strike for row in messages[0].rows or []] == [90, 100, 110]
+    assert messages[0].rows == []
     assert messages[1].type == "update"
     assert messages[1].row is not None
+    assert messages[1].row.strike == 100
     assert messages[1].row.call is not None
     assert messages[1].row.call.bid == 1
+    assert messages[1].row.put is None
+    assert messages[2].type == "update"
     assert messages[2].row is not None
     assert messages[2].row.call is not None
     assert messages[2].row.put is not None
@@ -973,14 +1449,190 @@ def test_stream_chain_yields_snapshot_then_row_updates(tmp_path):
     ]
 
 
+def test_stream_chain_snapshot_uses_recent_quote_cache(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[100])
+    chain_provider = FakeChainProvider(
+        {
+            (100, "C"): OptionQuote(delta=0.5, bid=1),
+            (100, "P"): OptionQuote(delta=-0.5, bid=0.8),
+        }
+    )
+    chain_stream_provider = FakeChainStreamProvider()
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+        chain_stream_provider=chain_stream_provider,
+    )
+
+    client.get_chain(
+        "MSFT",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+    messages = list(
+        client.stream_chain(
+            "MSFT",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert messages[0].type == "snapshot"
+    assert [row.strike for row in messages[0].rows or []] == [100]
+    assert messages[0].rows is not None
+    assert messages[0].rows[0].call is not None
+    assert messages[0].rows[0].call.bid == 1
+    assert messages[0].rows[0].put is not None
+    assert messages[0].rows[0].put.bid == 0.8
+
+
+def test_stream_chain_live_update_replaces_cached_quote(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[100])
+    chain_provider = FakeChainProvider(
+        {
+            (100, "C"): OptionQuote(delta=0.5, bid=1),
+            (100, "P"): OptionQuote(delta=-0.5, bid=0.8),
+        }
+    )
+    chain_stream_provider = FakeChainStreamProvider(
+        [
+            ((100, "C"), OptionQuote(delta=0.5, bid=2)),
+        ]
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+        chain_stream_provider=chain_stream_provider,
+    )
+
+    client.get_chain(
+        "MSFT",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+    messages = list(
+        client.stream_chain(
+            "MSFT",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+    second_stream = client.stream_chain(
+        "MSFT",
+        "2026-06-19",
+        stop_event=threading.Event(),
+        current_date=date(2026, 5, 30),
+    )
+
+    assert messages[0].rows is not None
+    assert messages[0].rows[0].call is not None
+    assert messages[0].rows[0].call.bid == 1
+    assert messages[1].row is not None
+    assert messages[1].row.call is not None
+    assert messages[1].row.call.bid == 2
+    second_snapshot = next(second_stream)
+    assert second_snapshot.rows is not None
+    assert second_snapshot.rows[0].call is not None
+    assert second_snapshot.rows[0].call.bid == 2
+
+
+def test_stream_chain_quote_cache_expires_quickly(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[100])
+    chain_provider = FakeChainProvider(
+        {
+            (100, "C"): OptionQuote(delta=0.5, bid=1),
+            (100, "P"): OptionQuote(delta=-0.5, bid=0.8),
+        }
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_provider,
+        chain_stream_provider=FakeChainStreamProvider(),
+    )
+    client.quote_cache_ttl_seconds = 0
+
+    response = client.get_chain(
+        "MSFT",
+        "2026-06-19",
+        current_date=date(2026, 5, 30),
+    )
+    messages = list(
+        client.stream_chain(
+            "MSFT",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert [row.strike for row in response.rows] == [100]
+    assert messages[0].rows == []
+
+
+def test_stream_chain_keeps_updates_before_delta_window_exists(tmp_path):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[95, 100, 105])
+    chain_stream_provider = FakeChainStreamProvider(
+        [
+            ((105, "C"), OptionQuote(delta=0.095, bid=1)),
+            ((100, "C"), OptionQuote(delta=0.1, bid=1)),
+            ((95, "P"), OptionQuote(delta=-0.1, bid=1)),
+            ((100, "P"), OptionQuote(delta=-0.1, bid=1)),
+        ]
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_stream_provider=chain_stream_provider,
+    )
+
+    messages = list(
+        client.stream_chain(
+            "msft",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert len(messages) == 5
+    assert messages[1].row is not None
+    assert messages[1].row.strike == 105
+    assert messages[1].row.call is not None
+    assert messages[2].row is not None
+    assert messages[2].row.strike == 100
+    assert messages[2].row.call is not None
+    assert messages[2].row.put is None
+    assert messages[3].type == "snapshot"
+    assert [row.strike for row in messages[3].rows or []] == [95, 100]
+    assert messages[4].row is not None
+    assert messages[4].row.strike == 100
+    assert messages[4].row.call is not None
+    assert messages[4].row.put is not None
+
+
 def test_stream_chain_caps_streamed_strikes(tmp_path):
     provider = FakeHistoricalProvider()
     metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100, 105, 110])
     chain_stream_provider = FakeChainStreamProvider(
         [
-            ((90, "C"), OptionQuote(bid=1)),
-            ((95, "C"), OptionQuote(bid=2)),
-            ((100, "C"), OptionQuote(bid=3)),
+            ((90, "C"), OptionQuote(delta=0.2, bid=1)),
+            ((90, "P"), OptionQuote(delta=-0.2, bid=1)),
+            ((95, "C"), OptionQuote(delta=0.2, bid=2)),
+            ((95, "P"), OptionQuote(delta=-0.2, bid=1)),
+            ((100, "C"), OptionQuote(delta=0.2, bid=3)),
         ]
     )
     client, _store = make_client(
@@ -1001,9 +1653,17 @@ def test_stream_chain_caps_streamed_strikes(tmp_path):
     )
 
     assert messages[0].message == "Streaming 2 strike(s) for MSFT 2026-06-19."
-    assert [row.strike for row in messages[0].rows or []] == [90, 95]
+    assert messages[0].rows == []
     assert chain_stream_provider.requests == [
-        ("MSFT", "2026-06-19", [90, 95]),
+        ("MSFT", "2026-06-19", [95, 100]),
+    ]
+
+
+def test_stream_chain_caps_strikes_around_underlying_price():
+    assert capped_chain_strikes([687, 688, 689, 710, 711, 712], 711, 3) == [
+        710,
+        711,
+        712,
     ]
 
 
@@ -1565,18 +2225,39 @@ def test_ib_option_metadata_timeout_is_not_cached_and_retry_recovers():
 
 
 class FakeOptionChainIbApp:
-    def __init__(self) -> None:
+    def __init__(self, contract_strikes: list[float] | None = None) -> None:
         self.lock = threading.Lock()
+        self.next_contract_details_req_id = 70_000
         self.next_option_market_req_id = 90_000
+        self.contract_strikes = contract_strikes or [95, 100]
+        self.contract_details = {}
+        self.contract_details_ready_by_req_id: dict[int, threading.Event] = {}
+        self.request_errors_by_req_id: dict[int, tuple[int, str]] = {}
         self.option_market_req_to_key = {}
         self.option_market_data = {}
         self.option_market_data_ready = threading.Event()
+        self.contract_detail_requests = []
         self.market_data_requests = []
         self.cancelled_market_data = []
         self.ib_calls_inside_lock: list[str] = []
 
     def isConnected(self) -> bool:
         return True
+
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+        self.contract_details[req_id] = [
+            type("ContractDetails", (), {"contract": option_contract})()
+            for index, strike in enumerate(self.contract_strikes)
+            for option_contract in [
+                fake_option_contract(
+                    contract,
+                    strike,
+                    con_id=req_id + index + int(strike * 100),
+                )
+            ]
+        ]
+        self.contract_details_ready_by_req_id[req_id].set()
 
     def reqMktData(
         self,
@@ -1617,6 +2298,29 @@ class FakeOptionChainIbApp:
         self.cancelled_market_data.append(req_id)
 
 
+def fake_option_contract(
+    requested_contract,
+    strike: float,
+    *,
+    con_id: int,
+    trading_class: str | None = None,
+):
+    contract = us_option_contract(
+        requested_contract.symbol,
+        expiration=(
+            f"{requested_contract.lastTradeDateOrContractMonth[:4]}-"
+            f"{requested_contract.lastTradeDateOrContractMonth[4:6]}-"
+            f"{requested_contract.lastTradeDateOrContractMonth[6:8]}"
+        ),
+        strike=strike,
+        right=requested_contract.right,
+    )
+    contract.conId = con_id
+    contract.tradingClass = trading_class or requested_contract.symbol
+    contract.localSymbol = f"{requested_contract.symbol}{con_id}{requested_contract.right}"
+    return contract
+
+
 class SlowOptionChainIbApp(FakeOptionChainIbApp):
     def reqMktData(
         self,
@@ -1648,18 +2352,122 @@ class SlowOptionChainIbApp(FakeOptionChainIbApp):
         threading.Timer(0.02, add_prices).start()
 
 
+class SlowContractDetailsOptionChainIbApp(FakeOptionChainIbApp):
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+
+        def add_details() -> None:
+            self.contract_details[req_id] = [
+                type(
+                    "ContractDetails",
+                    (),
+                    {
+                        "contract": fake_option_contract(
+                            contract,
+                            100,
+                            con_id=req_id + 10_000,
+                        )
+                    },
+                )()
+            ]
+            self.contract_details_ready_by_req_id[req_id].set()
+
+        threading.Timer(0.02, add_details).start()
+
+
+class TimeoutBroadOptionChainIbApp(FakeOptionChainIbApp):
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+        if contract.strike == 0:
+            return
+
+        if contract.strike not in self.contract_strikes:
+            self.contract_details_ready_by_req_id[req_id].set()
+            return
+
+        self.contract_details[req_id] = [
+            type(
+                "ContractDetails",
+                (),
+                {
+                    "contract": fake_option_contract(
+                        contract,
+                        contract.strike,
+                        con_id=req_id + int(contract.strike * 100),
+                    )
+                },
+            )()
+        ]
+        self.contract_details_ready_by_req_id[req_id].set()
+
+
+class InvalidExactOptionChainIbApp(TimeoutBroadOptionChainIbApp):
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+        if contract.strike == 0:
+            return
+
+        if contract.strike not in self.contract_strikes:
+            self.request_errors_by_req_id[req_id] = (200, "No security definition")
+            self.contract_details_ready_by_req_id[req_id].set()
+            return
+
+        self.contract_details[req_id] = [
+            type(
+                "ContractDetails",
+                (),
+                {
+                    "contract": fake_option_contract(
+                        contract,
+                        contract.strike,
+                        con_id=req_id + int(contract.strike * 100),
+                    )
+                },
+            )()
+        ]
+        self.contract_details_ready_by_req_id[req_id].set()
+
+
+class InvalidBroadOptionChainIbApp(FakeOptionChainIbApp):
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+        self.request_errors_by_req_id[req_id] = (200, "No security definition")
+        self.contract_details_ready_by_req_id[req_id].set()
+
+
+class EtfOptionChainIbApp(FakeOptionChainIbApp):
+    def reqContractDetails(self, req_id, contract) -> None:
+        self.contract_detail_requests.append((req_id, contract))
+        self.contract_details[req_id] = [
+            type("ContractDetails", (), {"contract": option_contract})()
+            for index, strike in enumerate(self.contract_strikes)
+            for option_contract in [
+                fake_option_contract(
+                    contract,
+                    strike,
+                    con_id=req_id + index + int(strike * 100),
+                    trading_class=f"{contract.symbol}1",
+                )
+            ]
+        ]
+        self.contract_details_ready_by_req_id[req_id].set()
+
+
 def test_ib_chain_provider_quotes_only_requested_expiration_and_strikes():
     app = FakeOptionChainIbApp()
     provider = IbOptionChainSnapshotProvider(app)
 
-    quotes = provider.fetch_chain_quotes(
+    contracts = provider.fetch_chain_contracts(
         "aapl",
         "2026-06-19",
         [95, 100],
     )
+    quotes = provider.fetch_chain_quotes(contracts)
 
     requested_contracts = [request[1] for request in app.market_data_requests]
+    assert len(app.contract_detail_requests) == 2
     assert len(requested_contracts) == 4
+    assert {contract.conId for contract in requested_contracts}
     assert {contract.lastTradeDateOrContractMonth for contract in requested_contracts} == {
         "20260619",
     }
@@ -1674,6 +2482,115 @@ def test_ib_chain_provider_quotes_only_requested_expiration_and_strikes():
     assert quotes[(95, "C")].breakeven == 96.4
 
 
+def test_ib_chain_provider_keeps_etf_contracts_with_class_aliases():
+    app = EtfOptionChainIbApp(contract_strikes=[710, 711, 712])
+    provider = IbOptionChainSnapshotProvider(app)
+
+    contracts = provider.fetch_chain_contracts(
+        "qqq",
+        "2026-06-29",
+        [710, 711, 712],
+    )
+
+    assert {contract.strike for contract in contracts} == {710, 711, 712}
+    assert {contract.right for contract in contracts} == {"C", "P"}
+    assert {contract.trading_class for contract in contracts} == {"QQQ1"}
+
+
+def test_ib_chain_provider_uses_separate_contract_timeout():
+    app = SlowContractDetailsOptionChainIbApp(contract_strikes=[100])
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        timeout_seconds=0.01,
+        contract_timeout_seconds=0.05,
+    )
+
+    contracts = provider.fetch_chain_contracts(
+        "aapl",
+        "2026-06-19",
+        [100],
+    )
+    quotes = provider.fetch_chain_quotes(contracts)
+
+    assert {contract.right for contract in contracts} == {"C", "P"}
+    assert set(quotes) == {(100, "C"), (100, "P")}
+
+
+def test_ib_chain_provider_falls_back_to_exact_contracts_after_broad_timeout():
+    app = TimeoutBroadOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        contract_timeout_seconds=0.01,
+    )
+
+    contracts = provider.fetch_chain_contracts(
+        "hims",
+        "2026-07-31",
+        [95, 100, 105],
+    )
+    quotes = provider.fetch_chain_quotes(contracts)
+
+    assert {contract.strike for contract in contracts} == {95, 100}
+    assert {request[1].strike for request in app.market_data_requests} == {95, 100}
+    assert set(quotes) == {
+        (95, "C"),
+        (95, "P"),
+        (100, "C"),
+        (100, "P"),
+    }
+
+
+def test_ib_chain_provider_skips_invalid_exact_option_contracts():
+    app = InvalidExactOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        contract_timeout_seconds=0.01,
+    )
+
+    contracts = provider.fetch_chain_contracts(
+        "hims",
+        "2026-07-24",
+        [95, 100, 105],
+    )
+
+    assert {contract.strike for contract in contracts} == {95, 100}
+    assert app.request_errors_by_req_id == {}
+
+
+def test_ib_chain_provider_rejects_invalid_underlying_from_broad_request():
+    app = InvalidBroadOptionChainIbApp()
+    provider = IbOptionChainSnapshotProvider(app)
+
+    with pytest.raises(OptionsDataUnavailable, match="Invalid ticker: NOPE."):
+        provider.fetch_chain_contracts(
+            "nope",
+            "2026-06-19",
+            [100],
+        )
+
+
+def test_ib_chain_provider_omits_unresolved_expiration_strikes():
+    app = FakeOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionChainSnapshotProvider(app)
+
+    contracts = provider.fetch_chain_contracts(
+        "hims",
+        "2026-06-19",
+        [95, 100, 105],
+    )
+    quotes = provider.fetch_chain_quotes(contracts)
+
+    requested_contracts = [request[1] for request in app.market_data_requests]
+    assert {contract.strike for contract in contracts} == {95, 100}
+    assert {contract.strike for contract in requested_contracts} == {95, 100}
+    assert set(quotes) == {
+        (95, "C"),
+        (95, "P"),
+        (100, "C"),
+        (100, "P"),
+    }
+
+
 def test_ib_chain_provider_waits_for_ticks_after_the_first_callback():
     app = SlowOptionChainIbApp()
     provider = IbOptionChainSnapshotProvider(
@@ -1681,11 +2598,12 @@ def test_ib_chain_provider_waits_for_ticks_after_the_first_callback():
         timeout_seconds=0.05,
     )
 
-    quotes = provider.fetch_chain_quotes(
+    contracts = provider.fetch_chain_contracts(
         "aapl",
         "2026-06-19",
         [100],
     )
+    quotes = provider.fetch_chain_quotes(contracts)
 
     assert quotes[(100, "C")].mid == 1.2
     assert quotes[(100, "P")].mid == 1.2
@@ -1695,10 +2613,13 @@ def test_ib_chain_stream_provider_cancels_subscriptions_on_close():
     app = FakeOptionChainIbApp()
     provider = IbOptionChainStreamProvider(app, wait_seconds=0.01)
     stop_event = threading.Event()
-    stream = provider.stream_chain_quotes(
+    contracts = IbOptionChainSnapshotProvider(app).fetch_chain_contracts(
         "aapl",
         "2026-06-19",
         [100],
+    )
+    stream = provider.stream_chain_quotes(
+        contracts,
         stop_event,
     )
 
@@ -1721,16 +2642,22 @@ def test_ib_chain_stream_provider_isolates_overlapping_stream_state():
     provider = IbOptionChainStreamProvider(app, wait_seconds=0.01)
     first_stop_event = threading.Event()
     second_stop_event = threading.Event()
-    first_stream = provider.stream_chain_quotes(
+    first_contracts = IbOptionChainSnapshotProvider(app).fetch_chain_contracts(
         "aapl",
         "2026-06-19",
         [100],
-        first_stop_event,
     )
-    second_stream = provider.stream_chain_quotes(
+    second_contracts = IbOptionChainSnapshotProvider(app).fetch_chain_contracts(
         "msft",
         "2026-06-19",
         [100],
+    )
+    first_stream = provider.stream_chain_quotes(
+        first_contracts,
+        first_stop_event,
+    )
+    second_stream = provider.stream_chain_quotes(
+        second_contracts,
         second_stop_event,
     )
 

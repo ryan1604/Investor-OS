@@ -5,12 +5,13 @@ import {
   fetchPortfolio,
   type PortfolioResponse,
 } from '@/api/portfolio'
+import { errorMessage } from '@/api/client'
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000
 const MAX_RECONNECT_DELAY_MS = 10_000
 
 function portfolioErrorMessage(error: unknown) {
-  return error instanceof Error ? error.message : 'Portfolio request failed'
+  return errorMessage(error, 'Portfolio request failed')
 }
 
 export function usePortfolio() {

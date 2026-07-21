@@ -81,6 +81,7 @@ class IbPortfolioClient:
             self.app.connected_ready.wait(timeout=5)
             if self.app.isConnected():
                 self.app.reqMarketDataType(3)
+                self.app.reqAutoOpenOrders(True)
 
     def stop(self) -> None:
         if self.app.isConnected():

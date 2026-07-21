@@ -1,21 +1,16 @@
 import { useEffect, useState } from 'react'
 
 import {
-  fetchOptionChain,
   getOptionChainWsUrl,
   type OptionChainLiveMessage,
   type OptionChainResponse,
   type OptionsAnalysisResponse,
 } from '@/api/options'
-import { isAbortError } from '@/api/client'
 import {
   mergeLiveChainRows,
   mergeLiveChainSnapshot,
 } from '@/features/options/lib/chainRows'
-import {
-  errorMessage,
-  hasAnalysisPriceData,
-} from '@/features/options/hooks/useOptionsAnalysis'
+import { hasAnalysisPriceData } from '@/features/options/hooks/useOptionsAnalysis'
 
 export function useOptionChain(
   analysis: OptionsAnalysisResponse | null,
@@ -23,60 +18,16 @@ export function useOptionChain(
   isAnalysisLoading: boolean,
 ) {
   const [chain, setChain] = useState<OptionChainResponse | null>(null)
-  const [isChainLoading, setIsChainLoading] = useState(false)
-  const [chainError, setChainError] = useState<string | null>(null)
+  const [chainError, setChainError] = useState<{
+    key: string
+    message: string
+  } | null>(null)
   const activeTicker = analysis?.ticker ?? ''
   const canLoadChain =
     analysis !== null &&
     selectedExpiration !== '' &&
     hasAnalysisPriceData(analysis)
-
-  useEffect(() => {
-    if (!canLoadChain) {
-      return
-    }
-
-    let isStale = false
-    const activeExpiration = selectedExpiration
-    const requestController = new AbortController()
-
-    async function loadChain() {
-      setIsChainLoading(true)
-      setChainError(null)
-
-      try {
-        const nextChain = await fetchOptionChain(
-          activeTicker,
-          activeExpiration,
-          requestController.signal,
-        )
-
-        if (!isStale) {
-          setChain(nextChain)
-        }
-      } catch (nextError) {
-        if (isAbortError(nextError)) {
-          return
-        }
-
-        if (!isStale) {
-          setChain(null)
-          setChainError(errorMessage(nextError))
-        }
-      } finally {
-        if (!isStale) {
-          setIsChainLoading(false)
-        }
-      }
-    }
-
-    void loadChain()
-
-    return () => {
-      isStale = true
-      requestController.abort()
-    }
-  }, [activeTicker, canLoadChain, selectedExpiration])
+  const activeKey = `${activeTicker}\0${selectedExpiration}`
 
   useEffect(() => {
     if (!canLoadChain) {
@@ -132,6 +83,7 @@ export function useOptionChain(
 
       if (message.type === 'snapshot' && message.rows) {
         pendingRows = []
+        setChainError(null)
         if (frameId !== null) {
           cancelAnimationFrame(frameId)
           frameId = null
@@ -149,13 +101,17 @@ export function useOptionChain(
       }
 
       if (message.type === 'update' && message.row) {
+        setChainError(null)
         pendingRows.push(message)
         scheduleFlush()
       }
     }
 
     socket.onerror = () => {
-      setChainError('Option chain stream disconnected.')
+      setChainError({
+        key: activeKey,
+        message: 'Option chain stream disconnected.',
+      })
     }
 
     return () => {
@@ -164,7 +120,7 @@ export function useOptionChain(
       }
       socket.close()
     }
-  }, [activeTicker, canLoadChain, selectedExpiration])
+  }, [activeKey, activeTicker, canLoadChain, selectedExpiration])
 
   const activeChain =
     canLoadChain &&
@@ -175,7 +131,11 @@ export function useOptionChain(
 
   return {
     chain: activeChain,
-    chainError: canLoadChain && !isAnalysisLoading ? chainError : null,
-    isChainLoading: canLoadChain ? isChainLoading : false,
+    chainError:
+      canLoadChain && !isAnalysisLoading && chainError?.key === activeKey
+        ? chainError.message
+        : null,
+    isChainLoading:
+      canLoadChain && chainError?.key !== activeKey && activeChain === null,
   }
 }

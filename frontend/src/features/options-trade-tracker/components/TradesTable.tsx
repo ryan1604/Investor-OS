@@ -118,19 +118,19 @@ export function TradesTable({
         </div>
       </div>
 
-      <Table className="min-w-[1280px] table-fixed">
+      <Table className="table-fixed text-xs">
         <TableHeader>
           <TableRow>
-            <TableHead className="w-52">Strategy</TableHead>
-            <TableHead className="w-36">Ticker</TableHead>
-            <TableHead className="w-32">Month</TableHead>
-            <TableHead className="w-32 text-right">Size</TableHead>
-            <TableHead className="w-40 text-right">Strike Price</TableHead>
-            <TableHead className="w-40 text-right">Credit/Debit</TableHead>
-            <TableHead className="w-36 text-right">Exit</TableHead>
-            <TableHead className="w-44">Status</TableHead>
-            <TableHead className="w-32 text-right">P&L</TableHead>
-            <TableHead className="w-28 text-right">Actions</TableHead>
+            <TableHead className="w-[18%]">Strategy</TableHead>
+            <TableHead className="w-[9%]">Ticker</TableHead>
+            <TableHead className="w-[9%]">Month</TableHead>
+            <TableHead className="w-[8%] text-right">Size</TableHead>
+            <TableHead className="w-[10%] text-right">Strike</TableHead>
+            <TableHead className="w-[11%] text-right">Credit/Debit</TableHead>
+            <TableHead className="w-[8%] text-right">Exit</TableHead>
+            <TableHead className="w-[11%]">Status</TableHead>
+            <TableHead className="w-[8%] text-right">P&L</TableHead>
+            <TableHead className="w-[8%] text-right">Actions</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -173,7 +173,7 @@ export function TradesTable({
                   <TableCell>
                     <Input
                       aria-label={`Ticker row ${row.localId}`}
-                      className="w-24 uppercase"
+                      className="w-full uppercase"
                       value={row.ticker}
                       onChange={(event) =>
                         onUpdateRow(
@@ -198,7 +198,7 @@ export function TradesTable({
                     >
                       <SelectTrigger
                         aria-label={`Month row ${row.localId}`}
-                        className="w-24"
+                        className="w-full"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -271,7 +271,7 @@ export function TradesTable({
                     >
                       <SelectTrigger
                         aria-label={`Status row ${row.localId}`}
-                        className="w-32"
+                        className="w-full"
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -349,7 +349,7 @@ function NumberCell({
   return (
     <Input
       aria-label={label}
-      className="w-28 text-right tabular-nums"
+      className="w-full text-right tabular-nums"
       inputMode="decimal"
       value={displayValue}
       onFocus={() => setIsFocused(true)}

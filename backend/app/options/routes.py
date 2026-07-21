@@ -2,9 +2,8 @@ import threading
 
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
-from app.dependencies import get_options_client, get_request_limiter
 from app.options.client import OptionsDataUnavailable
-from app.request_limits import RequestCapacityExceeded
+from app.request_limits import request_limit_slot
 from app.schemas import (
     OptionChainLiveMessage,
     OptionChainResponse,
@@ -18,16 +17,12 @@ router = APIRouter()
 
 @router.get("/options/{ticker}/analysis", response_model=OptionsAnalysisResponse)
 def options_analysis(request: Request, ticker: str) -> OptionsAnalysisResponse:
-    options_client = get_options_client(request)
+    options_client = request.app.state.options_client
     try:
-        with get_request_limiter(request, "options_analysis").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
+        with request_limit_slot(request, "options_analysis"):
             return options_client.get_analysis(ticker)
     except OptionsDataUnavailable as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.get("/options/{ticker}/chain", response_model=OptionChainResponse)
@@ -36,16 +31,12 @@ def option_chain(
     ticker: str,
     expiration: str,
 ) -> OptionChainResponse:
-    options_client = get_options_client(request)
+    options_client = request.app.state.options_client
     try:
-        with get_request_limiter(request, "option_chain").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
+        with request_limit_slot(request, "option_chain"):
             return options_client.get_chain(ticker, expiration)
     except OptionsDataUnavailable as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.get(
@@ -56,7 +47,7 @@ def option_expirations(
     request: Request,
     ticker: str,
 ) -> OptionExpirationsResponse:
-    options_client = get_options_client(request)
+    options_client = request.app.state.options_client
     try:
         return options_client.get_expirations(ticker)
     except OptionsDataUnavailable as error:
@@ -66,7 +57,7 @@ def option_expirations(
 @router.websocket("/options/{ticker}/chain/ws")
 async def option_chain_ws(websocket: WebSocket, ticker: str, expiration: str):
     await websocket.accept()
-    options_client = get_options_client(websocket)
+    options_client = websocket.app.state.options_client
     stop_event = threading.Event()
     iterator = None
 
@@ -95,7 +86,7 @@ async def option_chain_ws(websocket: WebSocket, ticker: str, expiration: str):
 @router.websocket("/options/{ticker}/chart/ws")
 async def options_chart_ws(websocket: WebSocket, ticker: str):
     await websocket.accept()
-    options_client = get_options_client(websocket)
+    options_client = websocket.app.state.options_client
     stop_event = threading.Event()
     iterator = None
 

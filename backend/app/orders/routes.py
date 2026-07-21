@@ -1,8 +1,7 @@
 from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 
-from app.dependencies import get_order_service, get_request_limiter
 from app.orders.service import OrderServiceUnavailable, OrderServiceValidationError
-from app.request_limits import RequestCapacityExceeded
+from app.request_limits import request_limit_slot
 from app.schemas import (
     OrderAmendmentRequest,
     OrderCancellationRequest,
@@ -21,7 +20,7 @@ def order_preview(
     request: Request,
     order_request: OrderPreviewableRequest,
 ) -> OrderPreviewResponse:
-    return get_order_service(request).preview(order_request)
+    return request.app.state.order_service.preview(order_request)
 
 
 @router.post("/orders/transmit", response_model=OrderSubmissionResponse)
@@ -30,21 +29,28 @@ def transmit_order(
     order_request: OrderPreviewableRequest,
 ) -> OrderSubmissionResponse:
     try:
-        with get_request_limiter(request, "order_write").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            return get_order_service(request).submit(order_request)
+        with request_limit_slot(request, "order_write"):
+            return request.app.state.order_service.submit(order_request)
     except OrderServiceUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except OrderServiceValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
 
 @router.get("/orders", response_model=list[OrderRecord])
 def orders_snapshot(request: Request) -> list[OrderRecord]:
-    return get_order_service(request).snapshot()
+    return request.app.state.order_service.snapshot()
+
+
+@router.post("/orders/reconcile")
+def reconcile_orders(request: Request) -> dict[str, str]:
+    try:
+        request.app.state.order_service.reconcile_from_ib()
+    except OrderServiceUnavailable as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except OrderServiceValidationError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    return {"message": "Requested IB open-order reconciliation."}
 
 
 @router.patch("/orders/{order_id}", response_model=OrderSubmissionResponse)
@@ -54,16 +60,12 @@ def amend_order(
     amendment: OrderAmendmentRequest,
 ) -> OrderSubmissionResponse:
     try:
-        with get_request_limiter(request, "order_write").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            order = get_order_service(request).amend(order_id, amendment)
+        with request_limit_slot(request, "order_write"):
+            order = request.app.state.order_service.amend(order_id, amendment)
     except OrderServiceUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except OrderServiceValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
     return OrderSubmissionResponse(
         order=order,
@@ -78,16 +80,12 @@ def cancel_order(
     cancellation: OrderCancellationRequest,
 ) -> OrderSubmissionResponse:
     try:
-        with get_request_limiter(request, "order_write").slot(
-            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
-        ):
-            order = get_order_service(request).cancel(order_id, cancellation)
+        with request_limit_slot(request, "order_write"):
+            order = request.app.state.order_service.cancel(order_id, cancellation)
     except OrderServiceUnavailable as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
     except OrderServiceValidationError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
-    except RequestCapacityExceeded as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
 
     return OrderSubmissionResponse(
         order=order,
@@ -98,7 +96,7 @@ def cancel_order(
 @router.websocket("/orders/ws")
 async def orders_ws(websocket: WebSocket):
     await websocket.accept()
-    service = get_order_service(websocket)
+    service = websocket.app.state.order_service
     subscriber = service.subscribe()
 
     try:

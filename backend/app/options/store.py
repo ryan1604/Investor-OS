@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from app.sqlite import connect_row_database
+from app.sqlite import RowDatabase
 from app.tickers import normalize_ticker
 
 
@@ -24,10 +24,9 @@ class StoredDailyBar(CompletedDailyBar):
     fetched_at: str = ""
 
 
-class OptionsDailyBarStore:
+class OptionsDailyBarStore(RowDatabase):
     def __init__(self, database_path: str | Path) -> None:
-        self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(database_path)
         self.initialize()
 
     def initialize(self) -> None:
@@ -148,6 +147,3 @@ class OptionsDailyBarStore:
             )
             for row in rows
         ]
-
-    def _connect(self) -> sqlite3.Connection:
-        return connect_row_database(self.database_path)

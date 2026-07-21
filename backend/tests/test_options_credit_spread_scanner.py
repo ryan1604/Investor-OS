@@ -10,10 +10,11 @@ from app.options.client import (
     ScannerOptionQuote,
 )
 from app.options_screeners.credit_spread import (
-    CombinedOptionsScreenerScanService,
     CreditSpreadOptionsScreenerScanService,
 )
+from app.options_screeners.manager import OptionsScreenerScanManager
 from app.options_screeners.single_leg import SingleLegOptionsScreenerScanService
+from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.schemas import CreditSpreadScreenerFilters
 
 
@@ -309,13 +310,18 @@ def test_spread_scanner_keeps_compatible_trading_class_before_deduplicating():
     assert result.candidates[0].long_contract.con_id == 3
 
 
-def test_combined_service_dispatches_cs_without_changing_single_leg_refresh():
+def test_scan_manager_shutdown_cancels_direct_screener_services_once(tmp_path):
     client = FullChainClient({"P": [], "C": []})
     single_leg = SingleLegOptionsScreenerScanService(client)
     credit_spread = CreditSpreadOptionsScreenerScanService(client)
-    service = CombinedOptionsScreenerScanService(single_leg, credit_spread)
+    manager = OptionsScreenerScanManager(
+        OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3"),
+        {"csp": single_leg, "cc": single_leg, "cs": credit_spread},
+        single_leg,
+        credit_spread,
+    )
 
-    service.cancel()
+    manager.shutdown()
 
     assert client.cancelled == 2
 

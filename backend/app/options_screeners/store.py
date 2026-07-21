@@ -2,9 +2,7 @@ import json
 import re
 import sqlite3
 from pathlib import Path
-from typing import Any, cast
-
-from pydantic import ValidationError
+from typing import cast
 
 from app.schemas import (
     CreditSpreadScreenerFilters,
@@ -12,16 +10,15 @@ from app.schemas import (
     OptionsScreenerFilters,
     OptionsScreenerTickerList,
 )
-from app.sqlite import connect_row_database
+from app.sqlite import RowDatabase
 
 TICKER_PATTERN = re.compile(r"^[A-Z0-9.-]+$")
 TICKER_SEPARATOR_PATTERN = re.compile(r"[\s,]+")
 
 
-class OptionsScreenerSettingsStore:
+class OptionsScreenerSettingsStore(RowDatabase):
     def __init__(self, database_path: str | Path) -> None:
-        self.database_path = Path(database_path)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        super().__init__(database_path)
         self.initialize()
 
     def initialize(self) -> None:
@@ -101,15 +98,12 @@ class OptionsScreenerSettingsStore:
         if row is None:
             return model_type()
 
-        try:
-            payload = json.loads(row["settings_json"])
-            if not isinstance(payload, dict):
-                return model_type()
-            # Local settings are migration-tolerant: missing fields take current
-            # schema defaults, and unreadable saved payloads reset to defaults.
-            return model_type.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError, TypeError):
-            return model_type()
+        payload = json.loads(row["settings_json"])
+        if not isinstance(payload, dict) or set(payload) != set(
+            model_type.model_fields
+        ):
+            raise ValueError("Saved screener filters use an unsupported schema.")
+        return model_type.model_validate(payload)
 
     def save_filters(
         self,
@@ -152,10 +146,6 @@ class OptionsScreenerSettingsStore:
                 "cs": self.get_filters("cs"),
             },
         )
-
-    def _connect(self) -> sqlite3.Connection:
-        return connect_row_database(self.database_path)
-
 
 def normalize_tickers(values: list[str]) -> list[str]:
     normalized_tickers: list[str] = []

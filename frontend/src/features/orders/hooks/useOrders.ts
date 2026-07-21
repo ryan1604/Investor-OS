@@ -6,16 +6,16 @@ import {
   type OrderRecord,
   type OrderStatusUpdate,
 } from '@/api/orders'
+import { errorMessage } from '@/api/client'
 
 const INITIAL_RECONNECT_DELAY_MS = 1_000
 const MAX_RECONNECT_DELAY_MS = 10_000
 
 export function useOrders() {
   const [orders, setOrders] = useState<OrderRecord[]>([])
+  const [warning, setWarning] = useState<string | null>(null)
 
   useEffect(() => {
-    // The order stream is intentionally app-global so Options chart overlays and
-    // the Orders page stay fresh from one backend subscription owner.
     let ignore = false
     let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -26,9 +26,14 @@ export function useOrders() {
       .then((snapshot) => {
         if (!ignore && !hasStreamUpdate) {
           setOrders(snapshot)
+          setWarning(null)
         }
       })
-      .catch(() => undefined)
+      .catch((error) => {
+        if (!ignore) {
+          setWarning(errorMessage(error, 'Order load failed.'))
+        }
+      })
 
     const connect = () => {
       socket = new WebSocket(ORDERS_WS_URL)
@@ -46,11 +51,13 @@ export function useOrders() {
         hasStreamUpdate = true
         if (update.type === 'snapshot') {
           setOrders(update.orders ?? [])
+          setWarning(null)
           return
         }
         const order = update.order
         if (order) {
           setOrders((currentOrders) => upsertOrder(currentOrders, order))
+          setWarning(null)
         }
       }
 
@@ -75,18 +82,26 @@ export function useOrders() {
     }
   }, [])
 
-  return orders
+  return { orders, warning }
 }
 
 function upsertOrder(orders: OrderRecord[], order: OrderRecord) {
   const existingIndex = orders.findIndex(
-    (currentOrder) => currentOrder.order_id === order.order_id,
+    (currentOrder) =>
+      currentOrder.order_id === order.order_id ||
+      (order.perm_id !== null && currentOrder.perm_id === order.perm_id),
   )
   if (existingIndex < 0) {
     return [...orders, order]
   }
 
-  return orders.map((currentOrder, index) =>
+  const withoutDuplicatePermId = orders.filter(
+    (currentOrder, index) =>
+      index === existingIndex ||
+      order.perm_id === null ||
+      currentOrder.perm_id !== order.perm_id,
+  )
+  return withoutDuplicatePermId.map((currentOrder, index) =>
     index === existingIndex ? order : currentOrder,
   )
 }

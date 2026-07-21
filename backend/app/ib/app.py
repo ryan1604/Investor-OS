@@ -35,7 +35,7 @@ OPTION_ASK_SIZE_TICK_TYPES = {3, 70}
 OPTION_VOLUME_TICK_TYPES = {8, 29, 30, 74}
 IB_INFO_CODES = {2104, 2106, 2158}
 IB_DEBUG_CODES = {2100}
-IB_MARKET_DATA_SUBSCRIPTION_CODES = {10089, 10091, 10167}
+IB_MARKET_DATA_SUBSCRIPTION_CODES = {10089, 10090, 10091, 10167}
 IB_HISTORICAL_NO_DATA_CODES = {162}
 IB_INVALID_CONTRACT_CODES = {200}
 ACCOUNT_VALUE_KEYS = {
@@ -144,6 +144,13 @@ class IbOrderState:
     next_order_id: int | None = None
     next_execution_req_id: int = 90_000
     status_listeners: list[Callable[..., None]] = field(default_factory=list)
+    execution_listeners: list[Callable[..., None]] = field(default_factory=list)
+    execution_end_listeners: list[Callable[[int], None]] = field(default_factory=list)
+    completed_order_listeners: list[Callable[..., None]] = field(default_factory=list)
+    completed_orders_end_listeners: list[Callable[[], None]] = field(
+        default_factory=list
+    )
+    open_order_end_listeners: list[Callable[[], None]] = field(default_factory=list)
     submitted_order_ids: set[int] = field(default_factory=set)
 
 
@@ -209,6 +216,13 @@ class IbPortfolioApp(EWrapper, EClient):
         self.option_market_req_to_key = self.option_state.market_req_to_key
         self.option_market_data = self.option_state.market_data
         self.order_status_listeners = self.order_state.status_listeners
+        self.execution_listeners = self.order_state.execution_listeners
+        self.execution_end_listeners = self.order_state.execution_end_listeners
+        self.completed_order_listeners = self.order_state.completed_order_listeners
+        self.completed_orders_end_listeners = (
+            self.order_state.completed_orders_end_listeners
+        )
+        self.open_order_end_listeners = self.order_state.open_order_end_listeners
         self.submitted_order_ids = self.order_state.submitted_order_ids
         self.logged_warnings: set[tuple[int, int]] = set()
         self.positions_ready = threading.Event()
@@ -324,6 +338,26 @@ class IbPortfolioApp(EWrapper, EClient):
         with self.lock:
             self.order_status_listeners.append(listener)
 
+    def add_open_order_end_listener(self, listener: Callable[[], None]) -> None:
+        with self.lock:
+            self.open_order_end_listeners.append(listener)
+
+    def add_execution_listener(self, listener: Callable[..., None]) -> None:
+        with self.lock:
+            self.execution_listeners.append(listener)
+
+    def add_execution_end_listener(self, listener: Callable[[int], None]) -> None:
+        with self.lock:
+            self.execution_end_listeners.append(listener)
+
+    def add_completed_order_listener(self, listener: Callable[..., None]) -> None:
+        with self.lock:
+            self.completed_order_listeners.append(listener)
+
+    def add_completed_orders_end_listener(self, listener: Callable[[], None]) -> None:
+        with self.lock:
+            self.completed_orders_end_listeners.append(listener)
+
     def register_submitted_order(self, order_id: int) -> None:
         with self.lock:
             self.submitted_order_ids.add(order_id)
@@ -361,18 +395,59 @@ class IbPortfolioApp(EWrapper, EClient):
             perm_id=getattr(order, "permId", 0) or None,
             parent_order_id=getattr(order, "parentId", 0) or None,
             account=getattr(order, "account", "") or None,
+            contract=contract,
+            order=order,
+            order_state=orderState,
         )
 
+    def openOrderEnd(self) -> None:
+        with self.lock:
+            listeners = list(self.open_order_end_listeners)
+
+        for listener in listeners:
+            listener()
+
     def execDetails(self, reqId: int, contract: Contract, execution) -> None:
-        self._notify_order_status(
-            getattr(execution, "orderId", 0),
-            "Filled",
-            filled=clean_ib_float(getattr(execution, "shares", None)),
-            remaining=0,
-            avg_fill_price=clean_ib_price(getattr(execution, "price", None)),
-            perm_id=getattr(execution, "permId", 0) or None,
-            account=getattr(execution, "acctNumber", "") or None,
-        )
+        with self.lock:
+            listeners = list(self.execution_listeners)
+
+        payload = {
+            "req_id": reqId,
+            "contract": contract,
+            "execution_id": getattr(execution, "execId", "") or None,
+            "order_id": getattr(execution, "orderId", 0) or 0,
+            "perm_id": getattr(execution, "permId", 0) or None,
+            "account": getattr(execution, "acctNumber", "") or None,
+            "side": getattr(execution, "side", "") or None,
+            "shares": clean_ib_float(getattr(execution, "shares", None)),
+            "price": clean_ib_price(getattr(execution, "price", None)),
+            "avg_price": clean_ib_price(getattr(execution, "avgPrice", None)),
+            "cumulative_quantity": clean_ib_float(getattr(execution, "cumQty", None)),
+            "execution_time": getattr(execution, "time", "") or None,
+        }
+        for listener in listeners:
+            listener(**payload)
+
+    def execDetailsEnd(self, reqId: int) -> None:
+        with self.lock:
+            listeners = list(self.execution_end_listeners)
+
+        for listener in listeners:
+            listener(reqId)
+
+    def completedOrder(self, contract: Contract, order, orderState) -> None:
+        with self.lock:
+            listeners = list(self.completed_order_listeners)
+
+        for listener in listeners:
+            listener(contract=contract, order=order, order_state=orderState)
+
+    def completedOrdersEnd(self) -> None:
+        with self.lock:
+            listeners = list(self.completed_orders_end_listeners)
+
+        for listener in listeners:
+            listener()
 
     def _notify_order_status(
         self,
@@ -386,6 +461,9 @@ class IbPortfolioApp(EWrapper, EClient):
         parent_order_id: int | None = None,
         rejection_message: str | None = None,
         account: str | None = None,
+        contract: Contract | None = None,
+        order=None,
+        order_state=None,
     ) -> None:
         with self.lock:
             listeners = list(self.order_status_listeners)
@@ -400,6 +478,12 @@ class IbPortfolioApp(EWrapper, EClient):
         }
         if account is not None:
             payload["account"] = account
+        if contract is not None:
+            payload["contract"] = contract
+        if order is not None:
+            payload["order"] = order
+        if order_state is not None:
+            payload["order_state"] = order_state
 
         for listener in listeners:
             listener(order_id, status, **payload)

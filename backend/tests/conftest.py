@@ -1,18 +1,14 @@
 import threading
-from collections.abc import Callable
+import tempfile
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from app.config import Settings
-from app.main import AppFactories, create_app
+from app.main import AppOverrides, create_app
 from app.options.client import OptionsDataUnavailable
-from app.options_trade_tracker.store import OptionsTradeTrackerStore
-from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.options_screeners.service import OptionsScreenerService
-from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
-from app.stock_analysis.store import StockAnalysisStore
 
 
 class FakePortfolioClient:
@@ -106,14 +102,23 @@ class FakeIbOrderApp:
         self.placed_orders = []
         self.cancelled_orders = []
         self.listeners = []
+        self.execution_listeners = []
+        self.execution_end_listeners = []
+        self.completed_order_listeners = []
+        self.completed_orders_end_listeners = []
+        self.open_order_end_listeners = []
         self.registered_order_ids = []
         self.next_contract_details_req_id = 70_000
         self.contract_details = {}
         self.contract_details_ready_by_req_id = {}
+        self.contract_details_by_con_id = {}
         self.contract_detail_requests = []
         self.rejected_order_type = None
         self.open_order_requests = 0
+        self.all_open_order_requests = 0
+        self.auto_open_order_requests = []
         self.execution_requests = []
+        self.completed_order_requests = []
 
     def isConnected(self) -> bool:
         return self.connected
@@ -129,6 +134,21 @@ class FakeIbOrderApp:
     def add_order_status_listener(self, listener) -> None:
         self.listeners.append(listener)
 
+    def add_execution_listener(self, listener) -> None:
+        self.execution_listeners.append(listener)
+
+    def add_execution_end_listener(self, listener) -> None:
+        self.execution_end_listeners.append(listener)
+
+    def add_completed_order_listener(self, listener) -> None:
+        self.completed_order_listeners.append(listener)
+
+    def add_completed_orders_end_listener(self, listener) -> None:
+        self.completed_orders_end_listeners.append(listener)
+
+    def add_open_order_end_listener(self, listener) -> None:
+        self.open_order_end_listeners.append(listener)
+
     def register_submitted_order(self, order_id: int) -> None:
         self.registered_order_ids.append(order_id)
 
@@ -136,9 +156,30 @@ class FakeIbOrderApp:
         for listener in self.listeners:
             listener(order_id, status, **values)
 
+    def emit_execution(self, **values) -> None:
+        for listener in self.execution_listeners:
+            listener(req_id=90_000, **values)
+
+    def emit_execution_end(self, req_id: int = 90_000) -> None:
+        for listener in self.execution_end_listeners:
+            listener(req_id)
+
+    def emit_completed_order(self, contract, order, order_state) -> None:
+        for listener in self.completed_order_listeners:
+            listener(contract=contract, order=order, order_state=order_state)
+
+    def emit_completed_orders_end(self) -> None:
+        for listener in self.completed_orders_end_listeners:
+            listener()
+
     def reqContractDetails(self, req_id, contract) -> None:
         self.contract_detail_requests.append((req_id, contract))
-        contract.conId = 900_000 + len(self.contract_detail_requests)
+        contract = self.contract_details_by_con_id.get(
+            getattr(contract, "conId", 0),
+            contract,
+        )
+        if not getattr(contract, "conId", 0):
+            contract.conId = 900_000 + len(self.contract_detail_requests)
         self.contract_details[req_id] = [
             type("ContractDetails", (), {"contract": contract})(),
         ]
@@ -147,8 +188,21 @@ class FakeIbOrderApp:
     def reqOpenOrders(self) -> None:
         self.open_order_requests += 1
 
+    def reqAllOpenOrders(self) -> None:
+        self.all_open_order_requests += 1
+
+    def reqAutoOpenOrders(self, auto_bind) -> None:
+        self.auto_open_order_requests.append(auto_bind)
+
+    def emit_open_order_end(self) -> None:
+        for listener in self.open_order_end_listeners:
+            listener()
+
     def reqExecutions(self, req_id, execution_filter) -> None:
         self.execution_requests.append((req_id, execution_filter))
+
+    def reqCompletedOrders(self, api_only) -> None:
+        self.completed_order_requests.append(api_only)
 
 
 class FakeUnavailableOptionsClient:
@@ -186,51 +240,59 @@ def make_api(
     stock_analysis_database_path: str | Path | None = None,
     portfolio_chart_values_database_path: str | Path | None = None,
     options_trade_tracker_database_path: str | Path | None = None,
+    orders_database_path: str | Path | None = None,
     options_screeners_database_path: str | Path | None = None,
     options_screener_scan_service: OptionsScreenerService | None = None,
 ) -> FastAPI:
     explicit_portfolio_client = portfolio_client or FakePortfolioClient()
+    data_dir = Path(tempfile.mkdtemp())
+    settings = make_test_settings(
+        data_dir,
+        stock_analysis_database_path=stock_analysis_database_path,
+        portfolio_chart_values_database_path=portfolio_chart_values_database_path,
+        options_trade_tracker_database_path=options_trade_tracker_database_path,
+        orders_database_path=orders_database_path,
+        options_screeners_database_path=options_screeners_database_path,
+    )
 
-    stock_analysis_store_factory: Callable[[Settings], StockAnalysisStore] | None = None
-    if stock_analysis_database_path is not None:
-        stock_analysis_store_factory = lambda _settings: StockAnalysisStore(
-            stock_analysis_database_path,
-        )
-
-    portfolio_chart_values_store_factory = None
-    if portfolio_chart_values_database_path is not None:
-        portfolio_chart_values_store_factory = lambda _settings: PortfolioChartValuesStore(
-            portfolio_chart_values_database_path,
-        )
-
-    options_trade_tracker_store_factory = None
-    if options_trade_tracker_database_path is not None:
-        options_trade_tracker_store_factory = lambda _settings: OptionsTradeTrackerStore(
-            options_trade_tracker_database_path,
-        )
-
-    options_screener_settings_store_factory = None
-    if options_screeners_database_path is not None:
-        options_screener_settings_store_factory = (
-            lambda _settings: OptionsScreenerSettingsStore(
-                options_screeners_database_path,
-            )
-        )
-
-    return create_app(AppFactories(
-        client=lambda _settings: explicit_portfolio_client,
-        options_client=lambda _settings, _client: (
-            options_client or FakeUnavailableOptionsClient()
+    return create_app(
+        settings,
+        AppOverrides(
+            client=explicit_portfolio_client,
+            options_client=options_client or FakeUnavailableOptionsClient(),
+            options_screener_scan_service=options_screener_scan_service,
         ),
-        stock_analysis_store=stock_analysis_store_factory,
-        portfolio_chart_values_store=portfolio_chart_values_store_factory,
-        options_trade_tracker_store=options_trade_tracker_store_factory,
-        options_screener_settings_store=(
-            options_screener_settings_store_factory
+    )
+
+
+def make_test_settings(
+    data_dir: str | Path,
+    *,
+    stock_analysis_database_path: str | Path | None = None,
+    portfolio_chart_values_database_path: str | Path | None = None,
+    options_trade_tracker_database_path: str | Path | None = None,
+    orders_database_path: str | Path | None = None,
+    options_screeners_database_path: str | Path | None = None,
+    earnings_watch_database_path: str | Path | None = None,
+) -> Settings:
+    data_path = Path(data_dir)
+    return Settings(
+        stock_analysis_database_path=str(
+            stock_analysis_database_path or data_path / "stock_analysis.sqlite3",
         ),
-        options_screener_scan_service=(
-            (lambda _settings: options_screener_scan_service)
-            if options_screener_scan_service is not None
-            else None
+        portfolio_chart_values_database_path=str(
+            portfolio_chart_values_database_path
+            or data_path / "portfolio_chart_values.sqlite3",
         ),
-    ))
+        options_trade_trackers_database_path=str(
+            options_trade_tracker_database_path
+            or data_path / "options_trade_trackers.sqlite3",
+        ),
+        orders_database_path=str(orders_database_path or data_path / "orders.sqlite3"),
+        options_screeners_database_path=str(
+            options_screeners_database_path or data_path / "options_screeners.sqlite3",
+        ),
+        earnings_watch_database_path=str(
+            earnings_watch_database_path or data_path / "earnings_watch.sqlite3",
+        ),
+    )

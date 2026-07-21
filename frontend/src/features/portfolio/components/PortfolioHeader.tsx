@@ -3,13 +3,7 @@ import { CircleDot, RefreshCw } from 'lucide-react'
 import type { IbStatus } from '@/api/portfolio'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select'
+import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
 
 type PortfolioHeaderProps = {
   accounts: string[]
@@ -34,26 +28,12 @@ export function PortfolioHeader({
     <header className="flex items-center justify-between gap-4">
       <div className="flex items-center gap-3">
         <h1 className="text-3xl font-semibold tracking-tight">Account</h1>
-        <Select
-          value={activeAccount}
-          onValueChange={onAccountChange}
-          disabled={!accounts.length || isLoading}
-        >
-          <SelectTrigger className="w-44 cursor-pointer">
-            <SelectValue placeholder="Select account" />
-          </SelectTrigger>
-          <SelectContent position="popper" align="start">
-            {accounts.map((account) => (
-              <SelectItem
-                key={account}
-                value={account}
-                className="cursor-pointer"
-              >
-                {account}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <AccountSelector
+          accounts={accounts}
+          activeAccount={activeAccount}
+          disabled={isLoading}
+          onAccountChange={onAccountChange}
+        />
       </div>
       <div className="flex items-center gap-2">
         <Badge

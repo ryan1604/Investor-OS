@@ -27,7 +27,7 @@ export function StrategySelectCell({
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger
         aria-label={`Strategy row ${id}`}
-        className="w-40 justify-between"
+        className="w-full justify-between"
       >
         <SelectValue placeholder="Strategy" />
       </SelectTrigger>

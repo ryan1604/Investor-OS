@@ -4,6 +4,8 @@ import threading
 from contextlib import contextmanager
 from typing import Iterator
 
+from fastapi import HTTPException, Request
+
 
 class RequestCapacityExceeded(RuntimeError):
     pass
@@ -27,3 +29,14 @@ class RequestLimiter:
             yield
         finally:
             self.semaphore.release()
+
+
+@contextmanager
+def request_limit_slot(request: Request, name: str) -> Iterator[None]:
+    try:
+        with request.app.state.request_limiters[name].slot(
+            timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
+        ):
+            yield
+    except RequestCapacityExceeded as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error

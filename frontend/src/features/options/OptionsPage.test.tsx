@@ -95,7 +95,15 @@ afterEach(() => {
 
 describe('OptionsPage', () => {
   it('adds option legs without opening the strategy drawer', async () => {
-    render(<OptionsPage orders={[]} portfolio={null} selectedAccount={null} />)
+    render(
+      <OptionsPage
+        accounts={['DU1234567']}
+        orders={[]}
+        portfolio={null}
+        selectedAccount="DU1234567"
+        onSelectedAccountChange={vi.fn()}
+      />,
+    )
 
     expect(screen.getByRole('button', { name: /^strategy$/i })).toHaveProperty(
       'disabled',

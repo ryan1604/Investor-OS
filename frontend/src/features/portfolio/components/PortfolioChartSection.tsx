@@ -6,6 +6,7 @@ import type {
   PortfolioChartValue,
   PortfolioChartValueRequest,
 } from '@/api/portfolioChartValues'
+import { errorMessage } from '@/api/client'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -157,9 +158,7 @@ export function PortfolioChartSection({
         return
       }
 
-      setSaveError(
-        saveError instanceof Error ? saveError.message : 'Save failed.',
-      )
+      setSaveError(errorMessage(saveError, 'Save failed.'))
     }
   }
 
