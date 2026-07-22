@@ -1,4 +1,9 @@
-import { jsonRequest, requestJson, tickerPathSegment } from '@/api/client'
+import {
+  jsonRequest,
+  requestJson,
+  requestOk,
+  tickerPathSegment,
+} from '@/api/client'
 
 export type StockAnalysisJsonValue =
   | string
@@ -102,5 +107,19 @@ export async function upsertStockAnalysisModel(
     request,
     'Stock analysis',
     signal,
+  )
+}
+
+export async function deleteStockAnalysisModel(
+  ticker: string,
+  signal?: AbortSignal,
+) {
+  await requestOk(
+    `/stock-analysis/${tickerPathSegment(ticker)}`,
+    'Stock analysis',
+    {
+      method: 'DELETE',
+      signal,
+    },
   )
 }

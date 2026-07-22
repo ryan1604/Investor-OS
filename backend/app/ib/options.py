@@ -609,13 +609,18 @@ class IbOptionScannerProvider:
         allowed_strikes: set[float],
         right: str,
     ) -> ScannerContractSelection:
-        return fetch_standard_option_contracts(
+        contracts = fetch_exact_chain_contracts(
             self.app,
             ticker,
             expiration,
-            allowed_strikes,
+            sorted(allowed_strikes),
             right,
             timeout_seconds=self.contract_timeout_seconds,
+        )
+        resolved_strikes = {contract.strike for contract in contracts}
+        return ScannerContractSelection(
+            contracts=contracts,
+            excluded_contracts=len(allowed_strikes - resolved_strikes),
         )
 
     def _resolve_option_contracts(

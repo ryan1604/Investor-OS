@@ -132,6 +132,50 @@ def test_get_stock_analysis_models_returns_saved_models_ordered(tmp_path):
     assert response.json()[1]["current_price"] == 332.25
 
 
+def test_delete_stock_analysis_removes_saved_model_and_price_snapshot(tmp_path):
+    api = create_stock_analysis_test_app(
+        tmp_path,
+        options_client=FakeOptionsAnalysisClient(price=195.5),
+    )
+
+    with TestClient(api) as client:
+        client.put(
+            "/stock-analysis/aapl",
+            json={
+                "payload": {"bull": {"revenue": [100]}, "base": {}, "bear": {}},
+            },
+        )
+        client.get("/stock-analysis/aapl/current-price")
+        delete_response = client.delete("/stock-analysis/aapl")
+        second_delete_response = client.delete("/stock-analysis/aapl")
+        list_response = client.get("/stock-analysis")
+        model_response = client.get("/stock-analysis/aapl")
+        readd_response = client.put(
+            "/stock-analysis/aapl",
+            json={
+                "payload": {"bull": {}, "base": {"revenue": [250]}, "bear": {}},
+            },
+        )
+
+    assert delete_response.status_code == 204
+    assert second_delete_response.status_code == 204
+    assert list_response.json() == []
+    assert model_response.json() == {
+        "ticker": "AAPL",
+        "version": 1,
+        "current_price": None,
+        "payload": {"bull": {}, "base": {}, "bear": {}},
+        "updated_at": None,
+    }
+    assert readd_response.status_code == 200
+    assert readd_response.json()["current_price"] is None
+    assert readd_response.json()["payload"] == {
+        "bull": {},
+        "base": {"revenue": [250]},
+        "bear": {},
+    }
+
+
 def test_get_stock_analysis_current_price_returns_ib_backed_price(tmp_path):
     options_client = FakeOptionsAnalysisClient(price=42.5)
     api = create_stock_analysis_test_app(

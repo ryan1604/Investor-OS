@@ -114,6 +114,26 @@ def test_list_models_returns_saved_models_ordered_by_ticker(tmp_path):
     assert models[1].payload["base"]["revenue"] == [100]
 
 
+def test_delete_model_removes_payload_and_current_price(tmp_path):
+    store = make_store(tmp_path)
+    store.upsert_model(
+        "AAPL",
+        version=1,
+        payload={"bull": {"revenue": [100]}, "base": {}, "bear": {}},
+        updated_at=datetime(2026, 6, 4, 1, 0, tzinfo=UTC),
+    )
+    store.update_current_price(
+        "AAPL",
+        195.5,
+        updated_at=datetime(2026, 6, 4, 1, 30, tzinfo=UTC),
+    )
+
+    assert store.delete_model(" aapl ") is True
+    assert store.get_model("AAPL") is None
+    assert store.list_models() == []
+    assert store.delete_model("AAPL") is False
+
+
 def test_update_current_price_preserves_existing_model_payload(tmp_path):
     store = make_store(tmp_path)
     store.upsert_model(
@@ -149,4 +169,3 @@ def test_update_current_price_inserts_empty_model_for_new_ticker(tmp_path):
     assert model.version == 1
     assert model.current_price == 42.5
     assert model.payload == {"bull": {}, "base": {}, "bear": {}}
-

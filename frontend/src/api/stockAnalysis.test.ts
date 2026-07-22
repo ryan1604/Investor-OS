@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  deleteStockAnalysisModel,
   fetchStockAnalysisCurrentPrice,
   fetchStockAnalysisModel,
   fetchStockAnalysisModels,
@@ -68,6 +69,7 @@ describe('stock analysis api', () => {
           headers: { 'Content-Type': 'application/json' },
         }),
       )
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
 
     await fetchStockAnalysisModels()
@@ -75,6 +77,7 @@ describe('stock analysis api', () => {
     await fetchStockAnalysisCurrentPrice('aapl')
     await refreshStockAnalysisCurrentPrices()
     await upsertStockAnalysisModel('aapl', modelRequest)
+    await deleteStockAnalysisModel('aapl')
 
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
@@ -108,6 +111,11 @@ describe('stock analysis api', () => {
         body: JSON.stringify(modelRequest),
         signal: undefined,
       },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      6,
+      'http://127.0.0.1:8000/stock-analysis/AAPL',
+      { method: 'DELETE', signal: undefined },
     )
   })
 

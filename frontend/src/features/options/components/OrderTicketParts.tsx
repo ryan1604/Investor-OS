@@ -1,8 +1,8 @@
 import { LoaderCircle, Send } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { DialogFooter } from '@/components/ui/dialog'
 import { Field, FieldLabel } from '@/components/ui/field'
-import { SheetFooter } from '@/components/ui/sheet'
 import type { TicketStep } from '@/features/orders/lib/orderTicketFlow'
 
 export function ReadOnlyTicketAccount({
@@ -40,7 +40,7 @@ export function OrderTicketFooter({
   onTransmit: () => void
 }) {
   return (
-    <SheetFooter>
+    <DialogFooter>
       {step === 'submitted' ? (
         <Button
           type="button"
@@ -98,6 +98,6 @@ export function OrderTicketFooter({
           </Button>
         </>
       )}
-    </SheetFooter>
+    </DialogFooter>
   )
 }

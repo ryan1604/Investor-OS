@@ -44,9 +44,14 @@ export const VALUATION_ROW_REGISTRY = [
     label: 'Net income growth',
     source: 'editable',
     formatKind: 'percent',
+  },
+  {
+    key: 'eps',
+    label: 'EPS',
+    source: 'derived',
+    formatKind: 'eps',
     spacerAfter: true,
   },
-  { key: 'eps', label: 'EPS', source: 'derived', formatKind: 'eps' },
   {
     key: 'ebitda',
     label: 'EBITDA',

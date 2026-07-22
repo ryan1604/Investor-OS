@@ -66,6 +66,15 @@ class StockAnalysisStore(RowDatabase):
 
         return [stock_analysis_model_from_row(row) for row in rows]
 
+    def delete_model(self, ticker: str) -> bool:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM stock_analysis_models WHERE ticker = ?",
+                (normalize_ticker(ticker),),
+            )
+
+        return cursor.rowcount > 0
+
     def upsert_model(
         self,
         ticker: str,

@@ -1,6 +1,19 @@
-import { Search } from 'lucide-react'
+import { useState } from 'react'
+
+import { Search, Trash2 } from 'lucide-react'
 
 import { Alert } from '@/components/ui/alert'
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -17,21 +30,30 @@ import { formatValuationValue } from '@/features/stock-analysis/lib/valuationFor
 import { SCENARIO_KEYS } from '@/features/stock-analysis/lib/valuationModel'
 
 export function StockAnalysisPage() {
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false)
   const {
     activeModel,
     calculatedModel,
     commitCellDraft,
     currentPriceStatus,
+    deleteActiveModel,
     editingCell,
     error,
     firstForecastYearInput,
     handleTickerSubmit,
+    isDeleting,
     saveStatus,
     setEditingCell,
     setTickerSearch,
     tickerSearch,
     updateFirstForecastYear,
   } = useStockAnalysisModel()
+
+  async function confirmDeleteModel() {
+    if (await deleteActiveModel()) {
+      setIsDeleteOpen(false)
+    }
+  }
 
   return (
     <main className="flex min-w-0 w-full flex-col gap-6">
@@ -83,6 +105,46 @@ export function StockAnalysisPage() {
                 {activeModel.ticker} valuation model
               </h2>
               <SaveStatusBadge status={saveStatus} />
+              <AlertDialog open={isDeleteOpen} onOpenChange={setIsDeleteOpen}>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    aria-label={`Delete ${activeModel.ticker} valuation model`}
+                    className="cursor-pointer active:cursor-pointer"
+                    disabled={isDeleting}
+                    size="icon-sm"
+                    type="button"
+                    variant="destructive"
+                  >
+                    <Trash2 />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>
+                      Delete {activeModel.ticker} valuation model?
+                    </AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This permanently removes the saved model and current price
+                      snapshot for this ticker.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter className="border-t-0 bg-popover">
+                    <AlertDialogCancel disabled={isDeleting}>
+                      Keep model
+                    </AlertDialogCancel>
+                    <AlertDialogAction
+                      disabled={isDeleting}
+                      variant="destructive"
+                      onClick={(event) => {
+                        event.preventDefault()
+                        void confirmDeleteModel()
+                      }}
+                    >
+                      Delete model
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="grid gap-1.5 text-sm">

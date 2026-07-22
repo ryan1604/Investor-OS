@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { useState } from 'react'
+
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -339,7 +341,50 @@ describe('OptionStrategyTicket', () => {
       )
     })
   })
+
+  it('resets review state when the dialog is dismissed and reopened', async () => {
+    vi.mocked(previewOrder).mockResolvedValue(previewResponse())
+
+    render(<StrategyHarness />)
+
+    fireEvent.click(screen.getByRole('button', { name: /review/i }))
+    expect(
+      await screen.findByText(
+        'BUY 1 AAPL 2026-06-19 200 CALL, SELL 1 AAPL 2026-06-19 210 CALL @ 1.5',
+      ),
+    ).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /open strategy/i }))
+
+    expect(
+      screen.queryByText(
+        'BUY 1 AAPL 2026-06-19 200 CALL, SELL 1 AAPL 2026-06-19 210 CALL @ 1.5',
+      ),
+    ).toBeNull()
+    expect(screen.getByRole('button', { name: /review/i })).toBeTruthy()
+  })
 })
+
+function StrategyHarness() {
+  const [open, setOpen] = useState(true)
+
+  return (
+    <>
+      <button type="button" onClick={() => setOpen(true)}>
+        Open strategy
+      </button>
+      <OptionStrategyTicket
+        legs={legs}
+        open={open}
+        portfolio={portfolio}
+        selectedAccount="DU222"
+        onLegsChange={vi.fn()}
+        onOpenChange={setOpen}
+      />
+    </>
+  )
+}
 
 function renderTicket({
   onLegsChange = vi.fn(),

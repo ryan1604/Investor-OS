@@ -107,6 +107,13 @@ def upsert_stock_analysis_model(
     return stock_analysis_response(normalized_ticker, model)
 
 
+@router.delete("/stock-analysis/{ticker}", status_code=204)
+def delete_stock_analysis_model(request: Request, ticker: str) -> None:
+    normalized_ticker = required_ticker(ticker)
+    with request_limit_slot(request, "stock_analysis_write"):
+        request.app.state.stock_analysis_store.delete_model(normalized_ticker)
+
+
 def refresh_stock_analysis_current_price(
     request: Request,
     model: StockAnalysisModel,

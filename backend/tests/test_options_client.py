@@ -13,6 +13,7 @@ from app.ib.options import (
     IbOptionChainStreamProvider,
     IbHistoricalDailyBarProvider,
     IbOptionMetadataProvider,
+    IbOptionScannerProvider,
 )
 from app.options.client import (
     AnalysisUnderlyingPriceCache,
@@ -2538,6 +2539,23 @@ def test_ib_chain_provider_falls_back_to_exact_contracts_after_broad_timeout():
         (100, "C"),
         (100, "P"),
     }
+
+
+def test_ib_scanner_provider_resolves_exact_contracts_without_broad_request():
+    app = TimeoutBroadOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionScannerProvider(app, contract_timeout_seconds=0.01)
+
+    selection = provider.fetch_option_contracts(
+        "hims",
+        ["2026-07-31"],
+        [95, 100, 105],
+        "P",
+        threading.Event(),
+    )
+
+    assert {contract.strike for contract in selection.contracts} == {95, 100}
+    assert all(request[1].strike > 0 for request in app.contract_detail_requests)
+    assert selection.excluded_contracts == 1
 
 
 def test_ib_chain_provider_skips_invalid_exact_option_contracts():

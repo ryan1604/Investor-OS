@@ -14,12 +14,12 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   Table,
   TableBody,
@@ -152,7 +152,7 @@ export function OptionStrategyTicket({
   }
 
   return (
-    <Sheet
+    <Dialog
       open={open}
       onOpenChange={(nextOpen) => {
         if (nextOpen) {
@@ -162,13 +162,13 @@ export function OptionStrategyTicket({
         }
       }}
     >
-      <SheetContent className="w-full overflow-y-auto sm:max-w-xl">
-        <SheetHeader>
-          <SheetTitle>Option strategy</SheetTitle>
-          <SheetDescription>{strategyTone(parsedLimitPrice)}</SheetDescription>
-        </SheetHeader>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-3xl">
+        <DialogHeader>
+          <DialogTitle>Option strategy</DialogTitle>
+          <DialogDescription>{strategyTone(parsedLimitPrice)}</DialogDescription>
+        </DialogHeader>
 
-        <div className="flex flex-col gap-4 px-4">
+        <div className="flex flex-col gap-4">
           {ticket.error ? (
             <Alert variant="destructive">{ticket.error}</Alert>
           ) : null}
@@ -304,8 +304,8 @@ export function OptionStrategyTicket({
           onReview={() => void handleReview()}
           onTransmit={() => void handleTransmit()}
         />
-      </SheetContent>
-    </Sheet>
+      </DialogContent>
+    </Dialog>
   )
 }
 

@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { toast } from 'sonner'
+
 import {
+  deleteStockAnalysisModel,
   fetchStockAnalysisCurrentPrice,
   fetchStockAnalysisModel,
   upsertStockAnalysisModel,
@@ -36,11 +39,15 @@ export function useStockAnalysisModel() {
   >('idle')
   const [editingCell, setEditingCell] = useState<EditingCell | null>(null)
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [isDeleting, setIsDeleting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false)
   const saveGenerationRef = useRef(0)
   const loadRequestControllerRef = useRef<AbortController | null>(null)
   const saveRequestControllerRef = useRef<AbortController | null>(null)
+  const savePromisesRef = useRef(new Set<Promise<void>>())
+  const deleteRequestControllerRef = useRef<AbortController | null>(null)
+  const deleteInProgressRef = useRef(false)
 
   const calculatedModel = useMemo(
     () =>
@@ -54,6 +61,7 @@ export function useStockAnalysisModel() {
     return () => {
       loadRequestControllerRef.current?.abort()
       saveRequestControllerRef.current?.abort()
+      deleteRequestControllerRef.current?.abort()
     }
   }, [])
 
@@ -64,11 +72,17 @@ export function useStockAnalysisModel() {
 
     const saveGeneration = saveGenerationRef.current
     const saveController = new AbortController()
+    let saveStarted = false
     saveRequestControllerRef.current?.abort()
     saveRequestControllerRef.current = saveController
     const saveTimer = window.setTimeout(() => {
+      if (deleteInProgressRef.current) {
+        return
+      }
+
+      saveStarted = true
       setSaveStatus('saving')
-      void upsertStockAnalysisModel(activeModel.ticker, {
+      const savePromise = upsertStockAnalysisModel(activeModel.ticker, {
         version: activeModel.version,
         payload: toStockAnalysisPayload(activeModel.valuation),
       }, saveController.signal)
@@ -98,6 +112,10 @@ export function useStockAnalysisModel() {
           setSaveStatus('error')
           setError(errorMessage(requestError))
         })
+        .finally(() => {
+          savePromisesRef.current.delete(savePromise)
+        })
+      savePromisesRef.current.add(savePromise)
     }, 700)
 
     return () => {
@@ -105,7 +123,9 @@ export function useStockAnalysisModel() {
       if (saveRequestControllerRef.current === saveController) {
         saveRequestControllerRef.current = null
       }
-      saveController.abort()
+      if (!saveStarted) {
+        saveController.abort()
+      }
     }
   }, [activeModel, hasUnsavedChanges])
 
@@ -125,6 +145,7 @@ export function useStockAnalysisModel() {
     saveGenerationRef.current += 1
     loadRequestControllerRef.current?.abort()
     saveRequestControllerRef.current?.abort()
+    deleteRequestControllerRef.current?.abort()
     const loadController = new AbortController()
     loadRequestControllerRef.current = loadController
 
@@ -215,15 +236,64 @@ export function useStockAnalysisModel() {
     )
   }
 
+  async function deleteActiveModel() {
+    if (!activeModel) {
+      return false
+    }
+
+    const ticker = activeModel.ticker
+    const previousHasUnsavedChanges = hasUnsavedChanges
+    const previousSaveStatus = saveStatus
+    const deleteController = new AbortController()
+    deleteInProgressRef.current = true
+    saveGenerationRef.current += 1
+    loadRequestControllerRef.current?.abort()
+    deleteRequestControllerRef.current?.abort()
+    deleteRequestControllerRef.current = deleteController
+    setIsDeleting(true)
+    setError(null)
+    setEditingCell(null)
+    setHasUnsavedChanges(false)
+
+    try {
+      await Promise.allSettled([...savePromisesRef.current])
+      await deleteStockAnalysisModel(ticker, deleteController.signal)
+      setActiveModel(null)
+      setTickerSearch('')
+      setFirstForecastYearInput('')
+      setCurrentPriceStatus('idle')
+      setSaveStatus('idle')
+      toast.success(`${ticker} valuation model deleted.`)
+      return true
+    } catch (requestError) {
+      if (isAbortError(requestError)) {
+        return false
+      }
+
+      setHasUnsavedChanges(previousHasUnsavedChanges)
+      setSaveStatus(previousSaveStatus)
+      setError(errorMessage(requestError))
+      return false
+    } finally {
+      deleteInProgressRef.current = false
+      if (deleteRequestControllerRef.current === deleteController) {
+        deleteRequestControllerRef.current = null
+      }
+      setIsDeleting(false)
+    }
+  }
+
   return {
     activeModel,
     calculatedModel,
     commitCellDraft,
     currentPriceStatus,
+    deleteActiveModel,
     editingCell,
     error,
     firstForecastYearInput,
     handleTickerSubmit,
+    isDeleting,
     saveStatus,
     setEditingCell,
     setTickerSearch,

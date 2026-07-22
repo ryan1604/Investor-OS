@@ -279,6 +279,8 @@ describe('valuationModel', () => {
       'ratioPercent',
     )
     expect(hasSpacerAfter('revenueGrowthPercent')).toBe(true)
+    expect(hasSpacerAfter('netIncomeGrowthPercent')).toBe(false)
+    expect(hasSpacerAfter('eps')).toBe(true)
     expect(isSharePriceRow('sharePriceEstimateLow')).toBe(true)
   })
 })

@@ -8,9 +8,11 @@ import {
   waitFor,
   within,
 } from '@testing-library/react'
+import { toast } from 'sonner'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  deleteStockAnalysisModel,
   fetchStockAnalysisCurrentPrice,
   fetchStockAnalysisModel,
   upsertStockAnalysisModel,
@@ -18,9 +20,16 @@ import {
 import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
 
 vi.mock('@/api/stockAnalysis', () => ({
+  deleteStockAnalysisModel: vi.fn(),
   fetchStockAnalysisCurrentPrice: vi.fn(),
   fetchStockAnalysisModel: vi.fn(),
   upsertStockAnalysisModel: vi.fn(),
+}))
+
+vi.mock('sonner', () => ({
+  toast: {
+    success: vi.fn(),
+  },
 }))
 
 beforeEach(() => {
@@ -30,6 +39,7 @@ beforeEach(() => {
       current_price: 10,
     }),
   )
+  vi.mocked(deleteStockAnalysisModel).mockResolvedValue(undefined)
 })
 
 afterEach(() => {
@@ -324,6 +334,197 @@ describe('StockAnalysisPage', () => {
     }, { timeout: 1500 })
   })
 
+  it('deletes the active model after confirmation and cancels pending autosave', async () => {
+    let resolveDelete!: () => void
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AAPL'))
+    vi.mocked(deleteStockAnalysisModel).mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveDelete = resolve
+      }),
+    )
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AAPL' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AAPL valuation model')
+
+    fireEvent.change(screen.getByLabelText('First forecast year'), {
+      target: { value: '2028' },
+    })
+    fireEvent.click(
+      screen.getByRole('button', { name: /delete aapl valuation model/i }),
+    )
+    expect(
+      await screen.findByText('Delete AAPL valuation model?'),
+    ).toBeTruthy()
+
+    const deleteButton = screen.getByRole('button', { name: /delete model/i })
+    fireEvent.click(deleteButton)
+
+    await waitFor(() => {
+      expect(deleteStockAnalysisModel).toHaveBeenCalledWith(
+        'AAPL',
+        expect.any(AbortSignal),
+      )
+      expect(deleteButton).toHaveProperty('disabled', true)
+    })
+
+    resolveDelete()
+
+    await waitFor(() => {
+      expect(screen.queryByText('AAPL valuation model')).toBeNull()
+    })
+    expect((screen.getByLabelText('Ticker') as HTMLInputElement).value).toBe('')
+    expect(toast.success).toHaveBeenCalledWith('AAPL valuation model deleted.')
+
+    await new Promise((resolve) => window.setTimeout(resolve, 800))
+
+    expect(upsertStockAnalysisModel).not.toHaveBeenCalled()
+  })
+
+  it('waits for an already-started autosave before deleting', async () => {
+    const save = deferred<Awaited<ReturnType<typeof upsertStockAnalysisModel>>>()
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AAPL'))
+    vi.mocked(upsertStockAnalysisModel).mockReturnValue(save.promise)
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AAPL' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AAPL valuation model')
+
+    fireEvent.change(screen.getByLabelText('First forecast year'), {
+      target: { value: '2028' },
+    })
+
+    await waitFor(() => {
+      expect(upsertStockAnalysisModel).toHaveBeenCalledTimes(1)
+    }, { timeout: 1500 })
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /delete aapl valuation model/i }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /delete model/i }))
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /delete model/i })).toHaveProperty(
+        'disabled',
+        true,
+      )
+    })
+    expect(deleteStockAnalysisModel).not.toHaveBeenCalled()
+
+    save.resolve({
+      ...emptyResponse('AAPL'),
+      updated_at: '2026-06-04T00:00:00+00:00',
+    })
+
+    await waitFor(() => {
+      expect(deleteStockAnalysisModel).toHaveBeenCalledWith(
+        'AAPL',
+        expect.any(AbortSignal),
+      )
+    })
+  })
+
+  it('keeps the active model visible when deletion fails', async () => {
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AAPL'))
+    vi.mocked(deleteStockAnalysisModel).mockRejectedValue(
+      new Error('Delete failed.'),
+    )
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AAPL' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AAPL valuation model')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /delete aapl valuation model/i }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /delete model/i }))
+
+    expect(await screen.findByText('Delete failed.')).toBeTruthy()
+    expect(screen.getByText('AAPL valuation model')).toBeTruthy()
+  })
+
+  it('opens a deleted ticker as a fresh model and saves new edits', async () => {
+    vi.mocked(fetchStockAnalysisModel)
+      .mockResolvedValueOnce({
+        ...emptyResponse('AAPL'),
+        payload: {
+          bull: {
+            revenue: [100, null, null, null, null],
+          },
+          base: {},
+          bear: {},
+        },
+        updated_at: '2026-06-04T00:00:00+00:00',
+      })
+      .mockResolvedValueOnce(emptyResponse('AAPL'))
+    vi.mocked(upsertStockAnalysisModel).mockResolvedValue({
+      ...emptyResponse('AAPL'),
+      updated_at: '2026-06-05T00:00:00+00:00',
+    })
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AAPL' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AAPL valuation model')
+
+    expect(
+      (screen.getByLabelText('Bull case Revenue Year 1') as HTMLInputElement)
+        .value,
+    ).toBe('$100.00')
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /delete aapl valuation model/i }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /delete model/i }))
+
+    await waitFor(() => {
+      expect(screen.queryByText('AAPL valuation model')).toBeNull()
+    })
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AAPL' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AAPL valuation model')
+
+    const revenueInput = screen.getByLabelText(
+      'Bull case Revenue Year 1',
+    ) as HTMLInputElement
+    expect(revenueInput.value).toBe('')
+
+    fireEvent.focus(revenueInput)
+    fireEvent.change(revenueInput, {
+      target: { value: '500' },
+    })
+    fireEvent.blur(revenueInput)
+
+    await waitFor(() => {
+      expect(upsertStockAnalysisModel).toHaveBeenCalledWith('AAPL', {
+        version: 1,
+        payload: expect.objectContaining({
+          bull: expect.objectContaining({
+            revenue: [500, null, null, null, null],
+          }),
+        }),
+      }, expect.any(AbortSignal))
+    }, { timeout: 1500 })
+  })
+
   it('uses the saved current price snapshot when live price is unavailable', async () => {
     vi.mocked(fetchStockAnalysisModel).mockResolvedValue({
       ...emptyResponse('NFLX'),
@@ -407,7 +608,8 @@ describe('StockAnalysisPage', () => {
     expect(await screen.findByText('Saved')).toBeTruthy()
   })
 
-  it('aborts an in-flight autosave when a newer edit supersedes it', async () => {
+  it('waits for a superseded in-flight autosave before deleting', async () => {
+    const firstSave = deferred<Awaited<ReturnType<typeof upsertStockAnalysisModel>>>()
     const saveSignals: AbortSignal[] = []
     vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('META'))
     vi.mocked(upsertStockAnalysisModel).mockImplementation(
@@ -416,7 +618,7 @@ describe('StockAnalysisPage', () => {
           saveSignals.push(signal)
         }
 
-        return new Promise<never>(() => undefined)
+        return firstSave.promise
       },
     )
 
@@ -440,11 +642,43 @@ describe('StockAnalysisPage', () => {
       target: { value: '2029' },
     })
 
+    expect(saveSignals[0].aborted).toBe(false)
+
+    fireEvent.click(
+      screen.getByRole('button', { name: /delete meta valuation model/i }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /delete model/i }))
+
     await waitFor(() => {
-      expect(saveSignals[0].aborted).toBe(true)
-    }, { timeout: 1500 })
+      expect(screen.getByRole('button', { name: /delete model/i })).toHaveProperty(
+        'disabled',
+        true,
+      )
+    })
+    expect(deleteStockAnalysisModel).not.toHaveBeenCalled()
+
+    firstSave.resolve({
+      ...emptyResponse('META'),
+      updated_at: '2026-06-04T00:00:00+00:00',
+    })
+
+    await waitFor(() => {
+      expect(deleteStockAnalysisModel).toHaveBeenCalledWith(
+        'META',
+        expect.any(AbortSignal),
+      )
+    })
   })
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+
+  return { promise, resolve }
+}
 
 function emptyResponse(ticker: string) {
   return {

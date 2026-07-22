@@ -205,6 +205,22 @@ describe('StockTradeTicket', () => {
       )
     })
   })
+
+  it('resets review state when the dialog is closed and reopened', async () => {
+    vi.mocked(previewOrder).mockResolvedValue(previewResponse())
+
+    renderTicket()
+    fireEvent.click(screen.getByRole('button', { name: /trade/i }))
+    fireEvent.click(screen.getByRole('button', { name: /review/i }))
+
+    expect(await screen.findByText('BUY 1 share(s) AAPL')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: /^close$/i }))
+    fireEvent.click(screen.getByRole('button', { name: /trade/i }))
+
+    expect(screen.queryByText('BUY 1 share(s) AAPL')).toBeNull()
+    expect(screen.getByRole('button', { name: /review/i })).toBeTruthy()
+  })
 })
 
 function renderTicket() {

@@ -116,6 +116,20 @@ describe('RankStocksPage', () => {
     expect(screen.getByText('1 missing price')).toBeTruthy()
   })
 
+  it('omits deleted stock analysis tickers after saved models reload', async () => {
+    vi.mocked(fetchStockAnalysisModels).mockResolvedValue([
+      savedModel('MSFT', 10, {
+        bull: scenarioPayload({ priceToSales: [3, 3, 3, 3, 3] }),
+      }),
+    ])
+
+    render(<RankStocksPage />)
+
+    expect((await screen.findAllByText('MSFT')).length).toBeGreaterThan(0)
+    expect(screen.queryByText('AAPL')).toBeNull()
+    expect(screen.getByText('1 tickers')).toBeTruthy()
+  })
+
   it('refreshes every 15 minutes only while mounted', async () => {
     const intervalRefresh = deferred<{
       results: Awaited<

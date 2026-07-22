@@ -16,12 +16,12 @@ import { ButtonGroup } from '@/components/ui/button-group'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import {
-  Sheet,
-  SheetContent,
-  SheetDescription,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet'
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog'
 import {
   ConfirmationPreview,
   PreviewRow,
@@ -109,16 +109,16 @@ export function StockTradeTicket({
         Trade
       </Button>
 
-      <Sheet open={open} onOpenChange={resetDraft}>
-        <SheetContent className="w-full overflow-y-auto sm:max-w-md">
-          <SheetHeader>
-            <SheetTitle>Trade {ticker}</SheetTitle>
-            <SheetDescription>
+      <Dialog open={open} onOpenChange={resetDraft}>
+        <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Trade {ticker}</DialogTitle>
+            <DialogDescription>
               Last {formatOptionalPrice(latestPrice)}
-            </SheetDescription>
-          </SheetHeader>
+            </DialogDescription>
+          </DialogHeader>
 
-          <div className="flex flex-col gap-4 px-4">
+          <div className="flex flex-col gap-4">
             {ticket.error ? (
               <Alert variant="destructive">{ticket.error}</Alert>
             ) : null}
@@ -217,8 +217,8 @@ export function StockTradeTicket({
             onReview={() => void handleReview()}
             onTransmit={() => void handleTransmit()}
           />
-        </SheetContent>
-      </Sheet>
+        </DialogContent>
+      </Dialog>
     </>
   )
 }
