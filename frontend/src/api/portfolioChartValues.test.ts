@@ -11,8 +11,8 @@ const request: PortfolioChartValuesRequest = {
   rows: [
     {
       month: '2026-01',
-      portfolio_value: 1000,
-      amount_invested: null,
+
+      amount_invested: 1000,
     },
   ],
 }

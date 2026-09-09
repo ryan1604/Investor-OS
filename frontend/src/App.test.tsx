@@ -58,15 +58,19 @@ vi.mock('@/features/portfolio/PortfolioPage', () => ({
 vi.mock('@/features/options/OptionsPage', () => ({
   OptionsPage: ({
     accounts,
+    isActive,
     selectedAccount,
     onSelectedAccountChange,
   }: {
     accounts: string[]
+    isActive: boolean
     selectedAccount: string | null
     onSelectedAccountChange: (account: string) => void
   }) => (
     <main>
       Options route {selectedAccount}
+      <input aria-label="Options ticker" defaultValue="" />
+      <div>Options is {isActive ? 'active' : 'inactive'}</div>
       <div>Options accounts {accounts.join(',')}</div>
       <button type="button" onClick={() => onSelectedAccountChange('DU1')}>
         Pick DU1 in Options
@@ -97,6 +101,10 @@ vi.mock('@/features/orders/OrdersPage', () => ({
 
 vi.mock('@/features/options-trade-tracker/OptionsTradeTrackerPage', () => ({
   OptionsTradeTrackerPage: () => <main>Options trade tracker route</main>,
+}))
+
+vi.mock('@/features/day-trading-tracker/DayTradingTrackerPage', () => ({
+  DayTradingTrackerPage: () => <main>Day trading tracker route</main>,
 }))
 
 vi.mock('@/features/stock-analysis/StockAnalysisPage', () => ({
@@ -137,11 +145,15 @@ describe('App', () => {
   it('renders Portfolio first and navigates between pages', async () => {
     render(<App />)
 
+    expect(screen.getByRole('navigation', { name: 'Primary' })).toBeTruthy()
     expect(screen.getByText('Portfolio route')).toBeTruthy()
     expect(screen.queryByText('Options route')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Portfolio' }).getAttribute('aria-current')).toBe('page')
 
-    fireEvent.click(screen.getByText('Options'))
+    fireEvent.click(screen.getByRole('button', { name: 'Options' }))
     expect(await screen.findByText('Options route')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Options' }).getAttribute('aria-current')).toBe('page')
+    expect(screen.getByRole('button', { name: 'Portfolio' }).getAttribute('aria-current')).toBeNull()
 
     fireEvent.click(screen.getByText('CSP Screener'))
     expect(await screen.findByText('CSP screener route')).toBeTruthy()
@@ -157,6 +169,9 @@ describe('App', () => {
 
     fireEvent.click(screen.getByText('Options Trade Tracker'))
     expect(await screen.findByText('Options trade tracker route')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Day Trading Tracker'))
+    expect(await screen.findByText('Day trading tracker route')).toBeTruthy()
 
     fireEvent.click(screen.getByText('Stock Analysis'))
     expect(await screen.findByText('Stock analysis route')).toBeTruthy()
@@ -188,6 +203,69 @@ describe('App', () => {
     fireEvent.click(screen.getByText('Orders'))
     expect(await screen.findByText('Orders route DU1')).toBeTruthy()
     expect(screen.getByText('Orders accounts DU1,DU2,DU3')).toBeTruthy()
+  })
+
+  it('retains a saved-only Portfolio account while trading uses live accounts', async () => {
+    mocks.portfolio = { ...portfolioResponse(), accounts: [accountSummary('DU1')], positions: [] }
+    const { rerender } = render(<App />)
+    fireEvent.click(screen.getByText('Pick DU2 in Portfolio'))
+    expect(screen.getByText('Portfolio route DU2')).toBeTruthy()
+
+    mocks.portfolio = { ...mocks.portfolio }
+    rerender(<App />)
+    expect(screen.getByText('Portfolio route DU2')).toBeTruthy()
+    fireEvent.click(screen.getByText('Options'))
+    expect(await screen.findByText('Options route DU1')).toBeTruthy()
+    expect(screen.getByText('Options accounts DU1')).toBeTruthy()
+    fireEvent.click(screen.getByText('Orders'))
+    expect(await screen.findByText('Orders route DU1')).toBeTruthy()
+    expect(screen.getByText('Orders accounts DU1')).toBeTruthy()
+    fireEvent.click(screen.getByText('Portfolio'))
+    expect(screen.getByText('Portfolio route DU2')).toBeTruthy()
+
+    mocks.portfolio = { ...mocks.portfolio, accounts: [] }
+    rerender(<App />)
+    fireEvent.click(screen.getByText('Orders'))
+    expect(await screen.findByText('Orders route')).toBeTruthy()
+    fireEvent.click(screen.getByText('Portfolio'))
+    expect(screen.getByText('Portfolio route DU2')).toBeTruthy()
+  })
+
+  it('keeps the selected Portfolio account when TWS disconnects', async () => {
+    mocks.portfolio = portfolioResponse()
+    const { rerender } = render(<App />)
+    fireEvent.click(await screen.findByText('Pick DU2 in Portfolio'))
+    expect(await screen.findByText('Portfolio route DU2')).toBeTruthy()
+    mocks.portfolio = { ...portfolioResponse(),
+      status: { ...portfolioResponse().status, connected: false },
+      accounts: [], positions: [],
+    }
+    rerender(<App />)
+    expect(screen.getByText('Portfolio route DU2')).toBeTruthy()
+  })
+
+  it('retains the Options workspace after its first visit', async () => {
+    render(<App />)
+
+    expect(screen.queryByTestId('options-workspace')).toBeNull()
+
+    fireEvent.click(screen.getByText('Options'))
+    const tickerInput = await screen.findByLabelText('Options ticker')
+    fireEvent.change(tickerInput, { target: { value: 'HIMS' } })
+
+    fireEvent.click(screen.getByText('Portfolio'))
+
+    const hiddenWorkspace = screen.getByTestId('options-workspace')
+    expect(hiddenWorkspace.hasAttribute('hidden')).toBe(true)
+    expect(screen.getByText('Options is inactive')).toBeTruthy()
+
+    fireEvent.click(screen.getByText('Options'))
+
+    expect(hiddenWorkspace.hasAttribute('hidden')).toBe(false)
+    expect(screen.getByText('Options is active')).toBeTruthy()
+    expect((screen.getByLabelText('Options ticker') as HTMLInputElement).value).toBe(
+      'HIMS',
+    )
   })
 })
 

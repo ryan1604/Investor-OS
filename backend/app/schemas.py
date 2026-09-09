@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from pydantic import (
     BaseModel,
+    ConfigDict,
     Field,
     StrictInt,
     computed_field,
@@ -78,6 +79,7 @@ class PortfolioResponse(BaseModel):
 
 
 MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+DAY_TRADING_MIN_DATE = "2026-08-01"
 OPTIONS_TRADE_MONTHS = {
     "jan",
     "feb",
@@ -95,8 +97,8 @@ OPTIONS_TRADE_MONTHS = {
 
 
 class PortfolioChartValueRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     month: str
-    portfolio_value: float | None = None
     amount_invested: float | None = None
 
     @field_validator("month")
@@ -107,7 +109,7 @@ class PortfolioChartValueRequest(BaseModel):
             raise ValueError("month must use YYYY-MM format.")
         return normalized_value
 
-    @field_validator("portfolio_value", "amount_invested")
+    @field_validator("amount_invested")
     @classmethod
     def finite_number(cls, value: float | None) -> float | None:
         if value is not None and not math.isfinite(value):
@@ -116,9 +118,9 @@ class PortfolioChartValueRequest(BaseModel):
 
     @model_validator(mode="after")
     def reject_blank_row(self):
-        if self.portfolio_value is None and self.amount_invested is None:
+        if self.amount_invested is None:
             raise ValueError(
-                "portfolio_value or amount_invested is required for each row."
+                "amount_invested is required for each row."
             )
         return self
 
@@ -139,7 +141,6 @@ class PortfolioChartValuesRequest(BaseModel):
 
 class PortfolioChartValueResponse(BaseModel):
     month: str
-    portfolio_value: float | None = None
     amount_invested: float | None = None
     updated_at: str
 
@@ -184,6 +185,80 @@ def duplicate_values(
         else:
             seen.add(value)
     return sorted(duplicates)
+
+
+class DayTradingRowRequest(BaseModel):
+    id: str | None = None
+    display_order: int = Field(ge=0)
+    buy: float | None = None
+    sell: float | None = None
+    size: StrictInt | None = None
+    fee: float | None = None
+
+    @field_validator("id", mode="before")
+    @classmethod
+    def optional_text(cls, value: str | None) -> str | None:
+        return normalize_optional_text(value)
+
+    @field_validator("buy", "sell", "fee")
+    @classmethod
+    def finite_price(cls, value: float | None) -> float | None:
+        if value is not None and not math.isfinite(value):
+            raise ValueError("numeric values must be finite.")
+        return value
+
+    @field_validator("fee")
+    @classmethod
+    def non_negative_fee(cls, value: float | None) -> float | None:
+        if value is not None and value < 0:
+            raise ValueError("fee must be zero or greater.")
+        return value
+
+    @field_validator("size")
+    @classmethod
+    def positive_size(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("size must be a positive whole number.")
+        return value
+
+
+class DayTradingRowsReplaceRequest(BaseModel):
+    trades: list[DayTradingRowRequest] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_row_ordering(self) -> Self:
+        row_ids = [row.id for row in self.trades if row.id is not None]
+        duplicate_row_ids = duplicate_values(row_ids)
+        if duplicate_row_ids:
+            raise ValueError("Duplicate trade row ids are not allowed.")
+
+        display_orders = [row.display_order for row in self.trades]
+        duplicate_orders = duplicate_values(display_orders)
+        if duplicate_orders:
+            raise ValueError("Duplicate trade row display_order values are not allowed.")
+
+        return self
+
+
+class DayTradingRowResponse(BaseModel):
+    id: str
+    display_order: int
+    buy: float | None = None
+    sell: float | None = None
+    size: int | None = None
+    fee: float | None = None
+    created_at: str
+    updated_at: str
+
+
+class DayTradingDayResponse(BaseModel):
+    date: str
+    trades: list[DayTradingRowResponse] = Field(default_factory=list)
+
+
+class DayTradingMonthResponse(BaseModel):
+    month: str
+    days: list[DayTradingDayResponse] = Field(default_factory=list)
 
 
 class OptionsTradeTrackerCreateRequest(BaseModel):

@@ -1,6 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import { AccountSummaryCard } from '@/features/portfolio/components/AccountSummaryCard'
+import { DailyNavChart } from './components/DailyNavChart'
+import { useNavAccounts } from './hooks/useNavHistory'
 import { PortfolioChartSection } from '@/features/portfolio/components/PortfolioChartSection'
 import { PortfolioHeader } from '@/features/portfolio/components/PortfolioHeader'
 import { PositionsTable } from '@/features/portfolio/components/PositionsTable'
@@ -29,12 +31,13 @@ export function PortfolioPage({
 }: PortfolioPageProps) {
   const { portfolio, isLoading, error, loadPortfolio } = portfolioState
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
+  const saved = useNavAccounts()
   const {
     accounts,
     activeAccount,
     accountPositions,
     activeAccountSummary,
-  } = useSelectedAccount(portfolio, selectedAccount)
+  } = useSelectedAccount(portfolio, selectedAccount, saved.accounts)
   const chartValues = usePortfolioChartValues(activeAccount)
 
   const displayRows = useMemo(() => {
@@ -79,6 +82,8 @@ export function PortfolioPage({
         onSort={handleSort}
       />
 
+      {saved.error && <p className="mt-4 text-sm text-destructive" role="alert">{saved.error}</p>}
+      <DailyNavChart key={activeAccount} account={activeAccount} />
       <PortfolioChartSection
         account={activeAccount}
         currency={activeAccountSummary?.currency ?? 'USD'}

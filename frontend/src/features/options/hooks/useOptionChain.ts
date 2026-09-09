@@ -16,6 +16,7 @@ export function useOptionChain(
   analysis: OptionsAnalysisResponse | null,
   selectedExpiration: string,
   isAnalysisLoading: boolean,
+  isActive = true,
 ) {
   const [chain, setChain] = useState<OptionChainResponse | null>(null)
   const [chainError, setChainError] = useState<{
@@ -30,7 +31,7 @@ export function useOptionChain(
   const activeKey = `${activeTicker}\0${selectedExpiration}`
 
   useEffect(() => {
-    if (!canLoadChain) {
+    if (!canLoadChain || !isActive) {
       return
     }
 
@@ -120,7 +121,7 @@ export function useOptionChain(
       }
       socket.close()
     }
-  }, [activeKey, activeTicker, canLoadChain, selectedExpiration])
+  }, [activeKey, activeTicker, canLoadChain, isActive, selectedExpiration])
 
   const activeChain =
     canLoadChain &&

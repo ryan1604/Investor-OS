@@ -4,7 +4,7 @@ from collections.abc import Iterable
 from datetime import date, datetime, timedelta
 import logging
 from threading import Event, Lock
-from time import perf_counter
+from time import monotonic, perf_counter
 
 from ibapi.contract import Contract
 
@@ -15,6 +15,7 @@ from app.ib.contracts import (
     us_option_universe_contract,
 )
 from app.options.client import (
+    OptionChainContractHydration,
     OptionsDataUnavailable,
     ScannerContractSelection,
     ScannerOptionContract,
@@ -261,10 +262,6 @@ class IbOptionMetadataProvider:
         self.app = app
         self.timeout_seconds = timeout_seconds
 
-    def fetch_expirations(self, ticker: str) -> list[str]:
-        metadata = self.fetch_option_metadata(ticker)
-        return metadata.expirations
-
     def fetch_option_metadata(self, ticker: str) -> OptionMetadata:
         if not self.app.isConnected():
             raise OptionsDataUnavailable(
@@ -354,10 +351,12 @@ class IbOptionChainSnapshotProvider:
         *,
         timeout_seconds: float = 4,
         contract_timeout_seconds: float = 8,
+        hydration_timeout_seconds: float = 30,
     ) -> None:
         self.app = app
         self.timeout_seconds = timeout_seconds
         self.contract_timeout_seconds = contract_timeout_seconds
+        self.hydration_timeout_seconds = hydration_timeout_seconds
 
     def fetch_chain_contracts(
         self,
@@ -365,13 +364,38 @@ class IbOptionChainSnapshotProvider:
         expiration: str,
         strikes: list[float],
     ) -> list[ScannerOptionContract]:
+        return self.fetch_chain_contract_hydration(
+            ticker,
+            expiration,
+            strikes,
+        ).contracts
+
+    def fetch_chain_contract_hydration(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+        stop_event: Event | None = None,
+    ) -> OptionChainContractHydration:
         if not self.app.isConnected() or not strikes:
-            return []
+            return OptionChainContractHydration(contracts=[])
 
         normalized_ticker = normalize_ticker(ticker)
         allowed_strikes = set(strikes)
+        deadline = monotonic() + max(0, self.hydration_timeout_seconds)
         contracts: list[ScannerOptionContract] = []
+        timed_out_strikes: set[float] = set()
+        invalid_strikes: set[float] = set()
         for right in OPTION_RIGHTS:
+            request_timeout = remaining_contract_timeout(
+                self.contract_timeout_seconds,
+                deadline,
+            )
+            if request_timeout <= 0 or (
+                stop_event is not None and stop_event.is_set()
+            ):
+                timed_out_strikes.update(allowed_strikes)
+                break
             try:
                 selection = fetch_standard_option_contracts(
                     self.app,
@@ -379,9 +403,14 @@ class IbOptionChainSnapshotProvider:
                     expiration,
                     allowed_strikes,
                     right,
-                    timeout_seconds=self.contract_timeout_seconds,
+                    timeout_seconds=request_timeout,
+                    stop_event=stop_event,
                 )
                 contracts.extend(selection.contracts)
+                resolved_strikes = {
+                    contract.strike for contract in selection.contracts
+                }
+                invalid_strikes.update(allowed_strikes - resolved_strikes)
             except OptionsDataUnavailable as error:
                 if not is_contract_timeout(error):
                     raise
@@ -392,17 +421,24 @@ class IbOptionChainSnapshotProvider:
                     expiration,
                     right,
                 )
-                contracts.extend(
-                    fetch_exact_chain_contracts(
-                        self.app,
-                        normalized_ticker,
-                        expiration,
-                        strikes,
-                        right,
-                        timeout_seconds=self.contract_timeout_seconds,
-                    )
+                hydration = fetch_exact_chain_contract_hydration(
+                    self.app,
+                    normalized_ticker,
+                    expiration,
+                    strikes,
+                    right,
+                    timeout_seconds=self.contract_timeout_seconds,
+                    deadline=deadline,
+                    stop_event=stop_event,
                 )
-        return select_chain_contracts(contracts)
+                contracts.extend(hydration.contracts)
+                timed_out_strikes.update(hydration.timed_out_strikes)
+                invalid_strikes.update(hydration.invalid_strikes)
+        return OptionChainContractHydration(
+            contracts=select_chain_contracts(contracts),
+            timed_out_strikes=frozenset(timed_out_strikes),
+            invalid_strikes=frozenset(invalid_strikes - timed_out_strikes),
+        )
 
     def fetch_chain_quotes(
         self,
@@ -443,7 +479,7 @@ class IbOptionChainStreamProvider:
         self,
         contracts: list[ScannerOptionContract],
         stop_event: Event,
-    ) -> Iterable[tuple[tuple[float, str], OptionQuote]]:
+    ) -> Iterable[list[tuple[tuple[float, str], OptionQuote]]]:
         if not self.app.isConnected() or not contracts:
             return
 
@@ -478,7 +514,8 @@ class IbOptionChainStreamProvider:
                         )
                     )
 
-                yield from changed_quotes
+                if changed_quotes:
+                    yield changed_quotes
                 logger.info(
                     "Option chain stream updates ticker=%s expiration=%s "
                     "changed_quotes=%s update_ms=%.1f",
@@ -759,6 +796,7 @@ def fetch_standard_option_contracts(
     right: str,
     *,
     timeout_seconds: float,
+    stop_event: Event | None = None,
 ) -> ScannerContractSelection:
     with app.lock:
         req_id = app.next_contract_details_req_id
@@ -775,7 +813,7 @@ def fetch_standard_option_contracts(
             right=right,
         ),
     )
-    completed = ready.wait(timeout=timeout_seconds)
+    completed = wait_for_contract_details(ready, timeout_seconds, stop_event)
     with app.lock:
         details = app.contract_details.pop(req_id, [])
         app.contract_details_ready_by_req_id.pop(req_id, None)
@@ -812,22 +850,54 @@ def fetch_exact_chain_contracts(
     *,
     timeout_seconds: float,
 ) -> list[ScannerOptionContract]:
+    return fetch_exact_chain_contract_hydration(
+        app,
+        ticker,
+        expiration,
+        strikes,
+        right,
+        timeout_seconds=timeout_seconds,
+    ).contracts
+
+
+def fetch_exact_chain_contract_hydration(
+    app: IbPortfolioApp,
+    ticker: str,
+    expiration: str,
+    strikes: list[float],
+    right: str,
+    *,
+    timeout_seconds: float,
+    deadline: float | None = None,
+    stop_event: Event | None = None,
+) -> OptionChainContractHydration:
     contracts: list[ScannerOptionContract] = []
-    for strike in strikes:
+    timed_out_strikes: set[float] = set()
+    invalid_strikes: set[float] = set()
+    for index, strike in enumerate(strikes):
+        request_timeout = remaining_contract_timeout(timeout_seconds, deadline)
+        if request_timeout <= 0 or (
+            stop_event is not None and stop_event.is_set()
+        ):
+            timed_out_strikes.update(strikes[index:])
+            break
         try:
-            contracts.extend(
-                fetch_exact_option_contracts(
-                    app,
-                    ticker,
-                    expiration,
-                    strike,
-                    right,
-                    timeout_seconds=timeout_seconds,
-                )
+            resolved_contracts = fetch_exact_option_contracts(
+                app,
+                ticker,
+                expiration,
+                strike,
+                right,
+                timeout_seconds=request_timeout,
+                stop_event=stop_event,
             )
+            contracts.extend(resolved_contracts)
+            if not resolved_contracts:
+                invalid_strikes.add(strike)
         except OptionsDataUnavailable as error:
             if not is_contract_timeout(error):
                 raise
+            timed_out_strikes.add(strike)
             logger.info(
                 "Exact option contract request timed out ticker=%s "
                 "expiration=%s strike=%s right=%s",
@@ -836,7 +906,11 @@ def fetch_exact_chain_contracts(
                 strike,
                 right,
             )
-    return contracts
+    return OptionChainContractHydration(
+        contracts=contracts,
+        timed_out_strikes=frozenset(timed_out_strikes),
+        invalid_strikes=frozenset(invalid_strikes),
+    )
 
 
 def fetch_exact_option_contracts(
@@ -847,6 +921,7 @@ def fetch_exact_option_contracts(
     right: str,
     *,
     timeout_seconds: float,
+    stop_event: Event | None = None,
 ) -> list[ScannerOptionContract]:
     with app.lock:
         req_id = app.next_contract_details_req_id
@@ -864,7 +939,7 @@ def fetch_exact_option_contracts(
             right=right,
         ),
     )
-    completed = ready.wait(timeout=timeout_seconds)
+    completed = wait_for_contract_details(ready, timeout_seconds, stop_event)
     with app.lock:
         details = app.contract_details.pop(req_id, [])
         app.contract_details_ready_by_req_id.pop(req_id, None)
@@ -887,6 +962,31 @@ def fetch_exact_option_contracts(
             right=right,
         )
     ]
+
+
+def remaining_contract_timeout(
+    timeout_seconds: float,
+    deadline: float | None,
+) -> float:
+    if deadline is None:
+        return timeout_seconds
+    return min(timeout_seconds, max(0, deadline - monotonic()))
+
+
+def wait_for_contract_details(
+    ready: Event,
+    timeout_seconds: float,
+    stop_event: Event | None,
+) -> bool:
+    deadline = monotonic() + max(0, timeout_seconds)
+    while not ready.is_set():
+        if stop_event is not None and stop_event.is_set():
+            return False
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            return False
+        ready.wait(timeout=min(remaining, 0.05))
+    return True
 
 
 def select_chain_contracts(

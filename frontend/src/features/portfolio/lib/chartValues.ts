@@ -1,10 +1,9 @@
 import { formatCurrency, formatNumber } from '@/lib/format'
 
-export type PortfolioChartMetricKey = 'portfolio_value' | 'amount_invested'
+export type PortfolioChartMetricKey = 'amount_invested'
 
 export type PortfolioChartValueInput = {
   month: string
-  portfolio_value: number | null
   amount_invested: number | null
 }
 
@@ -12,20 +11,13 @@ export type PortfolioMonthlyChartRow = PortfolioChartValueInput & {
   label: string
 }
 
-export type PortfolioSimpleYearChartRow = PortfolioChartValueInput & {
-  year: string
-  label: string
-}
-
 export type PortfolioChartValueDraftRow = {
   month: string
-  portfolio_value?: string | number | null
   amount_invested?: string | number | null
 }
 
 export type PortfolioChartValueValidationField =
   | 'month'
-  | 'portfolio_value'
   | 'amount_invested'
   | 'row'
 
@@ -37,7 +29,6 @@ export type PortfolioChartValueValidationIssue = {
 
 export type ParsedPortfolioChartValueDraftRow = {
   month: string
-  portfolio_value: number | null
   amount_invested: number | null
 }
 
@@ -49,39 +40,16 @@ const shortMonthFormatter = new Intl.DateTimeFormat('en-US', {
   year: '2-digit',
 })
 
-const fullMonthFormatter = new Intl.DateTimeFormat('en-US', {
-  month: 'short',
-  timeZone: 'UTC',
-  year: 'numeric',
-})
-
 export function normalizePortfolioChartValues(
   rows: PortfolioChartValueInput[],
 ): PortfolioMonthlyChartRow[] {
   return rows
     .map((row) => ({
       month: row.month,
-      portfolio_value: row.portfolio_value,
       amount_invested: row.amount_invested,
       label: formatMonthLabel(row.month),
     }))
     .sort(compareChartMonths)
-}
-
-export function toSimpleYearChartRows(
-  rows: PortfolioChartValueInput[],
-): PortfolioSimpleYearChartRow[] {
-  return normalizePortfolioChartValues(rows)
-    .filter(
-      (row) =>
-        row.month.endsWith('-12') &&
-        hasUsableValue(row.portfolio_value, row.amount_invested),
-    )
-    .map((row) => ({
-      ...row,
-      year: row.month.slice(0, 4),
-      label: formatFullMonthLabel(row.month),
-    }))
 }
 
 export function validatePortfolioChartValueRows(
@@ -109,16 +77,7 @@ export function validatePortfolioChartValueRows(
       monthsByValue.set(month, [...(monthsByValue.get(month) ?? []), index])
     }
 
-    const portfolioValue = parseDraftNumber(row.portfolio_value)
     const amountInvested = parseDraftNumber(row.amount_invested)
-
-    if (portfolioValue === 'invalid') {
-      issues.push({
-        index,
-        field: 'portfolio_value',
-        message: 'Portfolio value must be a valid number.',
-      })
-    }
 
     if (amountInvested === 'invalid') {
       issues.push({
@@ -128,11 +87,11 @@ export function validatePortfolioChartValueRows(
       })
     }
 
-    if (portfolioValue === null && amountInvested === null) {
+    if (amountInvested === null) {
       issues.push({
         index,
         field: 'row',
-        message: 'Portfolio value or amount invested is required.',
+        message: 'Amount invested is required.',
       })
     }
   })
@@ -164,7 +123,6 @@ export function parsePortfolioChartValueDraftRows(
   return rows
     .map((row) => ({
       month: row.month.trim(),
-      portfolio_value: validDraftNumber(row.portfolio_value),
       amount_invested: validDraftNumber(row.amount_invested),
     }))
     .sort(compareChartMonths)
@@ -176,10 +134,6 @@ export function isValidChartMonth(month: string) {
 
 export function formatMonthLabel(month: string) {
   return shortMonthFormatter.format(monthDate(month))
-}
-
-export function formatFullMonthLabel(month: string) {
-  return fullMonthFormatter.format(monthDate(month))
 }
 
 export function formatCompactCurrency(value: number | null, currency = 'USD') {
@@ -209,10 +163,6 @@ function compareChartMonths(
   second: PortfolioChartValueInput,
 ) {
   return first.month.localeCompare(second.month)
-}
-
-function hasUsableValue(...values: Array<number | null>) {
-  return values.some((value) => value !== null && Number.isFinite(value))
 }
 
 function parseDraftNumber(value: string | number | null | undefined) {

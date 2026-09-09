@@ -49,33 +49,18 @@ class OptionsScreenerScanManager:
     def __init__(
         self,
         settings_store: OptionsScreenerSettingsStore,
-        scan_services: (
-            Mapping[OptionsScreener, OptionsScreenerScanService]
-            | OptionsScreenerScanService
-        ),
-        quote_refresh_service: OptionsScreenerQuoteRefreshService | None = None,
-        spread_quote_refresh_service: OptionsScreenerSpreadQuoteRefreshService
-        | None = None,
+        scan_services: Mapping[OptionsScreener, OptionsScreenerScanService],
+        quote_refresh_service: OptionsScreenerQuoteRefreshService,
+        spread_quote_refresh_service: OptionsScreenerSpreadQuoteRefreshService,
         *,
         max_workers: int = 4,
         retention_minutes: int = 30,
         subscriber_queue_size: int = 64,
     ) -> None:
         self.settings_store = settings_store
-        if isinstance(scan_services, Mapping):
-            self.scan_services = dict(scan_services)
-            if quote_refresh_service is None or spread_quote_refresh_service is None:
-                raise ValueError("Quote refresh services are required.")
-            self.quote_refresh_service = quote_refresh_service
-            self.spread_quote_refresh_service = spread_quote_refresh_service
-        else:
-            self.scan_services = {
-                "csp": scan_services,
-                "cc": scan_services,
-                "cs": scan_services,
-            }
-            self.quote_refresh_service = scan_services
-            self.spread_quote_refresh_service = scan_services
+        self.scan_services = dict(scan_services)
+        self.quote_refresh_service = quote_refresh_service
+        self.spread_quote_refresh_service = spread_quote_refresh_service
         self.max_workers = max(1, max_workers)
         self.retention = timedelta(minutes=retention_minutes)
         self.subscriber_queue_size = max(1, subscriber_queue_size)

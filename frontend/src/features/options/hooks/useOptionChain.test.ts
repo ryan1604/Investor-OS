@@ -223,6 +223,12 @@ describe('useOptionChain', () => {
         message: null,
       })
       FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        row: { strike: 90, call: quote({ bid: 3 }), put: null },
+      })
+      FakeWebSocket.sockets[0].receive({
         type: 'snapshot',
         ticker: 'AAPL',
         expiration: '2026-06-19',
@@ -232,6 +238,10 @@ describe('useOptionChain', () => {
         ],
         message: null,
       })
+    })
+
+    act(() => {
+      animationFrameCallbacks.splice(0).forEach((callback) => callback(0))
     })
 
     expect(result.current.chain?.rows.map((row) => row.strike)).toEqual([
@@ -299,5 +309,38 @@ describe('useOptionChain', () => {
     unmount()
 
     expect(FakeWebSocket.sockets[1].closed).toBe(true)
+  })
+
+  it('pauses while hidden and reconnects once with the retained chain', async () => {
+    const { result, rerender } = renderHook(
+      ({ isActive }) =>
+        useOptionChain(analysis, '2026-06-19', false, isActive),
+      { initialProps: { isActive: true } },
+    )
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [{ strike: 100, call: quote({ bid: 1 }), put: null }],
+        message: null,
+      })
+    })
+    expect(result.current.chain?.rows[0].call?.bid).toBe(1)
+
+    rerender({ isActive: false })
+
+    expect(FakeWebSocket.sockets[0].closed).toBe(true)
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(result.current.chain?.rows[0].call?.bid).toBe(1)
+
+    rerender({ isActive: true })
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(2))
+    expect(FakeWebSocket.sockets[1].closed).toBe(false)
+    expect(result.current.chain?.rows[0].call?.bid).toBe(1)
   })
 })

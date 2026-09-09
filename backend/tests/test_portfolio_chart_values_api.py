@@ -17,12 +17,10 @@ def test_put_portfolio_chart_values_saves_and_gets_rows_by_account(tmp_path):
         "rows": [
             {
                 "month": "2026-03",
-                "portfolio_value": 1300.25,
-                "amount_invested": None,
+                "amount_invested": 1300.25,
             },
             {
                 "month": "2026-01",
-                "portfolio_value": None,
                 "amount_invested": 1000.0,
             },
         ],
@@ -52,11 +50,11 @@ def test_put_portfolio_chart_values_replaces_only_selected_account(tmp_path):
     with TestClient(api) as client:
         client.put(
             "/portfolio/chart-values?account=DU1234567",
-            json={"rows": [{"month": "2026-01", "portfolio_value": 1000.0}]},
+            json={"rows": [{"month": "2026-01", "amount_invested": 1000.0}]},
         )
         client.put(
             "/portfolio/chart-values?account=DU7654321",
-            json={"rows": [{"month": "2026-02", "portfolio_value": 2000.0}]},
+            json={"rows": [{"month": "2026-02", "amount_invested": 2000.0}]},
         )
         client.put(
             "/portfolio/chart-values?account=DU1234567",
@@ -85,7 +83,7 @@ def test_put_portfolio_chart_values_rejects_duplicate_months(tmp_path):
             "/portfolio/chart-values?account=DU1234567",
             json={
                 "rows": [
-                    {"month": "2026-01", "portfolio_value": 1000.0},
+                    {"month": "2026-01", "amount_invested": 1000.0},
                     {"month": "2026-01", "amount_invested": 900.0},
                 ],
             },
@@ -101,7 +99,7 @@ def test_put_portfolio_chart_values_rejects_invalid_month(tmp_path):
     with TestClient(api) as client:
         response = client.put(
             "/portfolio/chart-values?account=DU1234567",
-            json={"rows": [{"month": "2026-13", "portfolio_value": 1000.0}]},
+            json={"rows": [{"month": "2026-13", "amount_invested": 1000.0}]},
         )
 
     assert response.status_code == 422
@@ -118,7 +116,7 @@ def test_put_portfolio_chart_values_rejects_fully_blank_rows(tmp_path):
         )
 
     assert response.status_code == 422
-    assert "portfolio_value or amount_invested is required" in response.text
+    assert "amount_invested is required" in response.text
 
 
 def test_put_portfolio_chart_values_rejects_invalid_numbers(tmp_path):
@@ -127,7 +125,7 @@ def test_put_portfolio_chart_values_rejects_invalid_numbers(tmp_path):
     with TestClient(api) as client:
         response = client.put(
             "/portfolio/chart-values?account=DU1234567",
-            json={"rows": [{"month": "2026-01", "portfolio_value": "abc"}]},
+            json={"rows": [{"month": "2026-01", "amount_invested": "abc"}]},
         )
 
     assert response.status_code == 422
@@ -140,7 +138,7 @@ def test_portfolio_chart_values_requires_account(tmp_path):
         get_response = client.get("/portfolio/chart-values?account= ")
         put_response = client.put(
             "/portfolio/chart-values?account= ",
-            json={"rows": [{"month": "2026-01", "portfolio_value": 1000.0}]},
+            json={"rows": [{"month": "2026-01", "amount_invested": 1000.0}]},
         )
 
     assert get_response.status_code == 400
@@ -155,7 +153,7 @@ def test_live_portfolio_response_remains_separate_from_chart_values(tmp_path):
     with TestClient(api) as client:
         client.put(
             "/portfolio/chart-values?account=DU1234567",
-            json={"rows": [{"month": "2026-01", "portfolio_value": 1000.0}]},
+            json={"rows": [{"month": "2026-01", "amount_invested": 1000.0}]},
         )
         response = client.get("/portfolio")
 

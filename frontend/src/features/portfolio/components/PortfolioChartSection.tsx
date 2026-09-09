@@ -21,10 +21,6 @@ import {
   CollapsibleTrigger,
 } from '@/components/ui/collapsible'
 import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from '@/components/ui/toggle-group'
-import {
   PortfolioChartValuesEditor,
 } from '@/features/portfolio/components/PortfolioChartValuesEditor'
 import {
@@ -32,15 +28,12 @@ import {
   formatTooltipCurrency,
   normalizePortfolioChartValues,
   parsePortfolioChartValueDraftRows,
-  toSimpleYearChartRows,
   type PortfolioChartValueDraftRow,
   type PortfolioChartValueInput,
   type PortfolioChartMetricKey,
   type PortfolioMonthlyChartRow,
-  type PortfolioSimpleYearChartRow,
 } from '@/features/portfolio/lib/chartValues'
 
-type PortfolioChartViewMode = 'advanced' | 'simple'
 
 type PortfolioChartSectionProps = {
   account: string | undefined
@@ -53,10 +46,6 @@ type PortfolioChartSectionProps = {
 }
 
 const chartConfig = {
-  portfolio_value: {
-    label: 'Portfolio value',
-    color: 'var(--chart-portfolio-value)',
-  },
   amount_invested: {
     label: 'Amount invested',
     color: 'var(--chart-amount-invested)',
@@ -72,11 +61,11 @@ export function PortfolioChartSection({
   onSaveRows,
   rows,
 }: PortfolioChartSectionProps) {
-  const [viewMode, setViewMode] = useState<PortfolioChartViewMode>('advanced')
   const [isEditorOpen, setIsEditorOpen] = useState(false)
   const [draftRows, setDraftRows] = useState<PortfolioChartValueDraftRow[]>([])
   const [saveError, setSaveError] = useState<string | null>(null)
   const accountRef = useRef(account)
+  const initialized = useRef(false)
   const previewRows = useMemo(
     () => editorPreviewRows(isEditorOpen, draftRows, rows),
     [isEditorOpen, draftRows, rows],
@@ -85,14 +74,14 @@ export function PortfolioChartSection({
     () => normalizePortfolioChartValues(previewRows),
     [previewRows],
   )
-  const yearlyRows = useMemo(
-    () => toSimpleYearChartRows(previewRows),
-    [previewRows],
-  )
   const hasSavedValues = monthlyRows.length > 0
 
   useEffect(() => {
     accountRef.current = account
+    if (!initialized.current) {
+      initialized.current = true
+      return
+    }
     Promise.resolve().then(() => {
       setIsEditorOpen(false)
       setDraftRows(savedRowsToDraftRows(rows))
@@ -124,7 +113,7 @@ export function PortfolioChartSection({
   const handleAddDraftRow = () => {
     setDraftRows((currentRows) => [
       ...currentRows,
-      { month: '', portfolio_value: '', amount_invested: '' },
+      { month: '', amount_invested: '' },
     ])
   }
 
@@ -165,29 +154,14 @@ export function PortfolioChartSection({
   return (
     <Collapsible open={isEditorOpen} onOpenChange={handleEditorOpenChange}>
       <Card className="mt-6" data-testid="portfolio-chart-section">
-        <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <CardHeader className="gap-3 sm:flex sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
-            <CardTitle className="text-base">Portfolio history</CardTitle>
+            <CardTitle className="text-base">Amount invested</CardTitle>
             <div className="mt-1 text-sm text-muted-foreground">
               {account ? account : 'Select an account'}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
-            <ToggleGroup
-              type="single"
-              value={viewMode}
-              onValueChange={(value) => {
-                if (value === 'advanced' || value === 'simple') {
-                  setViewMode(value)
-                }
-              }}
-              variant="outline"
-              size="sm"
-              aria-label="Portfolio chart view"
-            >
-              <ToggleGroupItem value="advanced">Advanced</ToggleGroupItem>
-              <ToggleGroupItem value="simple">Simple</ToggleGroupItem>
-            </ToggleGroup>
             <CollapsibleTrigger asChild>
               <Button
                 type="button"
@@ -196,7 +170,7 @@ export function PortfolioChartSection({
                 disabled={!account}
               >
                 <Pencil className="size-4" />
-                Edit values
+                Edit amount invested
               </Button>
             </CollapsibleTrigger>
           </div>
@@ -207,28 +181,10 @@ export function PortfolioChartSection({
           ) : isLoading ? (
             <PortfolioChartEmptyState message="Loading saved values..." />
           ) : hasSavedValues ? (
-            viewMode === 'advanced' ? (
-              <div className="grid gap-4 xl:grid-cols-2">
-                <MetricBarChart
-                  currency={currency}
-                  data={monthlyRows}
-                  metric="portfolio_value"
-                  title="Portfolio value"
-                />
-                <MetricBarChart
-                  currency={currency}
-                  data={monthlyRows}
-                  metric="amount_invested"
-                  title="Amount invested"
-                />
-              </div>
-            ) : yearlyRows.length ? (
-              <GroupedYearlyBarChart currency={currency} data={yearlyRows} />
-            ) : (
-              <PortfolioChartEmptyState message="No December values saved yet." />
-            )
+            <MetricBarChart currency={currency} data={monthlyRows}
+              metric="amount_invested" />
           ) : (
-            <PortfolioChartEmptyState message="No saved portfolio history yet." />
+            <PortfolioChartEmptyState message="No monthly amount invested saved yet." />
           )}
 
           <CollapsibleContent>
@@ -258,19 +214,16 @@ function MetricBarChart({
   currency,
   data,
   metric,
-  title,
 }: {
   currency: string
   data: PortfolioMonthlyChartRow[]
   metric: PortfolioChartMetricKey
-  title: string
 }) {
   return (
-    <section className="min-w-0 rounded-lg border bg-card/50 p-3">
-      <h3 className="text-sm font-medium">{title}</h3>
+    <section className="min-w-0" aria-label="Amount invested chart">
       <ChartContainer
         config={chartConfig}
-        className="mt-3 h-72 w-full"
+        className="h-72 w-full"
         initialDimension={{ width: 520, height: 288 }}
       >
         <BarChart accessibilityLayer data={data} margin={{ left: 8, right: 8 }}>
@@ -308,61 +261,6 @@ function MetricBarChart({
   )
 }
 
-function GroupedYearlyBarChart({
-  currency,
-  data,
-}: {
-  currency: string
-  data: PortfolioSimpleYearChartRow[]
-}) {
-  return (
-    <section className="min-w-0 rounded-lg border bg-card/50 p-3">
-      <h3 className="text-sm font-medium">End-of-year values</h3>
-      <ChartContainer
-        config={chartConfig}
-        className="mt-3 h-80 w-full"
-        initialDimension={{ width: 760, height: 320 }}
-      >
-        <BarChart accessibilityLayer data={data} margin={{ left: 8, right: 8 }}>
-          <CartesianGrid vertical={false} />
-          <XAxis
-            dataKey="label"
-            tickLine={false}
-            axisLine={false}
-            tickMargin={8}
-          />
-          <YAxis
-            tickFormatter={(value) => formatCompactCurrency(value, currency)}
-            tickLine={false}
-            axisLine={false}
-            width={72}
-          />
-          <ChartTooltip
-            cursor={false}
-            content={
-              <ChartTooltipContent
-                formatter={(value) =>
-                  formatTooltipCurrency(Number(value), currency)
-                }
-              />
-            }
-          />
-          <Bar
-            dataKey="portfolio_value"
-            fill="var(--color-portfolio_value)"
-            radius={[4, 4, 0, 0]}
-          />
-          <Bar
-            dataKey="amount_invested"
-            fill="var(--color-amount_invested)"
-            radius={[4, 4, 0, 0]}
-          />
-        </BarChart>
-      </ChartContainer>
-    </section>
-  )
-}
-
 function PortfolioChartEmptyState({ message }: { message: string }) {
   return (
     <div className="flex min-h-48 items-center justify-center rounded-lg border border-dashed bg-muted/20 px-4 text-center text-sm text-muted-foreground">
@@ -374,7 +272,6 @@ function PortfolioChartEmptyState({ message }: { message: string }) {
 function savedRowsToDraftRows(rows: PortfolioChartValue[]) {
   return normalizePortfolioChartValues(rows).map((row) => ({
     month: row.month,
-    portfolio_value: row.portfolio_value?.toString() ?? '',
     amount_invested: row.amount_invested?.toString() ?? '',
   }))
 }

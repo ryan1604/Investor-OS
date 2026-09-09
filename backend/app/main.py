@@ -5,6 +5,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
+from app.day_trading_tracker.routes import router as day_trading_tracker_router
+from app.day_trading_tracker.store import DayTradingTrackerStore
 from app.earnings_watch.provider import (
     AlphaVantageEarningsCalendarClient,
     EarningsCalendarProvider,
@@ -36,6 +38,9 @@ from app.orders.service import (
 )
 from app.orders.store import OrderStore
 from app.portfolio.chart_values_store import PortfolioChartValuesStore
+from app.portfolio.nav_store import DailyNavStore
+from app.portfolio.flex import FlexClient
+from app.portfolio.nav_sync import NavSyncService
 from app.portfolio.routes import router as portfolio_router
 from app.portfolio.service import (
     PortfolioRefreshService,
@@ -97,7 +102,16 @@ def create_app(
         app.state.portfolio_refresh_service.start()
         with suppress(OrderServiceUnavailable, OrderServiceValidationError):
             app.state.order_service.reconcile_from_ib()
-        yield
+        app.state.portfolio_nav_sync = NavSyncService(
+            app.state.portfolio_nav_store,
+            FlexClient(app_settings.ibkr_flex_token, app_settings.ibkr_flex_query_id)
+            if app_settings.ibkr_flex_configured else None,
+        )
+        app.state.portfolio_nav_sync.start()
+        try:
+            yield
+        finally:
+            await app.state.portfolio_nav_sync.stop()
         await app.state.portfolio_refresh_service.stop()
         app.state.options_screener_scan_manager.shutdown()
         if hasattr(app.state.options_client, "shutdown"):
@@ -119,6 +133,7 @@ def create_app(
     api.include_router(options_router)
     api.include_router(options_screeners_router)
     api.include_router(options_trade_tracker_router)
+    api.include_router(day_trading_tracker_router)
     api.include_router(orders_router)
     api.include_router(stock_analysis_router)
     api.include_router(earnings_watch_router)
@@ -136,8 +151,14 @@ def setup_stores(
     app.state.portfolio_chart_values_store = PortfolioChartValuesStore(
         settings.portfolio_chart_values_database_path,
     )
+    app.state.portfolio_nav_store = DailyNavStore(
+        settings.portfolio_chart_values_database_path,
+    )
     app.state.options_trade_tracker_store = OptionsTradeTrackerStore(
         settings.options_trade_trackers_database_path,
+    )
+    app.state.day_trading_tracker_store = DayTradingTrackerStore(
+        settings.day_trading_tracker_database_path,
     )
     app.state.options_screener_settings_store = OptionsScreenerSettingsStore(
         settings.options_screeners_database_path,

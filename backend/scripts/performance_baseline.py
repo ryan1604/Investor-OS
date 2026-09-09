@@ -146,6 +146,9 @@ class BaselineOptionsClient:
             selected_expiration=EXPIRATION,
         )
 
+    def get_underlying_price(self, ticker: str) -> float:
+        return 192.5
+
     def get_chain(self, ticker: str, expiration: str) -> OptionChainResponse:
         def build_chain() -> OptionChainResponse:
             return OptionChainResponse(
@@ -221,6 +224,21 @@ class BaselineIbOrderApp:
         self.cancelled_orders.append((order_id, manual_cancel_order_time))
 
     def add_order_status_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def add_execution_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def add_execution_end_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def add_completed_order_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def add_completed_orders_end_listener(self, listener) -> None:
+        self.listeners.append(listener)
+
+    def add_open_order_end_listener(self, listener) -> None:
         self.listeners.append(listener)
 
     def register_submitted_order(self, order_id: int) -> None:

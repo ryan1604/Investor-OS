@@ -158,6 +158,31 @@ describe('useOptionsChartStream', () => {
     expect(result.current.error).toBeNull()
   })
 
+  it('pauses while hidden and reconnects once with retained chart state', () => {
+    const { result, rerender } = renderHook(
+      ({ isActive }) => useOptionsChartStream(analysis, isActive),
+      { initialProps: { isActive: true } },
+    )
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive(update)
+    })
+    expect(result.current.analysis?.underlying_price).toBe(103)
+
+    rerender({ isActive: false })
+
+    expect(FakeWebSocket.sockets[0].closed).toBe(true)
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(result.current.analysis?.underlying_price).toBe(103)
+    expect(result.current.error).toBeNull()
+
+    rerender({ isActive: true })
+
+    expect(FakeWebSocket.sockets).toHaveLength(2)
+    expect(FakeWebSocket.sockets[1].closed).toBe(false)
+    expect(result.current.analysis?.underlying_price).toBe(103)
+  })
+
   it('does not show a disconnected error during Strict Mode effect replay', () => {
     const wrapper = ({ children }: { children: ReactNode }) =>
       createElement(StrictMode, null, children)

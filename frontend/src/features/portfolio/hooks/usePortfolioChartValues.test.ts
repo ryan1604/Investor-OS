@@ -17,7 +17,7 @@ describe('usePortfolioChartValues', () => {
         new Response(
           JSON.stringify({
             account: 'DU1234567',
-            rows: [{ month: '2026-01', portfolio_value: 1000 }],
+            rows: [{ month: '2026-01', amount_invested: 1000 }],
           }),
           {
             status: 200,
@@ -90,7 +90,7 @@ describe('usePortfolioChartValues', () => {
 
     secondLoad.resolve(chartValuesResponse('ACCOUNT-B', '2026-02', 2_000))
     await waitFor(() => {
-      expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+      expect(result.current.rows[0]?.amount_invested).toBe(2_000)
     })
 
     firstLoad.resolve(chartValuesResponse('ACCOUNT-A', '2026-01', 1_000))
@@ -98,7 +98,7 @@ describe('usePortfolioChartValues', () => {
       await firstLoad.promise
     })
 
-    expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+    expect(result.current.rows[0]?.amount_invested).toBe(2_000)
   })
 
   it('clears rows when there is no selected account', () => {
@@ -127,8 +127,8 @@ describe('usePortfolioChartValues', () => {
             rows: [
               {
                 month: '2026-01',
-                portfolio_value: 1000,
-                amount_invested: null,
+
+                amount_invested: 1000,
                 updated_at: '2026-06-06T00:00:00+00:00',
               },
             ],
@@ -151,8 +151,8 @@ describe('usePortfolioChartValues', () => {
       await result.current.saveRows([
         {
           month: '2026-01',
-          portfolio_value: 1000,
-          amount_invested: null,
+
+          amount_invested: 1000,
         },
       ])
     })
@@ -167,8 +167,8 @@ describe('usePortfolioChartValues', () => {
           rows: [
             {
               month: '2026-01',
-              portfolio_value: 1000,
-              amount_invested: null,
+
+              amount_invested: 1000,
             },
           ],
         }),
@@ -192,19 +192,19 @@ describe('usePortfolioChartValues', () => {
       { initialProps: { account: 'ACCOUNT-A' as string | undefined } },
     )
     await waitFor(() => {
-      expect(result.current.rows[0]?.portfolio_value).toBe(1_000)
+      expect(result.current.rows[0]?.amount_invested).toBe(1_000)
     })
 
     let pendingSave: Promise<unknown>
     act(() => {
       pendingSave = result.current.saveRows([
-        { month: '2026-01', portfolio_value: 1_500 },
+        { month: '2026-01', amount_invested: 1_500 },
       ])
     })
     rerender({ account: 'ACCOUNT-B' })
 
     await waitFor(() => {
-      expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+      expect(result.current.rows[0]?.amount_invested).toBe(2_000)
     })
     expect(
       (fetchMock.mock.calls[1][1] as { signal: AbortSignal }).signal.aborted,
@@ -215,7 +215,7 @@ describe('usePortfolioChartValues', () => {
       await pendingSave
     })
 
-    expect(result.current.rows[0]?.portfolio_value).toBe(2_000)
+    expect(result.current.rows[0]?.amount_invested).toBe(2_000)
     expect(result.current.isSaving).toBe(false)
   })
 })
@@ -227,8 +227,8 @@ function chartValuesResponse(account: string, month: string, value: number) {
       rows: [
         {
           month,
-          portfolio_value: value,
-          amount_invested: null,
+
+          amount_invested: value,
           updated_at: '2026-06-06T00:00:00+00:00',
         },
       ],

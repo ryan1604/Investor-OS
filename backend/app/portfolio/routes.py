@@ -1,6 +1,9 @@
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from app.portfolio.chart_values_store import PortfolioChartValue
+from app.portfolio.nav_store import DailyNavResponse
 from app.schemas import (
     PortfolioChartValueResponse,
     PortfolioChartValuesRequest,
@@ -10,6 +13,32 @@ from app.schemas import (
 )
 
 router = APIRouter()
+
+
+@router.get("/portfolio/nav/accounts", response_model=list[str])
+def portfolio_nav_accounts(request: Request) -> list[str]:
+    return request.app.state.portfolio_nav_store.list_accounts()
+
+
+@router.get("/portfolio/nav", response_model=DailyNavResponse)
+def portfolio_nav(request: Request, account: str = Query(...)) -> DailyNavResponse:
+    result = request.app.state.portfolio_nav_store.history(
+        required_account(account),
+        configured=request.app.state.settings.ibkr_flex_configured,
+    )
+    service = request.app.state.portfolio_nav_sync
+    if result.sync.configured:
+        result.sync.error = service.error or result.sync.error
+        target = datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=1)
+        while target.weekday() > 4:
+            target -= timedelta(days=1)
+        result.sync.state = (
+            "syncing" if service.syncing else
+            "failed" if result.sync.error else
+            "pending" if not result.latest_report_date else
+            "current" if result.latest_report_date >= target.isoformat() else "stale"
+        )
+    return result
 
 
 @router.get("/portfolio", response_model=PortfolioResponse)
@@ -43,7 +72,6 @@ def replace_portfolio_chart_values(
         PortfolioChartValue(
             account=normalized_account,
             month=row.month,
-            portfolio_value=row.portfolio_value,
             amount_invested=row.amount_invested,
             updated_at="",
         )
@@ -89,7 +117,6 @@ def portfolio_chart_value_response(
 ) -> PortfolioChartValueResponse:
     return PortfolioChartValueResponse(
         month=value.month,
-        portfolio_value=value.portfolio_value,
         amount_invested=value.amount_invested,
         updated_at=value.updated_at,
     )

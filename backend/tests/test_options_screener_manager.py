@@ -76,6 +76,16 @@ class FakeScanService:
         )
 
 
+def scan_manager(store, service, **kwargs):
+    return OptionsScreenerScanManager(
+        store,
+        {"csp": service, "cc": service, "cs": service},
+        service,
+        service,
+        **kwargs,
+    )
+
+
 def test_scan_captures_settings_and_processes_all_tickers_with_bounded_work(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL", "MSFT", "NVDA", "AMD", "META"])
@@ -84,7 +94,7 @@ def test_scan_captures_settings_and_processes_all_tickers_with_bounded_work(tmp_
     service.results["AAPL"] = OptionsScreenerTickerResult(
         candidates=[candidate("AAPL")]
     )
-    manager = OptionsScreenerScanManager(store, service, max_workers=2)
+    manager = scan_manager(store, service, max_workers=2)
 
     job = manager.start("csp")
     store.replace_ticker_list("csp_cc", ["CHANGED"])
@@ -108,7 +118,7 @@ def test_only_one_scan_runs_globally(tmp_path):
     store.replace_ticker_list("csp_cc", ["AAPL"])
     service = FakeScanService()
     service.release.clear()
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     active = manager.start("csp")
     assert service.started.wait(1)
@@ -140,7 +150,7 @@ def test_all_screeners_share_job_limit_but_keep_tickers_filters_and_snapshots_is
     service.results["AAPL"] = OptionsScreenerTickerResult(
         candidates=[candidate("AAPL")]
     )
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     csp = wait_for_terminal(manager, manager.start("csp").id)
     service.results["AAPL"] = OptionsScreenerTickerResult(
@@ -177,7 +187,7 @@ def test_ticker_failures_count_as_terminal_without_failing_job(tmp_path):
         candidates=[candidate("AAPL")]
     )
     service.failures["FAIL"] = "market unavailable"
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     completed = wait_for_terminal(manager, manager.start("csp").id)
 
@@ -197,7 +207,7 @@ def test_cancelled_and_fatal_scans_preserve_previous_snapshot(tmp_path):
         candidates=[candidate("AAPL")]
     )
     service.failures["FAIL"] = "market unavailable"
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     first = wait_for_terminal(manager, manager.start("csp").id)
     previous = manager.completed_snapshot("csp")
@@ -226,7 +236,7 @@ def test_cancelled_and_fatal_scans_preserve_previous_snapshot(tmp_path):
 
 def test_concurrent_publishers_replace_events_in_full_subscriber_queue(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
-    manager = OptionsScreenerScanManager(
+    manager = scan_manager(
         store,
         FakeScanService(),
         subscriber_queue_size=1,
@@ -266,7 +276,7 @@ def test_successful_zero_match_scan_replaces_previous_snapshot(tmp_path):
     service.results["AAPL"] = OptionsScreenerTickerResult(
         candidates=[candidate("AAPL")]
     )
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     first = wait_for_terminal(manager, manager.start("csp").id)
     service.results.clear()
@@ -286,7 +296,7 @@ def test_cancelled_and_failed_jobs_expire_but_active_jobs_do_not(tmp_path):
     store = OptionsScreenerSettingsStore(tmp_path / "settings.sqlite3")
     store.replace_ticker_list("csp_cc", ["AAPL"])
     service = FakeScanService()
-    manager = OptionsScreenerScanManager(store, service, retention_minutes=30)
+    manager = scan_manager(store, service, retention_minutes=30)
     service.prepare_error = RuntimeError("fatal")
     failed = wait_for_terminal(manager, manager.start("csp").id)
     with manager.lock:
@@ -315,10 +325,10 @@ def test_new_manager_has_no_jobs_or_completed_snapshots(tmp_path):
     service.results["AAPL"] = OptionsScreenerTickerResult(
         candidates=[candidate("AAPL")]
     )
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
     wait_for_terminal(manager, manager.start("csp").id)
 
-    restarted = OptionsScreenerScanManager(store, FakeScanService())
+    restarted = scan_manager(store, FakeScanService())
     state = restarted.state()
 
     assert state.active_job is None
@@ -346,7 +356,7 @@ def test_completed_scan_keeps_total_matches_and_global_top_500(tmp_path):
             for index in range(300)
         ]
     )
-    manager = OptionsScreenerScanManager(store, service)
+    manager = scan_manager(store, service)
 
     completed = wait_for_terminal(manager, manager.start("csp").id)
     snapshot = manager.completed_snapshot("csp")
@@ -365,7 +375,7 @@ def test_large_deterministic_ticker_universe_stays_within_worker_bound(tmp_path)
     tickers = [f"T{index:03d}" for index in range(120)]
     store.replace_ticker_list("csp_cc", tickers)
     service = FakeScanService()
-    manager = OptionsScreenerScanManager(store, service, max_workers=4)
+    manager = scan_manager(store, service, max_workers=4)
 
     completed = wait_for_terminal(manager, manager.start("csp").id)
 

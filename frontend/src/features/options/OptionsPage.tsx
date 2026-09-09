@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useState,
 } from 'react'
@@ -35,6 +36,7 @@ import { chartOverlays } from '@/features/options/lib/chartOverlays'
 
 type OptionsPageProps = {
   accounts: string[]
+  isActive?: boolean
   orders: OrderRecord[]
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
@@ -43,6 +45,7 @@ type OptionsPageProps = {
 
 export function OptionsPage({
   accounts,
+  isActive = true,
   orders,
   portfolio,
   selectedAccount,
@@ -69,11 +72,12 @@ export function OptionsPage({
     analysis,
     error: chartStreamError,
     latestUpdate: latestChartUpdate,
-  } = useOptionsChartStream(initialAnalysis)
+  } = useOptionsChartStream(initialAnalysis, isActive)
   const { chain, chainError, isChainLoading } = useOptionChain(
     analysis,
     selectedExpiration,
     isLoading,
+    isActive,
   )
   const overlays = useMemo(() => {
     if (!analysis) {
@@ -111,6 +115,15 @@ export function OptionsPage({
   }, [])
 
   useSyncedChartRange(priceChart, rsiChart)
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+
+    priceChart?.timeScale().fitContent()
+    rsiChart?.timeScale().fitContent()
+  }, [isActive, priceChart, rsiChart])
 
   return (
     <main className="flex min-w-0 w-full flex-col gap-6">

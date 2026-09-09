@@ -42,9 +42,6 @@ class HistoricalProvider:
 
 
 class MetadataProvider:
-    def fetch_expirations(self, ticker):
-        return self.fetch_option_metadata(ticker).expirations
-
     def fetch_option_metadata(self, ticker):
         return OptionMetadata(
             expirations=[

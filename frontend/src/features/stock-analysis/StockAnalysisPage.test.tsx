@@ -175,6 +175,106 @@ describe('StockAnalysisPage', () => {
     expect(screen.getByText('Unsaved changes')).toBeTruthy()
   })
 
+  it('syncs first-year editable valuation inputs across all cases', async () => {
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AMD'))
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AMD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AMD valuation model')
+
+    const bullRevenueInput = screen.getByLabelText(
+      'Bull case Revenue Year 1',
+    ) as HTMLInputElement
+
+    fireEvent.focus(bullRevenueInput)
+    fireEvent.change(bullRevenueInput, {
+      target: { value: '500' },
+    })
+    fireEvent.blur(bullRevenueInput)
+
+    expect(bullRevenueInput.value).toBe('$500.00')
+    expect(
+      (screen.getByLabelText('Base case Revenue Year 1') as HTMLInputElement)
+        .value,
+    ).toBe('$500.00')
+    expect(
+      (screen.getByLabelText('Bear case Revenue Year 1') as HTMLInputElement)
+        .value,
+    ).toBe('$500.00')
+  })
+
+  it('keeps later-year editable valuation inputs scoped to one case', async () => {
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AMD'))
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AMD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AMD valuation model')
+
+    const bullRevenueGrowthInput = screen.getByLabelText(
+      'Bull case Revenue growth Year 2',
+    ) as HTMLInputElement
+
+    fireEvent.focus(bullRevenueGrowthInput)
+    fireEvent.change(bullRevenueGrowthInput, {
+      target: { value: '12' },
+    })
+    fireEvent.blur(bullRevenueGrowthInput)
+
+    expect(bullRevenueGrowthInput.value).toBe('12.00%')
+    expect(
+      (
+        screen.getByLabelText(
+          'Base case Revenue growth Year 2',
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('')
+    expect(
+      (
+        screen.getByLabelText(
+          'Bear case Revenue growth Year 2',
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('')
+  })
+
+  it('keeps first-year valuation multiples scoped to one case', async () => {
+    vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('AMD'))
+
+    render(<StockAnalysisPage />)
+
+    fireEvent.change(screen.getByLabelText('Ticker'), {
+      target: { value: 'AMD' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /search/i }))
+    await screen.findByText('AMD valuation model')
+
+    const bullPriceToSalesInput = screen.getByLabelText(
+      'Bull case P/S Year 1',
+    ) as HTMLInputElement
+
+    fireEvent.focus(bullPriceToSalesInput)
+    fireEvent.change(bullPriceToSalesInput, {
+      target: { value: '8' },
+    })
+    fireEvent.blur(bullPriceToSalesInput)
+
+    expect(bullPriceToSalesInput.value).toBe('8.00')
+    expect(
+      (screen.getByLabelText('Base case P/S Year 1') as HTMLInputElement).value,
+    ).toBe('')
+    expect(
+      (screen.getByLabelText('Bear case P/S Year 1') as HTMLInputElement).value,
+    ).toBe('')
+  })
+
   it('renders EBITDA rows and compact valuation metric labels', async () => {
     vi.mocked(fetchStockAnalysisModel).mockResolvedValue(emptyResponse('ADBE'))
 

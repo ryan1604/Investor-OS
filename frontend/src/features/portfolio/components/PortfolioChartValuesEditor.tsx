@@ -55,7 +55,7 @@ export function PortfolioChartValuesEditor({
   return (
     <div className="mt-4 rounded-lg border bg-muted/15 p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div className="text-sm font-medium">Manual monthly values</div>
+        <div className="text-sm font-medium">Monthly amount invested</div>
         <Button type="button" size="sm" variant="outline" onClick={onAddRow}>
           <Plus className="size-4" />
           Add month
@@ -67,7 +67,6 @@ export function PortfolioChartValuesEditor({
           <TableHeader>
             <TableRow>
               <TableHead className="min-w-36">Month</TableHead>
-              <TableHead className="min-w-44">Portfolio value</TableHead>
               <TableHead className="min-w-44">Amount invested</TableHead>
               <TableHead className="w-16 text-right">Actions</TableHead>
             </TableRow>
@@ -82,17 +81,6 @@ export function PortfolioChartValuesEditor({
                     value={row.month}
                     onChange={(event) =>
                       onChangeRow(index, 'month', event.target.value)
-                    }
-                  />
-                </TableCell>
-                <TableCell>
-                  <Input
-                    aria-label={`Portfolio value ${index + 1}`}
-                    inputMode="decimal"
-                    placeholder="125000"
-                    value={row.portfolio_value ?? ''}
-                    onChange={(event) =>
-                      onChangeRow(index, 'portfolio_value', event.target.value)
                     }
                   />
                 </TableCell>

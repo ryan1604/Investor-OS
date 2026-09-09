@@ -76,7 +76,7 @@ export function EarningsWatchPage() {
     EarningsWatchRow[] | null
   >(null)
   const [sort, setSort] = useState<EarningsWatchSort>({
-    key: 'ticker',
+    key: 'earnings_date',
     direction: 'asc',
   })
   const rowsRef = useRef(rows)

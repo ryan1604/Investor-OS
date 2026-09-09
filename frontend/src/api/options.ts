@@ -105,19 +105,6 @@ export async function fetchOptionsAnalysis(ticker: string, signal?: AbortSignal)
   )
 }
 
-export async function fetchOptionChain(
-  ticker: string,
-  expiration: string,
-  signal?: AbortSignal,
-) {
-  const params = new URLSearchParams({ expiration })
-  return requestJson<OptionChainResponse>(
-    `/options/${tickerPathSegment(ticker)}/chain?${params}`,
-    'Option chain',
-    { signal },
-  )
-}
-
 export async function fetchOptionExpirations(ticker: string, signal?: AbortSignal) {
   return requestJson<OptionExpirationsResponse>(
     `/options/${tickerPathSegment(ticker)}/expirations`,

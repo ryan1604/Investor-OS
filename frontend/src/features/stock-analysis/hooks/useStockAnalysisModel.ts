@@ -14,6 +14,7 @@ import type { EditingCell } from '@/features/stock-analysis/components/ScenarioV
 import {
   calculateValuationModel,
   createEmptyValuationModel,
+  SCENARIO_KEYS,
   stockAnalysisValuationModelFromPayload,
   type EditableRowKey,
   type ScenarioKey,
@@ -337,6 +338,25 @@ function updateScenarioInput(
   yearIndex: YearIndex,
   value: string,
 ): StockAnalysisValuationModel {
+  const parsedValue = parseCellValue(value)
+
+  if (yearIndex === 0 && !isScenarioSpecificFirstYearRow(row)) {
+    return {
+      ...model,
+      scenarios: Object.fromEntries(
+        SCENARIO_KEYS.map((scenarioKey) => [
+          scenarioKey,
+          {
+            ...model.scenarios[scenarioKey],
+            [row]: model.scenarios[scenarioKey][row].map((currentValue, index) =>
+              index === yearIndex ? parsedValue : currentValue,
+            ) as ValuationYearValues,
+          },
+        ]),
+      ) as StockAnalysisValuationModel['scenarios'],
+    }
+  }
+
   return {
     ...model,
     scenarios: {
@@ -344,11 +364,21 @@ function updateScenarioInput(
       [scenario]: {
         ...model.scenarios[scenario],
         [row]: model.scenarios[scenario][row].map((currentValue, index) =>
-          index === yearIndex ? parseCellValue(value) : currentValue,
+          index === yearIndex ? parsedValue : currentValue,
         ) as ValuationYearValues,
       },
     },
   }
+}
+
+function isScenarioSpecificFirstYearRow(row: EditableRowKey) {
+  return (
+    row === 'priceToSales' ||
+    row === 'peEstimateLow' ||
+    row === 'priceToEbitda' ||
+    row === 'priceToOperatingCashFlow' ||
+    row === 'priceToFreeCashFlow'
+  )
 }
 
 function toStockAnalysisPayload(

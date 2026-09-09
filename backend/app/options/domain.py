@@ -107,33 +107,8 @@ def expiration_sort_key(expiration: str) -> date:
         return date.max
 
 
-def bounded_strikes(
-    strikes: list[float],
-    underlying_price: float | None,
-    *,
-    range_percent: float = 0.3,
-    minimum_count: int = 7,
-) -> list[float]:
-    sorted_strikes = sorted({strike for strike in strikes if strike > 0})
-    if not sorted_strikes or underlying_price is None or underlying_price <= 0:
-        return sorted_strikes
-
-    lower_bound = underlying_price * (1 - range_percent)
-    upper_bound = underlying_price * (1 + range_percent)
-    bounded = [
-        strike
-        for strike in sorted_strikes
-        if lower_bound <= strike <= upper_bound
-    ]
-
-    if len(bounded) >= minimum_count or len(sorted_strikes) <= minimum_count:
-        return bounded
-
-    by_atm_distance = sorted(
-        sorted_strikes,
-        key=lambda strike: (abs(strike - underlying_price), strike),
-    )
-    return sorted(by_atm_distance[:minimum_count])
+def option_chain_strikes(strikes: list[float]) -> list[float]:
+    return sorted({strike for strike in strikes if strike > 0})
 
 
 def option_chain_rows(
@@ -169,18 +144,6 @@ def option_quote_above_minimum(quote: OptionQuote | None) -> bool:
     if quote is None:
         return False
     return quote.delta is not None and abs(quote.delta) > MIN_OPTION_CHAIN_DELTA
-
-
-def option_chain_has_delta_window(
-    strikes: list[float],
-    quotes: dict[tuple[float, str], OptionQuote],
-) -> bool:
-    lower_bound, upper_bound = option_chain_delta_bounds(sorted(strikes), quotes)
-    return (
-        lower_bound is not None
-        and upper_bound is not None
-        and lower_bound <= upper_bound
-    )
 
 
 def option_chain_delta_bounds(

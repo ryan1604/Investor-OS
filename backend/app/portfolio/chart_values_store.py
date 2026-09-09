@@ -10,7 +10,6 @@ from app.sqlite import RowDatabase
 class PortfolioChartValue:
     account: str
     month: str
-    portfolio_value: float | None
     amount_invested: float | None
     updated_at: str
 
@@ -27,7 +26,6 @@ class PortfolioChartValuesStore(RowDatabase):
                 CREATE TABLE IF NOT EXISTS portfolio_chart_values (
                     account TEXT NOT NULL,
                     month TEXT NOT NULL,
-                    portfolio_value REAL,
                     amount_invested REAL,
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (account, month)
@@ -35,11 +33,17 @@ class PortfolioChartValuesStore(RowDatabase):
                 """
             )
 
+            columns = {row["name"] for row in connection.execute("PRAGMA table_info(portfolio_chart_values)")}
+            if "portfolio_value" in columns:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute("DELETE FROM portfolio_chart_values WHERE amount_invested IS NULL")
+                connection.execute("ALTER TABLE portfolio_chart_values DROP COLUMN portfolio_value")
+
     def list_values(self, account: str) -> list[PortfolioChartValue]:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT account, month, portfolio_value, amount_invested, updated_at
+                SELECT account, month, amount_invested, updated_at
                 FROM portfolio_chart_values
                 WHERE account = ?
                 ORDER BY month ASC
@@ -68,17 +72,15 @@ class PortfolioChartValuesStore(RowDatabase):
                 INSERT INTO portfolio_chart_values (
                     account,
                     month,
-                    portfolio_value,
                     amount_invested,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?)
                 """,
                 [
                     (
                         account,
                         value.month,
-                        value.portfolio_value,
                         value.amount_invested,
                         updated_at_value,
                     )
@@ -92,7 +94,6 @@ def portfolio_chart_value_from_row(row: sqlite3.Row) -> PortfolioChartValue:
     return PortfolioChartValue(
         account=row["account"],
         month=row["month"],
-        portfolio_value=row["portfolio_value"],
         amount_invested=row["amount_invested"],
         updated_at=row["updated_at"],
     )

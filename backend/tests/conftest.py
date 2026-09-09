@@ -240,6 +240,7 @@ def make_api(
     stock_analysis_database_path: str | Path | None = None,
     portfolio_chart_values_database_path: str | Path | None = None,
     options_trade_tracker_database_path: str | Path | None = None,
+    day_trading_tracker_database_path: str | Path | None = None,
     orders_database_path: str | Path | None = None,
     options_screeners_database_path: str | Path | None = None,
     options_screener_scan_service: OptionsScreenerService | None = None,
@@ -251,6 +252,7 @@ def make_api(
         stock_analysis_database_path=stock_analysis_database_path,
         portfolio_chart_values_database_path=portfolio_chart_values_database_path,
         options_trade_tracker_database_path=options_trade_tracker_database_path,
+        day_trading_tracker_database_path=day_trading_tracker_database_path,
         orders_database_path=orders_database_path,
         options_screeners_database_path=options_screeners_database_path,
     )
@@ -271,6 +273,7 @@ def make_test_settings(
     stock_analysis_database_path: str | Path | None = None,
     portfolio_chart_values_database_path: str | Path | None = None,
     options_trade_tracker_database_path: str | Path | None = None,
+    day_trading_tracker_database_path: str | Path | None = None,
     orders_database_path: str | Path | None = None,
     options_screeners_database_path: str | Path | None = None,
     earnings_watch_database_path: str | Path | None = None,
@@ -287,6 +290,10 @@ def make_test_settings(
         options_trade_trackers_database_path=str(
             options_trade_tracker_database_path
             or data_path / "options_trade_trackers.sqlite3",
+        ),
+        day_trading_tracker_database_path=str(
+            day_trading_tracker_database_path
+            or data_path / "day_trading_tracker.sqlite3",
         ),
         orders_database_path=str(orders_database_path or data_path / "orders.sqlite3"),
         options_screeners_database_path=str(

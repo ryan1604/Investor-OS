@@ -21,8 +21,3 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-
-[tool.investor_os.performance_baseline]
-iterations = 10
-portfolio_positions = 250
-option_chain_rows = 120

@@ -8,6 +8,7 @@ import {
 
 export function useOptionsChartStream(
   analysis: OptionsAnalysisResponse | null,
+  isActive = true,
 ) {
   const [liveState, setLiveState] = useState<{
     baseline: OptionsAnalysisResponse
@@ -18,7 +19,7 @@ export function useOptionsChartStream(
   )
 
   useEffect(() => {
-    if (!analysis) {
+    if (!analysis || !isActive) {
       return
     }
 
@@ -68,7 +69,7 @@ export function useOptionsChartStream(
       isCleaningUp = true
       socket.close()
     }
-  }, [analysis])
+  }, [analysis, isActive])
 
   const activeLiveState = liveState?.baseline === analysis ? liveState : null
   const liveAnalysis: OptionsAnalysisResponse | null = analysis && activeLiveState

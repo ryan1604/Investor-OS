@@ -85,7 +85,7 @@ describe('EarningsWatchPage', () => {
     await waitFor(() => expect(document.activeElement).toBe(input))
   })
 
-  it('sorts rows by date while keeping no-date rows last', async () => {
+  it('sorts by earliest earnings date by default and keeps no-date rows last', async () => {
     api.fetchEarningsWatch.mockResolvedValue(
       response([
         row('ZZZ', null, 'no_date'),
@@ -96,7 +96,6 @@ describe('EarningsWatchPage', () => {
     render(<EarningsWatchPage />)
 
     await screen.findAllByText('ZZZ')
-    fireEvent.click(screen.getByRole('button', { name: /Earnings date/ }))
     expect(tickerCells()).toEqual(['AAPL', 'MSFT', 'ZZZ'])
 
     fireEvent.click(screen.getByRole('button', { name: /Earnings date/ }))
@@ -279,8 +278,10 @@ describe('EarningsWatchPage', () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(0)
     })
-    fireEvent.click(screen.getByRole('button', { name: /Earnings date/ }))
     expect(tickerCells()).toEqual(['AAPL', 'MSFT'])
+
+    fireEvent.click(screen.getByRole('button', { name: /Earnings date/ }))
+    expect(tickerCells()).toEqual(['MSFT', 'AAPL'])
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1000)

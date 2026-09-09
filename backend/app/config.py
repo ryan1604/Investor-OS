@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 
 class Settings(BaseModel):
@@ -13,11 +13,14 @@ class Settings(BaseModel):
     options_database_path: str = "data/options.sqlite3"
     options_screeners_database_path: str = "data/options_screeners.sqlite3"
     options_trade_trackers_database_path: str = "data/options_trade_trackers.sqlite3"
+    day_trading_tracker_database_path: str = "data/day_trading_tracker.sqlite3"
     orders_database_path: str = "data/orders.sqlite3"
     stock_analysis_database_path: str = "data/stock_analysis.sqlite3"
     portfolio_chart_values_database_path: str = "data/portfolio_chart_values.sqlite3"
     earnings_watch_database_path: str = "data/earnings_watch.sqlite3"
     alpha_vantage_api_key: str | None = None
+    ibkr_flex_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
+    ibkr_flex_query_id: str | None = None
     ib_request_queue_timeout_seconds: float = 0.25
     max_concurrent_options_analysis: int = 2
     max_concurrent_option_chains: int = 2
@@ -35,19 +38,35 @@ class Settings(BaseModel):
         "http://127.0.0.1:5173",
     ]
 
+    @property
+    def ibkr_flex_configured(self) -> bool:
+        return bool(
+            self.ibkr_flex_token
+            and self.ibkr_flex_token.get_secret_value().strip()
+            and self.ibkr_flex_query_id
+            and self.ibkr_flex_query_id.strip()
+        )
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings(alpha_vantage_api_key=alpha_vantage_api_key())
+    return Settings(
+        alpha_vantage_api_key=alpha_vantage_api_key(),
+        ibkr_flex_token=dotenv_value("IBKR_FLEX_TOKEN"),
+        ibkr_flex_query_id=dotenv_value("IBKR_FLEX_QUERY_ID"),
+    )
 
 
 def alpha_vantage_api_key() -> str | None:
-    alpha_vantage_api = "ALPHA_VANTAGE_API_KEY"
+    return dotenv_value("ALPHA_VANTAGE_API_KEY")
+
+
+def dotenv_value(key: str) -> str | None:
     for path in (Path(".env"), Path("..") / ".env"):
         if not path.is_file():
             continue
         for line in path.read_text(encoding="utf-8").splitlines():
             name, separator, value = line.partition("=")
-            if separator and name.strip() == alpha_vantage_api:
+            if separator and name.strip() == key:
                 return value.strip().strip("'\"") or None
     return None

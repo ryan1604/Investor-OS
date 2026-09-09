@@ -1,6 +1,6 @@
 # Investor OS Backend
 
-FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi`, serves portfolio data, options analysis, options screeners, order entry and order state, manual stock-analysis models, portfolio chart history, and Options Trade Tracker workspaces.
+FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi` and serves portfolio, options, screeners, orders, stock analysis, portfolio history, trade trackers, and Earnings Watch.
 
 ## Local Setup
 
@@ -20,7 +20,7 @@ Avoid `--reload` while connected to IB unless needed, because reload workers can
 
 ## Runtime Settings
 
-Runtime settings are fixed local Python defaults in `app/config.py`; only `alpha_vantage_api_key` is read from `.env` or `../.env`.
+Runtime settings are fixed local Python defaults in `app/config.py`; Alpha Vantage and IBKR Flex credentials are read from `.env` or `../.env` relative to the working directory. For each key, the first matching entry wins, including an explicitly blank entry. Shell environment variables are not used by this loader. Restart the backend after changing these cached settings.
 
 ```text
 Settings.ib_host = "127.0.0.1"
@@ -34,6 +34,8 @@ Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
 Settings.earnings_watch_database_path = "data/earnings_watch.sqlite3"
 Settings.alpha_vantage_api_key = ALPHA_VANTAGE_API_KEY from .env
+Settings.ibkr_flex_token = IBKR_FLEX_TOKEN from .env (secret, excluded from settings serialization)
+Settings.ibkr_flex_query_id = IBKR_FLEX_QUERY_ID from .env
 Settings.allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -58,8 +60,25 @@ All seven local SQLite stores use Python's standard `sqlite3` module directly. T
 
 ## Portfolio API
 
+### IBKR Flex setup
+
+Enable Flex Web Service in Client Portal. Configure an Activity Flex query for all tracked accounts with daily breakout, NAV Summary in Base (Account ID, Report Date, Total), and Account Information (Account ID, Currency).
+
+Add credentials to the backend or repository-root `.env`, then restart:
+
+```dotenv
+IBKR_FLEX_TOKEN=your-flex-web-service-token
+IBKR_FLEX_QUERY_ID=your-activity-query-id
+```
+
+Both values are required. Missing credentials disable automatic updates; saved history remains accessible. Tokens and raw request errors are excluded from logs and API responses.
+
+### Current endpoints
+
 ```text
 GET /portfolio
+GET /portfolio/nav?account={account}
+GET /portfolio/nav/accounts
 GET /portfolio/chart-values?account={account}
 PUT /portfolio/chart-values?account={account}
 WS  /portfolio/ws
@@ -67,7 +86,13 @@ WS  /portfolio/ws
 
 The portfolio snapshot returns IB connection status, account summaries, positions, market prices, and P&L values. The WebSocket sends the current snapshot and live updates while the backend remains connected to IB.
 
-Portfolio chart-value endpoints load or transactionally replace manual monthly history for one normalized account.
+Monthly chart endpoints store Amount invested per account. Startup migration removes legacy manual NAV fields while preserving invested amounts and metadata.
+
+Daily NAV uses exact decimal strings keyed by account and report date. Responses include currency and sync status; saved-account discovery works without TWS. Validated imports are transactional, reject currency conflicts, and give Flex precedence over PortfolioAnalyst. No historical-import endpoint or tool is installed.
+
+Flex sync runs at startup and hourly, independently of TWS. It seeds the latest report on an empty store, then recovers missed dates in bounded 30-day ranges with a seven-day correction overlap. Reports must include all saved accounts. Failures preserve history and retry next hour.
+
+Closing reports can lag market close. Status reflects the latest report date: `unconfigured`, `pending`, `syncing`, `failed`, `current`, or `stale`. Missing dates are not filled. Requests have bounded retries and timeouts; shutdown cancels pending work.
 
 ## Options API
 
@@ -81,9 +106,9 @@ WS  /options/{ticker}/chain/ws?expiration=YYYY-MM-DD
 WS  /options/{ticker}/chart/ws
 ```
 
-The analysis endpoint returns daily candles, Bollinger Bands, RSI, the latest underlying price, and available expirations. The chain endpoint returns a bounded strike range for one selected expiration. The expirations endpoint refreshes available expirations without loading the full analysis payload.
+The analysis endpoint returns daily candles, Bollinger Bands, RSI, the latest underlying price, and available expirations. The chain endpoint resolves all positive metadata strikes for one selected expiration, then returns the delta-filtered rows. The expirations endpoint refreshes available expirations without loading the full analysis payload.
 
-The chain WebSocket subscribes to IB market data for calls and puts in the active ticker, selected expiration, and bounded strike range. It sends a snapshot followed by row updates as ticks arrive, then cancels those IB market-data subscriptions when the WebSocket disconnects. Quote and Greek availability depends on the user's IB market-data subscriptions and delayed-data settings.
+The chain WebSocket resolves the same selected-expiration strikes, applies the configured live-strike cap, and subscribes to IB market data for calls and puts. It sends a snapshot followed by row updates as ticks arrive, then cancels those IB market-data subscriptions when the WebSocket disconnects. Quote and Greek availability depends on the user's IB market-data subscriptions and delayed-data settings.
 
 The chart WebSocket streams latest chart data for the active ticker.
 
@@ -109,6 +134,7 @@ CSP and CC share one ticker list; CS has its own. Filters are durable per screen
 
 ```text
 GET   /orders
+POST  /orders/reconcile
 POST  /orders/preview
 POST  /orders/transmit
 PATCH /orders/{order_id}
@@ -118,7 +144,7 @@ WS    /orders/ws
 
 Order requests require an explicit account. Stock orders support whole-share buy and sell tickets with market or limit order types and DAY or GTC time-in-force. Option strategy orders support one or more signed legs with a required limit price and optional take-profit and stop-loss prices.
 
-`/orders/preview` validates and summarizes a ticket without transmitting it. `/orders/transmit` submits the ticket to IB. Amendments can update editable order prices and time-in-force values, and cancellation requires the submitted account. Order records are reconciled with IB and use IB-authoritative status updates; `/orders/ws` sends snapshots and incremental updates for active orders and current-day terminal history.
+`/orders/preview` validates without transmitting, `/orders/transmit` submits to IB, and `/orders/reconcile` requests an IB open-order refresh. Amendments update supported active orders, and `/orders/ws` streams active and current-day terminal state.
 
 External IBKR orders are discovered through the API open-order feed. The backend connects with client ID `0`, enables automatic binding for manual TWS orders, and requests all open orders after connecting. TWS or IB Gateway must allow API writes, and read-only API mode must be disabled before externally created orders can be edited. Some orders may be visible without being bindable by this session; those orders stay visible but read-only. Binding manual orders can assign or change API order IDs, so IB permanent IDs are treated as the durable identity when available. Only reconstructed stock market/limit orders, single-option limit orders, and fully described supported option combo limit orders are marked editable; other IB order types remain read-only.
 
@@ -130,9 +156,22 @@ POST /stock-analysis/current-prices/refresh
 GET /stock-analysis/{ticker}
 GET /stock-analysis/{ticker}/current-price
 PUT /stock-analysis/{ticker}
+DELETE /stock-analysis/{ticker}
 ```
 
-Stock Analysis stores manual bull, base, and bear scenario models per ticker. First-time tickers return an empty scenario payload. The collection endpoint lists every saved model for Rank Stocks. The refresh endpoint updates saved current-price snapshots best-effort and preserves stale prices when IB lookup fails. The focused current-price endpoint persists a successful snapshot without loading the full Options analysis payload.
+Stock Analysis stores manual bull, base, and bear scenario models per ticker. Price refreshes preserve stale values on lookup failure. Deletion idempotently removes the saved model and current-price snapshot.
+
+## Earnings Watch API
+
+```text
+GET    /earnings-watch
+POST   /earnings-watch/tickers
+DELETE /earnings-watch/tickers/{ticker}
+PUT    /earnings-watch/tickers/{ticker}/reviewed
+POST   /earnings-watch/reviews/clear
+```
+
+Earnings Watch persists tickers, review state, last-known dates, and refresh metadata. Loading starts a due provider refresh in the background.
 
 ## Options Trade Tracker API
 

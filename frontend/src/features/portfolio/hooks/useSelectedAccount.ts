@@ -14,12 +14,19 @@ export function portfolioAccountIds(portfolio: PortfolioResponse | null) {
 export function useSelectedAccount(
   portfolio: PortfolioResponse | null,
   selectedAccount: string | null,
+  savedAccounts: string[] = [],
 ) {
-  const accounts = useMemo(() => portfolioAccountIds(portfolio), [portfolio])
+  const accounts = useMemo(() => {
+    const liveAccounts = Array.from(new Set([...portfolioAccountIds(portfolio), ...savedAccounts])).sort()
+    if (!portfolio?.status.connected && selectedAccount) {
+      return Array.from(new Set([...liveAccounts, selectedAccount])).sort()
+    }
+    return liveAccounts
+  }, [portfolio, selectedAccount, savedAccounts])
 
   const activeAccount = accounts.includes(selectedAccount ?? '')
     ? selectedAccount ?? undefined
-    : undefined
+    : accounts[0]
 
   const accountPositions = useMemo(() => {
     if (!activeAccount) {

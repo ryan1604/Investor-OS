@@ -20,12 +20,12 @@ from app.options.indicators import (
 )
 from app.options.domain import (
     OptionMetadata,
-    bounded_strikes,
     chunk_date_range,
     days_to_expiration,
     missing_completed_ranges,
-    option_chain_has_delta_window,
+    option_chain_delta_bounds,
     option_chain_rows,
+    option_chain_strikes,
     same_month_day_years_ago,
     sorted_expirations,
     to_daily_closes,
@@ -69,9 +69,6 @@ class HistoricalDailyBarStreamProvider(Protocol):
 
 
 class OptionMetadataProvider(Protocol):
-    def fetch_expirations(self, ticker: str) -> list[str]:
-        ...
-
     def fetch_option_metadata(self, ticker: str) -> OptionMetadata:
         ...
 
@@ -109,9 +106,6 @@ class CachedOptionMetadataProvider:
         self.entries: dict[str, CachedOptionMetadata] = {}
         self.lock = Lock()
 
-    def fetch_expirations(self, ticker: str) -> list[str]:
-        return self.fetch_option_metadata(ticker).expirations
-
     def fetch_option_metadata(self, ticker: str) -> OptionMetadata:
         normalized_ticker = normalize_ticker(ticker)
 
@@ -146,6 +140,19 @@ class CachedUnderlyingPrice:
 class CachedOptionChainContracts:
     contracts: list[ScannerOptionContract]
     expires_at: float
+
+
+@dataclass(frozen=True)
+class OptionChainContractHydration:
+    contracts: list[ScannerOptionContract]
+    timed_out_strikes: frozenset[float] = frozenset()
+    invalid_strikes: frozenset[float] = frozenset()
+
+
+@dataclass(frozen=True)
+class PartialOptionChainContracts:
+    contracts: list[ScannerOptionContract]
+    retryable_strikes: frozenset[float]
 
 
 @dataclass(frozen=True)
@@ -197,12 +204,13 @@ class AnalysisUnderlyingPriceCache:
 
 
 class OptionChainSnapshotProvider(Protocol):
-    def fetch_chain_contracts(
+    def fetch_chain_contract_hydration(
         self,
         ticker: str,
         expiration: str,
         strikes: list[float],
-    ) -> list[ScannerOptionContract]:
+        stop_event: Event | None = None,
+    ) -> OptionChainContractHydration:
         ...
 
     def fetch_chain_quotes(
@@ -217,7 +225,7 @@ class OptionChainStreamProvider(Protocol):
         self,
         contracts: list[ScannerOptionContract],
         stop_event: Event,
-    ) -> Iterable[tuple[tuple[float, str], OptionQuote]]:
+    ) -> Iterable[list[tuple[tuple[float, str], OptionQuote]]]:
         ...
 
 
@@ -346,6 +354,10 @@ class OptionsClient:
         self.contract_cache: dict[
             tuple[str, str, tuple[float, ...]],
             CachedOptionChainContracts,
+        ] = {}
+        self.partial_contract_cache: dict[
+            tuple[str, str, tuple[float, ...]],
+            PartialOptionChainContracts,
         ] = {}
         self.contract_cache_in_flight: dict[
             tuple[str, str, tuple[float, ...]],
@@ -583,7 +595,7 @@ class OptionsClient:
             )
             return
 
-        strikes = bounded_strikes(metadata.strikes, underlying_price)
+        strikes = option_chain_strikes(metadata.strikes)
         if not strikes:
             logger.info(
                 "Option chain prefetch skipped ticker=%s reason=missing_strikes",
@@ -701,7 +713,10 @@ class OptionsClient:
             normalized_ticker,
             expiration,
             current_date=current_date,
+            stop_event=stop_event,
         )
+        if stop_event.is_set():
+            return
         stream_strikes = capped_chain_strikes(
             context.strikes,
             context.underlying_price,
@@ -723,7 +738,7 @@ class OptionsClient:
                 len(stream_strikes),
             )
         quotes = self.cached_chain_quotes(stream_contracts)
-        has_delta_window = option_chain_has_delta_window(stream_strikes, quotes)
+        delta_bounds = option_chain_delta_bounds(stream_strikes, quotes)
 
         yield OptionChainLiveMessage(
             type="snapshot",
@@ -736,22 +751,23 @@ class OptionsClient:
             ),
         )
 
-        for key, quote in self.chain_stream_provider.stream_chain_quotes(
+        for quote_batch in self.chain_stream_provider.stream_chain_quotes(
             stream_contracts,
             stop_event,
         ):
             if stop_event.is_set():
                 break
 
-            quotes[key] = quote
-            self.remember_chain_quotes(stream_contracts, {key: quote})
+            changed_quotes = dict(quote_batch)
+            quotes.update(changed_quotes)
+            self.remember_chain_quotes(stream_contracts, changed_quotes)
             rows = option_chain_rows(stream_strikes, quotes)
-            next_has_delta_window = option_chain_has_delta_window(
+            next_delta_bounds = option_chain_delta_bounds(
                 stream_strikes,
                 quotes,
             )
-            if next_has_delta_window and not has_delta_window:
-                has_delta_window = True
+            if next_delta_bounds != delta_bounds:
+                delta_bounds = next_delta_bounds
                 yield OptionChainLiveMessage(
                     type="snapshot",
                     ticker=context.ticker,
@@ -763,22 +779,23 @@ class OptionsClient:
                     ),
                 )
                 continue
-            row = next(
-                (
-                    row
-                    for row in rows
-                    if row.strike == key[0]
-                ),
-                None,
-            )
-            if row is None:
-                continue
-            yield OptionChainLiveMessage(
-                type="update",
-                ticker=context.ticker,
-                expiration=context.expiration,
-                row=row,
-            )
+            for changed_strike in sorted({key[0] for key, _quote in quote_batch}):
+                row = next(
+                    (
+                        row
+                        for row in rows
+                        if row.strike == changed_strike
+                    ),
+                    None,
+                )
+                if row is None:
+                    continue
+                yield OptionChainLiveMessage(
+                    type="update",
+                    ticker=context.ticker,
+                    expiration=context.expiration,
+                    row=row,
+                )
 
     def stream_chart(
         self,
@@ -851,6 +868,7 @@ class OptionsClient:
         expiration: str,
         *,
         current_date: date | None = None,
+        stop_event: Event | None = None,
     ) -> OptionChainContext:
         underlying_price = self.analysis_underlying_price_cache.get(ticker)
         if underlying_price is None:
@@ -879,12 +897,13 @@ class OptionsClient:
                 f"Underlying price is unavailable for {ticker}."
             )
 
-        strikes = bounded_strikes(metadata.strikes, underlying_price)
+        strikes = option_chain_strikes(metadata.strikes)
         contracts = self.chain_contracts(
             ticker,
             expiration,
             strikes,
             cacheable=not metadata.expirations or expiration in metadata.expirations,
+            stop_event=stop_event,
         )
         contract_strikes = sorted({contract.strike for contract in contracts})
 
@@ -903,10 +922,16 @@ class OptionsClient:
         strikes: list[float],
         *,
         cacheable: bool,
+        stop_event: Event | None = None,
     ) -> list[ScannerOptionContract]:
         if not cacheable:
             self.clear_contract_cache(ticker, expiration)
-            return self.chain_provider.fetch_chain_contracts(ticker, expiration, strikes)
+            return self.chain_provider.fetch_chain_contract_hydration(
+                ticker,
+                expiration,
+                strikes,
+                stop_event,
+            ).contracts
 
         key = (ticker, expiration, tuple(strikes))
         current_time = monotonic()
@@ -925,6 +950,15 @@ class OptionsClient:
             if entry is not None:
                 self.contract_cache.pop(key, None)
 
+            partial_entry = self.partial_contract_cache.get(key)
+            requested_strikes = (
+                sorted(partial_entry.retryable_strikes)
+                if partial_entry is not None
+                else strikes
+            )
+            retained_contracts = (
+                list(partial_entry.contracts) if partial_entry is not None else []
+            )
             in_flight = self.contract_cache_in_flight.get(key)
             if in_flight is None:
                 in_flight = OptionChainContractsInFlight(ready=Event())
@@ -932,10 +966,12 @@ class OptionsClient:
                 owner = True
                 logger.info(
                     "Option chain contract cache miss ticker=%s expiration=%s "
-                    "strikes=%s",
+                    "strikes=%s retry_strikes=%s retained_contracts=%s",
                     ticker,
                     expiration,
                     len(strikes),
+                    len(requested_strikes),
+                    len(retained_contracts),
                 )
             else:
                 owner = False
@@ -948,17 +984,28 @@ class OptionsClient:
                 )
 
         if not owner:
-            in_flight.ready.wait()
+            while not in_flight.ready.wait(timeout=0.05):
+                if stop_event is not None and stop_event.is_set():
+                    return retained_contracts
             if in_flight.error is not None:
                 raise in_flight.error
             return list(in_flight.contracts or [])
 
         started_at = perf_counter()
         try:
-            contracts = self.chain_provider.fetch_chain_contracts(
+            hydration = self.chain_provider.fetch_chain_contract_hydration(
                 ticker,
                 expiration,
-                strikes,
+                requested_strikes,
+                stop_event,
+            )
+            contracts_by_key = {
+                (contract.strike, contract.right): contract
+                for contract in [*retained_contracts, *hydration.contracts]
+            }
+            contracts = sorted(
+                contracts_by_key.values(),
+                key=lambda contract: (contract.strike, contract.right),
             )
         except BaseException as error:
             with self.contract_cache_lock:
@@ -969,19 +1016,32 @@ class OptionsClient:
 
         with self.contract_cache_lock:
             in_flight.contracts = contracts
-            self.contract_cache[key] = CachedOptionChainContracts(
-                contracts=list(contracts),
-                expires_at=monotonic() + self.contract_cache_ttl_seconds,
-            )
+            if hydration.timed_out_strikes:
+                self.partial_contract_cache[key] = PartialOptionChainContracts(
+                    contracts=list(contracts),
+                    retryable_strikes=hydration.timed_out_strikes,
+                )
+                self.contract_cache.pop(key, None)
+            else:
+                self.contract_cache[key] = CachedOptionChainContracts(
+                    contracts=list(contracts),
+                    expires_at=monotonic() + self.contract_cache_ttl_seconds,
+                )
+                self.partial_contract_cache.pop(key, None)
             self.contract_cache_in_flight.pop(key, None)
             in_flight.ready.set()
 
         logger.info(
-            "Option chain contract hydration complete ticker=%s expiration=%s "
-            "strikes=%s contracts=%s ib_wait_ms=%.1f",
+            "Option chain contract hydration ticker=%s expiration=%s state=%s "
+            "requested_strikes=%s resolved_strikes=%s timed_out_strikes=%s "
+            "invalid_strikes=%s contracts=%s ib_wait_ms=%.1f",
             ticker,
             expiration,
-            len(strikes),
+            "partial" if hydration.timed_out_strikes else "complete",
+            len(requested_strikes),
+            len({contract.strike for contract in hydration.contracts}),
+            len(hydration.timed_out_strikes),
+            len(hydration.invalid_strikes),
             len(contracts),
             elapsed_ms(started_at),
         )
@@ -992,6 +1052,9 @@ class OptionsClient:
             for key in list(self.contract_cache):
                 if key[0] == ticker and key[1] == expiration:
                     self.contract_cache.pop(key, None)
+            for key in list(self.partial_contract_cache):
+                if key[0] == ticker and key[1] == expiration:
+                    self.partial_contract_cache.pop(key, None)
 
     def cached_chain_quotes(
         self,

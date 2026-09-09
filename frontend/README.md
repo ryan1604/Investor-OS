@@ -1,6 +1,6 @@
 # Investor OS Frontend
 
-React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, CSP/CC/CS screeners, Options Trade Tracker, Orders, Stock Analysis, and Rank Stocks workflows backed by the FastAPI service.
+React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, CSP/CC/CS screeners, Options Trade Tracker, Orders, Stock Analysis, Earnings Watch, and Rank Stocks workflows backed by the FastAPI service.
 
 ## Local Setup
 
@@ -61,14 +61,14 @@ The WebSocket URL is derived from `VITE_API_BASE_URL`, replacing `http` with
 
 The Portfolio page shows IB connection status, account summaries, positions, market prices, and P&L values. Account selection is explicit and is shared with order tickets that need an account.
 
-Manual account-scoped chart history is loaded and replaced through:
+Monthly Amount invested history is loaded and replaced through:
 
 ```text
 GET /portfolio/chart-values?account={account}
 PUT /portfolio/chart-values?account={account}
 ```
 
-Advanced mode charts monthly portfolio value and cumulative amount invested. Simple mode charts December year-end values. Drafts and responses are isolated by selected account.
+Net account value displays saved daily NAV with date ranges, tooltips, and sync status. 3Y/5Y appear when history covers them. Amount/Percentage toggles between NAV and change from the selected range's first value, including cash flows. The chart polls every 30 seconds, separates currency periods, and supports saved accounts while TWS is offline. Monthly Amount invested has its own chart and editor. Account switches isolate data and drafts.
 
 ## Options View
 
@@ -80,7 +80,7 @@ After a ticker search, the page loads analysis data from:
 GET /options/{ticker}/analysis
 ```
 
-The selected expiration chain is loaded from:
+The backend also exposes a REST chain snapshot:
 
 ```text
 GET /options/{ticker}/chain?expiration=YYYY-MM-DD
@@ -97,6 +97,8 @@ While the selected expiration is visible, the page opens one live chain stream:
 ```text
 WS /options/{ticker}/chain/ws?expiration=YYYY-MM-DD
 ```
+
+The visible chain initializes from this WebSocket's snapshot; the frontend does not automatically call the REST chain endpoint.
 
 The chart also opens a live ticker stream:
 
@@ -140,9 +142,7 @@ Order state stays live through:
 WS /orders/ws
 ```
 
-The order WebSocket is intentionally owned by the app shell rather than only the
-Orders page so Options chart overlays and the Orders page share the same fresh
-order state.
+The order WebSocket mounts only while the Options or Orders page is active.
 
 Order tickets and controls call:
 
@@ -173,9 +173,24 @@ Scenario edits autosave to:
 
 ```text
 PUT /stock-analysis/{ticker}
+DELETE /stock-analysis/{ticker}
 ```
 
-Searching a saved ticker restores its scenarios. Searching a first-time ticker starts from empty scenario inputs.
+Searching a saved ticker restores its scenarios. Confirmed deletion removes the active saved model and clears the workspace.
+
+## Earnings Watch View
+
+Earnings Watch maintains a ticker list, earnings-date snapshots, and review state.
+
+```text
+GET    /earnings-watch
+POST   /earnings-watch/tickers
+DELETE /earnings-watch/tickers/{ticker}
+PUT    /earnings-watch/tickers/{ticker}/reviewed
+POST   /earnings-watch/reviews/clear
+```
+
+The initial load can start a due backend refresh; the page polls only while that refresh is active.
 
 ## Rank Stocks View
 
@@ -210,11 +225,12 @@ Trades and notes save independently so one response cannot discard unrelated dra
 
 ```text
 src/features/
+├── earnings-watch/         Earnings calendar watchlist, review state, and refresh workflow
 ├── options/                Options analysis, live chain/chart state, and tickets
 ├── options-screeners/      CSP, CC, and CS scan pages, settings, live jobs, and result tables
 ├── options-trade-tracker/  Page root with components/, hooks/, and lib/ modules
 ├── orders/                 Active and terminal IB order management
-├── portfolio/              Live portfolio plus manual account chart history
+├── portfolio/              Live portfolio, daily NAV, and monthly invested amounts
 ├── rank-stocks/            Rankings over saved Stock Analysis models
 └── stock-analysis/         Valuation models, scenarios, autosave, and price lookup
 ```

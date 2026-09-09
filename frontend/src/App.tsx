@@ -1,12 +1,8 @@
 import { useEffect, useMemo, useState } from 'react'
 
 import { AppSidebar } from '@/components/AppSidebar'
-import {
-  SidebarInset,
-  SidebarProvider,
-} from '@/components/ui/sidebar'
 import { Toaster } from '@/components/ui/sonner'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { DayTradingTrackerPage } from '@/features/day-trading-tracker/DayTradingTrackerPage'
 import { EarningsWatchPage } from '@/features/earnings-watch/EarningsWatchPage'
 import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
 import { OptionsPage } from '@/features/options/OptionsPage'
@@ -29,6 +25,7 @@ export type AppPage =
   | 'cc-screener'
   | 'cs-screener'
   | 'options-trade-tracker'
+  | 'day-trading-tracker'
   | 'orders'
   | 'stock-analysis'
   | 'earnings-watch'
@@ -36,6 +33,7 @@ export type AppPage =
 
 function App() {
   const [activePage, setActivePage] = useState<AppPage>('portfolio')
+  const [hasVisitedOptions, setHasVisitedOptions] = useState(false)
   const [selectedAccount, setSelectedAccount] = useState<
     string | null
   >(null)
@@ -46,85 +44,104 @@ function App() {
   )
 
   useEffect(() => {
-    // Keep the session-only selected account valid as portfolio accounts load.
+    // Initialize selection without discarding saved-only Portfolio accounts.
     if (!accounts.length) {
-      if (selectedAccount !== null) {
-        // eslint-disable-next-line react-hooks/set-state-in-effect
-        setSelectedAccount(null)
-      }
       return
     }
 
-    if (!selectedAccount || !accounts.includes(selectedAccount)) {
+    if (!selectedAccount) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSelectedAccount(accounts[0])
     }
   }, [accounts, selectedAccount])
 
-  return (
-    <TooltipProvider>
-      <OptionsScreenersProvider>
-        <SidebarProvider className="min-h-full">
-          <AppSidebar activePage={activePage} onPageChange={setActivePage} />
+  const tradingAccount = selectedAccount && accounts.includes(selectedAccount)
+    ? selectedAccount
+    : accounts[0] ?? null
 
-          <SidebarInset className="min-w-0 p-6">
-            {activePage === 'portfolio' ? (
-              <PortfolioPage
-                portfolioState={portfolioState}
-                selectedAccount={selectedAccount}
-                onSelectedAccountChange={setSelectedAccount}
-              />
-            ) : activePage === 'options' ? (
+  const handlePageChange = (page: AppPage) => {
+    if (page === 'options') {
+      setHasVisitedOptions(true)
+    }
+    setActivePage(page)
+  }
+
+  return (
+    <OptionsScreenersProvider>
+      <div className="flex min-h-svh w-full items-stretch">
+        <AppSidebar activePage={activePage} onPageChange={handlePageChange} />
+
+        <main className="relative flex min-w-0 w-full flex-1 flex-col bg-background p-6">
+          {hasVisitedOptions ? (
+            <div
+              className={activePage === 'options' ? 'contents' : undefined}
+              data-testid="options-workspace"
+              hidden={activePage !== 'options'}
+            >
               <OptionsRoute
                 accounts={accounts}
+                isActive={activePage === 'options'}
                 portfolioState={portfolioState}
-                selectedAccount={selectedAccount}
+                selectedAccount={tradingAccount}
                 onSelectedAccountChange={setSelectedAccount}
               />
-            ) : activePage === 'csp-screener' ? (
-              <CspScreenerPage
-                portfolio={portfolioState.portfolio}
-                selectedAccount={selectedAccount}
-              />
-            ) : activePage === 'cc-screener' ? (
-              <CcScreenerPage
-                portfolio={portfolioState.portfolio}
-                selectedAccount={selectedAccount}
-              />
-            ) : activePage === 'cs-screener' ? (
-              <CsScreenerPage
-                portfolio={portfolioState.portfolio}
-                selectedAccount={selectedAccount}
-              />
-            ) : activePage === 'orders' ? (
-              <OrdersRoute
-                accounts={accounts}
-                selectedAccount={selectedAccount}
-                onSelectedAccountChange={setSelectedAccount}
-              />
-            ) : activePage === 'options-trade-tracker' ? (
-              <OptionsTradeTrackerPage />
-            ) : activePage === 'stock-analysis' ? (
-              <StockAnalysisPage />
-            ) : activePage === 'earnings-watch' ? (
-              <EarningsWatchPage />
-            ) : (
-              <RankStocksPage />
-            )}
-          </SidebarInset>
-          <Toaster />
-        </SidebarProvider>
-      </OptionsScreenersProvider>
-    </TooltipProvider>
+            </div>
+          ) : null}
+
+          {activePage === 'options' ? null : activePage === 'portfolio' ? (
+            <PortfolioPage
+              portfolioState={portfolioState}
+              selectedAccount={selectedAccount}
+              onSelectedAccountChange={setSelectedAccount}
+            />
+          ) : activePage === 'csp-screener' ? (
+            <CspScreenerPage
+              portfolio={portfolioState.portfolio}
+              selectedAccount={tradingAccount}
+            />
+          ) : activePage === 'cc-screener' ? (
+            <CcScreenerPage
+              portfolio={portfolioState.portfolio}
+              selectedAccount={tradingAccount}
+            />
+          ) : activePage === 'cs-screener' ? (
+            <CsScreenerPage
+              portfolio={portfolioState.portfolio}
+              selectedAccount={tradingAccount}
+            />
+          ) : activePage === 'orders' ? (
+            <OrdersRoute
+              accounts={accounts}
+              selectedAccount={tradingAccount}
+              onSelectedAccountChange={setSelectedAccount}
+            />
+          ) : activePage === 'options-trade-tracker' ? (
+            <OptionsTradeTrackerPage />
+          ) : activePage === 'day-trading-tracker' ? (
+            <DayTradingTrackerPage />
+          ) : activePage === 'stock-analysis' ? (
+            <StockAnalysisPage />
+          ) : activePage === 'earnings-watch' ? (
+            <EarningsWatchPage />
+          ) : (
+            <RankStocksPage />
+          )}
+        </main>
+        <Toaster />
+      </div>
+    </OptionsScreenersProvider>
   )
 }
 
 function OptionsRoute({
   accounts,
+  isActive,
   portfolioState,
   selectedAccount,
   onSelectedAccountChange,
 }: {
   accounts: string[]
+  isActive: boolean
   portfolioState: ReturnType<typeof usePortfolio>
   selectedAccount: string | null
   onSelectedAccountChange: (account: string) => void
@@ -134,6 +151,7 @@ function OptionsRoute({
   return (
     <OptionsPage
       accounts={accounts}
+      isActive={isActive}
       orders={orders}
       portfolio={portfolioState.portfolio}
       selectedAccount={selectedAccount}

@@ -2,7 +2,6 @@ import { jsonRequest, requestJson } from '@/api/client'
 
 export type PortfolioChartValue = {
   month: string
-  portfolio_value: number | null
   amount_invested: number | null
   updated_at: string
 }
@@ -14,7 +13,6 @@ export type PortfolioChartValuesResponse = {
 
 export type PortfolioChartValueRequest = {
   month: string
-  portfolio_value?: number | null
   amount_invested?: number | null
 }
 
