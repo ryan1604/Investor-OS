@@ -6,6 +6,7 @@ import type {
   OptionsTradeStatus,
 } from '@/api/optionsTradeTrackers'
 import { Button } from '@/components/ui/button'
+import { Calendar } from '@/components/ui/calendar'
 import { Input } from '@/components/ui/input'
 import {
   Select,
@@ -14,7 +15,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover'
 import { TableCell, TableRow } from '@/components/ui/table'
+import { daysToExpiration } from '@/features/options-screeners/lib/expiration'
 import { StrategySelectCell } from '@/features/options-trade-tracker/components/StrategyComboboxCell'
 import {
   formatCurrencyInput,
@@ -44,6 +51,12 @@ type TradeRowProps = {
   onOpenStrategyDialog: () => void
   onMenuOpenChange: (localId: string, open: boolean) => void
   onUpdateRow: (localId: string, field: TradeDraftField, value: string) => void
+}
+
+function isoDate(date: Date) {
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${date.getFullYear()}-${month}-${day}`
 }
 
 const statuses: OptionsTradeStatus[] = ['In Progress', 'Completed']
@@ -80,6 +93,9 @@ export const TradeRow = memo(function TradeRow({
   onUpdateRow,
 }: TradeRowProps) {
   const rowIssue = issues.find((issue) => issue.field === 'row')
+  const expiryDate = row.expiryDate
+    ? new Date(`${row.expiryDate}T00:00:00`)
+    : undefined
 
   return (
     <TableRow
@@ -125,29 +141,32 @@ export const TradeRow = memo(function TradeRow({
         />
       </TableCell>
       <TableCell>
-        <Select
-          value={row.month}
-          onOpenChange={(open) => onMenuOpenChange(row.localId, open)}
-          onValueChange={(value) =>
-            onUpdateRow(row.localId, 'month', value as OptionsTradeMonth)
-          }
-        >
-          <SelectTrigger
-            aria-label={`Month row ${row.localId}`}
-            className="w-full"
-          >
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {OPTIONS_TRADE_MONTHS.map((month) => (
-              <SelectItem key={month} value={month}>
-                <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${monthColors[month]}`}>
-                  {OPTIONS_TRADE_MONTH_LABELS[month]}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <Popover onOpenChange={(open) => onMenuOpenChange(row.localId, open)}>
+          <PopoverTrigger asChild>
+            <Button
+              variant="outline"
+              aria-label={`Month row ${row.localId}`}
+              className="w-full justify-start px-2 font-normal"
+            >
+              <span className={`rounded-sm px-1.5 py-0.5 text-xs font-medium ${monthColors[row.month]}`}>
+                {OPTIONS_TRADE_MONTH_LABELS[row.month]}
+                {row.expiryDate && ` - ${daysToExpiration(row.expiryDate)} DTE`}
+              </span>
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-auto p-0" align="start">
+            <Calendar
+              mode="single"
+              selected={expiryDate}
+              defaultMonth={expiryDate}
+              onSelect={(date) => {
+                if (!date) return
+                onUpdateRow(row.localId, 'expiryDate', isoDate(date))
+                onUpdateRow(row.localId, 'month', OPTIONS_TRADE_MONTHS[date.getMonth()])
+              }}
+            />
+          </PopoverContent>
+        </Popover>
       </TableCell>
       <TableCell className="text-right">
         <NumberCell

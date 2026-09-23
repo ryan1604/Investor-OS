@@ -22,6 +22,7 @@ const completedWheelTrade: OptionsTradeRow = {
   strategy: 'WHEEL',
   ticker: 'AAPL',
   month: 'jan',
+  expiry_date: null,
   size: -2,
   strike_price: 190,
   credit_debit: 1.5,
@@ -37,6 +38,7 @@ const completedSpreadTrade: OptionsTradeRow = {
   strategy: 'SPREAD',
   ticker: 'MSFT',
   month: 'feb',
+  expiry_date: null,
   size: 1,
   strike_price: 420,
   credit_debit: 2,
@@ -52,6 +54,7 @@ const inProgressTrade: OptionsTradeRow = {
   strategy: 'WHEEL',
   ticker: 'TSLA',
   month: 'mar',
+  expiry_date: null,
   size: -1,
   strike_price: 200,
   credit_debit: 1,
@@ -182,6 +185,40 @@ describe('options trade tracker helpers', () => {
       { strategy: 'SPREAD', count: 1 },
       { strategy: 'WHEEL', count: 3 },
     ])
+  })
+
+  it('keeps signed monthly strategy contributions reconciled with the summary and Net P&L', () => {
+    const strategies = ['CC', 'CSP', 'CUSTOM / RATIO SPREAD']
+    const values: [OptionsTradeRow['month'], string, number][] = [
+      ['may', 'CC', 1500], ['may', 'CC', -300],
+      ['may', 'CSP', -400], ['may', 'CUSTOM / RATIO SPREAD', 1200],
+      ['jun', 'CC', -1200], ['jun', 'CSP', -400], ['jun', 'CUSTOM / RATIO SPREAD', -1200],
+      ['jul', 'CC', 1200], ['jul', 'CSP', 400], ['jul', 'CUSTOM / RATIO SPREAD', 1200],
+      ['aug', 'CC', 1200], ['aug', 'CSP', -1200],
+      ['sep', 'CC', 0],
+    ]
+    const completedTrades = projectCompletedValidTrades(values.map(([month, strategy, pnl], index) => ({
+      ...completedWheelTrade, id: `signed-${index}`, month, strategy,
+      size: pnl < 0 ? 1 : -1, credit_debit: (Math.abs(pnl) + 2) / 100, exit: 0,
+    })))
+    const stats = deriveStrategyStats(completedTrades, strategies)
+    const stacked = deriveStackedMonthlyChartData(completedTrades, strategies)
+    const net = deriveNetMonthlyChartData(completedTrades)
+
+    expect(stacked[4].CC).toBeCloseTo(1200)
+    expect(stacked[4].CSP).toBeCloseTo(-400)
+    expect(stacked[4]['CUSTOM / RATIO SPREAD']).toBeCloseTo(1200)
+    const expectedTotals = [2000, -2800, 2800, 0, 0]
+    expectedTotals.forEach((total, index) => expect(net[index + 4].total).toBeCloseTo(total))
+    for (const [index, month] of net.entries()) {
+      const contributions = stats.rows.map((row) => row.months[month.month])
+      stats.rows.forEach((row) => expect(stacked[index][row.strategy]).toBe(row.months[month.month]))
+      const positive = contributions.filter((value) => value > 0).reduce((sum, value) => sum + value, 0)
+      const negative = contributions.filter((value) => value < 0).reduce((sum, value) => sum + value, 0)
+      expect(positive + negative).toBeCloseTo(month.total)
+      expect(month.total).toBe(stats.monthTotals[month.month])
+    }
+    expect(net[0]).toMatchObject({ month: 'jan', total: 0 })
   })
 })
 

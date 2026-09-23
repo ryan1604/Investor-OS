@@ -108,13 +108,23 @@ flowchart TD
 #### Options Trade Tracker View
 
 * Options Trade Tracker keeps its page at the feature root, UI modules under `components/`, state orchestration under `hooks/`, and pure calculations/validation/chart shaping under `lib/`.
+* The tracker page skips unrelated app-shell renders. Memoized `TradeRow` components receive stable draft objects, row-specific P&L/validation, and stable edit handlers; `TradesTable` memoizes derived lookups and its formatted footer. Notes and dialog edits do not rerender unchanged row controls.
+* Trades uses the installed TanStack virtualizer within a capped scroll area, with measured row heights, sticky column headings/footer, and native table row counts/indexes. Only the viewport and a small buffer mount; focused, open-menu, and dragged rows stay mounted with adjacent rows for keyboard traversal. All draft rows still participate in persistence, validation, order, P&L, and Stats.
+* Adding a trade reveals and focuses it; validation reveals the first invalid row. Dragging near the table edges scrolls through the full row order. Alt+Up/Down on a drag handle provides keyboard reordering. Performance measurements and verification procedures are recorded under Phase 27 in `docs/implementation_plan.md`.
+* The leading `Row` column numbers the full current draft order from 1, including virtualized rows. Add/delete/reorder updates these display-only numbers. Month cells and dropdown options share a fixed palette of tinted labels with readable text in both themes; stored month keys are unchanged.
 * `frontend/src/api/optionsTradeTrackers.ts` handles tracker CRUD, detail loading, trade replacement, tracker notes, and global strategy options.
 * Users create, select, rename, and delete named trackers. Tracker trade rows and notes are scoped per tracker; strategy options are global.
 * Tracker detail and drafts are scoped to the active selection; switching trackers clears drafts and guards obsolete load or mutation responses.
 * Trade and notes saves run independently and merge only their confirmed resource. Rename, delete, trade, notes, and global-strategy responses are guarded by active tracker and request generation.
 * Trades use explicit save actions. `In Progress` rows may remain partial, while completed rows show inline validation and frontend-derived P&L/footer totals.
+* Trade-row P&L and the numeric footer total use the shared sign-color helper: green for positive, red for negative, and neutral for zero. Unavailable row P&L remains blank; each color follows its own current draft value without saving.
 * One completed-valid-trade projection supplies row P&L, footer totals, stats, monthly charts, and pie data. Calculations use `jan`-`dec` month keys, uppercase tickers, signed size, positive credit/debit, nullable exit, and `(creditDebit * 100 - exit * 100 - 2) * -size`.
 * The Stats tab shows a strategy/month summary table, a monthly chart toggle for stacked-by-strategy versus net P&L, and a strategy execution pie chart based on `abs(size)` counts.
+* Monthly strategy totals stack independently above and below zero. Both monthly modes include a zero reference line that anchors the computed numeric domain, including zero-only data. Trades within one strategy/month still net together; Net mode remains the algebraic sum of the strategy contributions.
+* Tracker charts use shared `ChartTooltipContent.valueFormatter` to format currency/count values while preserving configured strategy labels and matching color indicators. Monthly tooltips retain their month heading and identify Net P&L; pie tooltips show the strategy and execution count. The shared full-row `formatter` remains available with precedence for existing consumers.
+* The pie's feature-local `StrategyExecutionTooltip` retains valid content inside the hidden Recharts wrapper during hover gaps, preserving its measured size and position for the next transition. Retention is scoped to the current chart data, and stale strategy/count payloads are rejected. Recharts continues to control outer visibility, positioning, keyboard interaction, Escape, and reduced motion.
+* Pie sectors render directly at their final geometry so their hover targets remain stable from the first interaction. This avoids a missed mouseleave during Recharts' sector entrance animation; tooltip position transitions remain enabled.
+* Strategy-summary calculations live inside the mounted `TrackerStats` subtree. Trades retains its synchronous completed-trade projection and explicit saves; input values are not debounced or stored in an additional cache.
 
 #### Orders View
 

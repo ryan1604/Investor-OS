@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import { FileSpreadsheet, Loader2, Plus } from 'lucide-react'
 
 import {
@@ -39,6 +39,7 @@ import {
   deriveStrategyStats,
   projectCompletedValidTrades,
   storedRowFromTradeDraft,
+  type CompletedTradeProjection,
   type TradeDraftField,
   type TradeDraftRow,
   type TradeDraftValidationIssue,
@@ -47,7 +48,7 @@ import {
 type TrackerDialogMode = 'create' | 'rename'
 type TrackerTab = 'trades' | 'stats'
 
-export function OptionsTradeTrackerPage() {
+export const OptionsTradeTrackerPage = memo(function OptionsTradeTrackerPage() {
   const tracker = useOptionsTradeTracker()
   const [activeTab, setActiveTab] = useState<TrackerTab>('trades')
   const [dialogMode, setDialogMode] = useState<TrackerDialogMode | null>(null)
@@ -55,6 +56,13 @@ export function OptionsTradeTrackerPage() {
   const [isStrategyDialogOpen, setIsStrategyDialogOpen] = useState(false)
   const [strategyName, setStrategyName] = useState('')
   const [isDeleteOpen, setIsDeleteOpen] = useState(false)
+  const { setSaveError } = tracker
+
+  const openStrategyDialog = useCallback(() => {
+    setSaveError(null)
+    setStrategyName('')
+    setIsStrategyDialogOpen(true)
+  }, [setSaveError])
 
   function openCreateDialog() {
     tracker.setSaveError(null)
@@ -141,11 +149,7 @@ export function OptionsTradeTrackerPage() {
           tradeRows={tracker.tradeRows}
           onAddTradeRow={tracker.addTradeRow}
           onDeleteTradeRow={tracker.deleteTradeRow}
-          onOpenStrategyDialog={() => {
-            tracker.setSaveError(null)
-            setStrategyName('')
-            setIsStrategyDialogOpen(true)
-          }}
+          onOpenStrategyDialog={openStrategyDialog}
           onReorderTradeRow={tracker.reorderTradeRow}
           onNotesChange={tracker.updateNotesDraft}
           onSaveNotes={tracker.saveNotes}
@@ -212,7 +216,7 @@ export function OptionsTradeTrackerPage() {
       </AlertDialog>
     </main>
   )
-}
+})
 
 function TrackerDetailLoadingState() {
   return (
@@ -339,11 +343,6 @@ function TrackerWorkspace({
     () => projectCompletedValidTrades(storedRows),
     [storedRows],
   )
-  const strategyStats = useMemo(
-    () => deriveStrategyStats(completedTrades, strategyOptions),
-    [completedTrades, strategyOptions],
-  )
-
   return (
     <section className="flex min-h-[460px] flex-col gap-4">
       <Tabs
@@ -382,17 +381,37 @@ function TrackerWorkspace({
           </div>
         </TabsContent>
         <TabsContent value="stats">
-          <div className="grid gap-4">
-            <StatsSummaryTable stats={strategyStats} />
-            <MonthlyPerformanceChart
-              completedTrades={completedTrades}
-              strategyOptions={strategyOptions}
-            />
-            <StrategyExecutionPieChart completedTrades={completedTrades} />
-          </div>
+          <TrackerStats
+            completedTrades={completedTrades}
+            strategyOptions={strategyOptions}
+          />
         </TabsContent>
       </Tabs>
     </section>
+  )
+}
+
+function TrackerStats({
+  completedTrades,
+  strategyOptions,
+}: {
+  completedTrades: CompletedTradeProjection[]
+  strategyOptions: string[]
+}) {
+  const strategyStats = useMemo(
+    () => deriveStrategyStats(completedTrades, strategyOptions),
+    [completedTrades, strategyOptions],
+  )
+
+  return (
+    <div className="grid gap-4">
+      <StatsSummaryTable stats={strategyStats} />
+      <MonthlyPerformanceChart
+        completedTrades={completedTrades}
+        strategyOptions={strategyOptions}
+      />
+      <StrategyExecutionPieChart completedTrades={completedTrades} />
+    </div>
   )
 }
 

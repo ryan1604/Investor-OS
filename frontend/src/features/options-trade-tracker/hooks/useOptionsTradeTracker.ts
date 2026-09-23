@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import {
   createOptionsTradeTracker,
@@ -524,29 +524,28 @@ function useTradeTrackerDraftState() {
     notesRevisionRef.current = 0
   }
 
-  function addTradeRow() {
+  const addTradeRow = useCallback(() => {
     tradeRevisionRef.current += 1
     setTradeRows((current) => [
       ...current,
       newTradeDraftRow(createLocalTradeId()),
     ])
     setTradeIssues([])
-  }
+  }, [])
 
-  function updateTradeRow(
-    localId: string,
-    field: TradeDraftField,
-    value: string,
-  ) {
-    tradeRevisionRef.current += 1
-    setTradeRows((current) =>
-      current.map((row) =>
-        row.localId === localId ? { ...row, [field]: value } : row,
-      ),
-    )
-  }
+  const updateTradeRow = useCallback(
+    (localId: string, field: TradeDraftField, value: string) => {
+      tradeRevisionRef.current += 1
+      setTradeRows((current) =>
+        current.map((row) =>
+          row.localId === localId ? { ...row, [field]: value } : row,
+        ),
+      )
+    },
+    [],
+  )
 
-  function deleteTradeRow(localId: string) {
+  const deleteTradeRow = useCallback((localId: string) => {
     tradeRevisionRef.current += 1
     setTradeRows((current) =>
       current.filter((row) => row.localId !== localId),
@@ -554,31 +553,34 @@ function useTradeTrackerDraftState() {
     setTradeIssues((current) =>
       current.filter((issue) => issue.localId !== localId),
     )
-  }
+  }, [])
 
-  function reorderTradeRow(draggedLocalId: string, targetLocalId: string) {
-    tradeRevisionRef.current += 1
-    setTradeRows((current) => {
-      const draggedIndex = current.findIndex(
-        (row) => row.localId === draggedLocalId,
-      )
-      const targetIndex = current.findIndex((row) => row.localId === targetLocalId)
+  const reorderTradeRow = useCallback(
+    (draggedLocalId: string, targetLocalId: string) => {
+      tradeRevisionRef.current += 1
+      setTradeRows((current) => {
+        const draggedIndex = current.findIndex(
+          (row) => row.localId === draggedLocalId,
+        )
+        const targetIndex = current.findIndex((row) => row.localId === targetLocalId)
 
-      if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) {
-        return current
-      }
+        if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) {
+          return current
+        }
 
-      const next = [...current]
-      const [movedRow] = next.splice(draggedIndex, 1)
-      next.splice(targetIndex, 0, movedRow)
-      return next
-    })
-  }
+        const next = [...current]
+        const [movedRow] = next.splice(draggedIndex, 1)
+        next.splice(targetIndex, 0, movedRow)
+        return next
+      })
+    },
+    [],
+  )
 
-  function updateNotesDraft(notes: string) {
+  const updateNotesDraft = useCallback((notes: string) => {
     notesRevisionRef.current += 1
     setNotesDraft(notes)
-  }
+  }, [])
 
   return {
     detailTrackerId,

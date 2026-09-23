@@ -59,6 +59,7 @@ export type TradeDraftRow = {
   strategy: string
   ticker: string
   month: OptionsTradeMonth
+  expiryDate: string
   size: string
   strikePrice: string
   creditDebit: string
@@ -114,6 +115,7 @@ export function newTradeDraftRow(
     strategy: '',
     ticker: '',
     month,
+    expiryDate: '',
     size: '',
     strikePrice: '',
     creditDebit: '',
@@ -129,6 +131,7 @@ export function tradeDraftRowFromStoredRow(row: OptionsTradeRow): TradeDraftRow 
     strategy: row.strategy ?? '',
     ticker: row.ticker ?? '',
     month: row.month ?? currentTradeMonth(),
+    expiryDate: row.expiry_date ?? '',
     size: draftNumberText(row.size),
     strikePrice: draftNumberText(row.strike_price),
     creditDebit: draftNumberText(row.credit_debit),
@@ -148,6 +151,7 @@ export function storedRowFromTradeDraft(
     strategy: normalizeNullableStrategy(row.strategy),
     ticker: normalizeTickerInput(row.ticker),
     month: row.month,
+    expiry_date: row.expiryDate || null,
     size: validSignedNumber(row.size),
     strike_price: validPositiveCurrency(row.strikePrice),
     credit_debit: validPositiveCurrency(row.creditDebit),
@@ -170,6 +174,7 @@ export function tradeRequestFromDraftRow(
     strategy: storedRow.strategy,
     ticker: storedRow.ticker,
     month: storedRow.month,
+    expiry_date: storedRow.expiry_date,
     size: storedRow.size,
     strike_price: storedRow.strike_price,
     credit_debit: storedRow.credit_debit,

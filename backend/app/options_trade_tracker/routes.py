@@ -124,6 +124,9 @@ def replace_options_trade_tracker_trades(
             strategy=trade.strategy,
             ticker=trade.ticker,
             month=trade.month,
+            expiry_date=(
+                trade.expiry_date.isoformat() if trade.expiry_date else None
+            ),
             size=trade.size,
             strike_price=trade.strike_price,
             credit_debit=trade.credit_debit,
@@ -209,6 +212,7 @@ def trade_response(trade: OptionsTrade) -> OptionsTradeRowResponse:
         strategy=trade.strategy,
         ticker=trade.ticker,
         month=trade.month,
+        expiry_date=trade.expiry_date,
         size=trade.size,
         strike_price=trade.strike_price,
         credit_debit=trade.credit_debit,

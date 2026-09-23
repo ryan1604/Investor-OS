@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
+import { Bar, BarChart, CartesianGrid, ReferenceLine, XAxis, YAxis } from 'recharts'
 
 import {
   ChartContainer,
@@ -98,7 +98,8 @@ export function MonthlyPerformanceChart({
             <BarChart
               accessibilityLayer
               data={stackedData}
-              margin={{ left: 8, right: 8 }}
+              stackOffset="sign"
+              margin={{ top: 8, left: 8, right: 8 }}
             >
               <CartesianGrid vertical={false} />
               <XAxis
@@ -117,11 +118,18 @@ export function MonthlyPerformanceChart({
                 cursor={false}
                 content={
                   <ChartTooltipContent
-                    formatter={(value) => formatCurrency(Number(value))}
+                    nameKey="dataKey"
+                    valueFormatter={(value) => formatCurrency(Number(value))}
                   />
                 }
               />
               <ChartLegend content={<ChartLegendContent />} />
+              {/* Keep a numeric domain even when every strategy nets to zero. */}
+              <ReferenceLine
+                y={0}
+                ifOverflow="extendDomain"
+                stroke="var(--muted-foreground)"
+              />
               {activeStrategies.map((strategy, index) => (
                 <Bar
                   key={strategy}
@@ -129,7 +137,6 @@ export function MonthlyPerformanceChart({
                   name={strategy}
                   stackId="strategy"
                   fill={strategyChartColor(index)}
-                  radius={[3, 3, 0, 0]}
                 />
               ))}
             </BarChart>
@@ -143,7 +150,7 @@ export function MonthlyPerformanceChart({
             <BarChart
               accessibilityLayer
               data={netData}
-              margin={{ left: 8, right: 8 }}
+              margin={{ top: 8, left: 8, right: 8 }}
             >
               <CartesianGrid vertical={false} />
               <XAxis
@@ -162,15 +169,20 @@ export function MonthlyPerformanceChart({
                 cursor={false}
                 content={
                   <ChartTooltipContent
-                    formatter={(value) => formatCurrency(Number(value))}
+                    nameKey="dataKey"
+                    valueFormatter={(value) => formatCurrency(Number(value))}
                   />
                 }
+              />
+              <ReferenceLine
+                y={0}
+                ifOverflow="extendDomain"
+                stroke="var(--muted-foreground)"
               />
               <Bar
                 dataKey="total"
                 name="Net P&L"
                 fill="var(--chart-1)"
-                radius={[4, 4, 0, 0]}
               />
             </BarChart>
           </ChartContainer>
@@ -219,7 +231,7 @@ function formatCompactCurrency(value: number) {
   const absoluteValue = Math.abs(value)
 
   if (absoluteValue >= 1000) {
-    return `$${formatNumber(value / 1000, {
+    return `${value < 0 ? '-' : ''}$${formatNumber(absoluteValue / 1000, {
       maximumFractionDigits: 1,
     })}k`
   }

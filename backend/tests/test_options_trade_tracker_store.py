@@ -294,3 +294,47 @@ def test_delete_unknown_tracker_raises_not_found(tmp_path):
 
     with pytest.raises(OptionsTradeTrackerNotFoundError):
         store.delete_tracker("missing")
+
+
+def test_expiry_date_round_trips_and_migrates_existing_tables(tmp_path):
+    import sqlite3
+
+    database_path = tmp_path / "options-trade-trackers.sqlite3"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "CREATE TABLE options_trade_rows (tracker_id TEXT, id TEXT, month TEXT)"
+        )
+
+    store = OptionsTradeTrackerStore(database_path)
+    with sqlite3.connect(database_path) as connection:
+        columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(options_trade_rows)")
+        }
+    assert "expiry_date" in columns
+
+    store = make_store(tmp_path / "fresh")
+    tracker = store.create_tracker("Income", tracker_id="tracker-1")
+    trades = store.replace_trades(
+        tracker.id,
+        [
+            OptionsTrade(
+                id="row-1",
+                tracker_id=tracker.id,
+                display_order=1,
+                status="In Progress",
+                strategy=None,
+                ticker=None,
+                month="oct",
+                size=None,
+                strike_price=None,
+                credit_debit=None,
+                exit=None,
+                created_at="",
+                updated_at="",
+                expiry_date="2026-10-16",
+            )
+        ],
+    )
+
+    assert trades[0].expiry_date == "2026-10-16"

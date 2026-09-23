@@ -21,7 +21,7 @@ afterEach(cleanup)
 function trades(values: number[]): CompletedTradeProjection[] {
   return values.map((pnl, index) => ({ pnl, row: {
     id: `row-${index}`, display_order: index + 1, status: 'Completed', strategy: `STRATEGY ${index + 1}`,
-    ticker: 'SYN', month: 'may', size: -1, strike_price: 100, credit_debit: 5, exit: 2,
+    ticker: 'SYN', month: 'may', expiry_date: null, size: -1, strike_price: 100, credit_debit: 5, exit: 2,
     created_at: '', updated_at: '',
   } }))
 }

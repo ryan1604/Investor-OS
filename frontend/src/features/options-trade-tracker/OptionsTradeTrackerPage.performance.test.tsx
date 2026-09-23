@@ -13,7 +13,7 @@ import {
 } from '@/api/optionsTradeTrackers'
 import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
 import { deriveStrategyStats } from '@/features/options-trade-tracker/lib/tradeTracker'
-import { mockTableLayout } from '@/features/options-trade-tracker/mockTableLayout.test-support'
+import { mockTableLayout, scrollPage } from '@/features/options-trade-tracker/mockTableLayout.test-support'
 
 const { inputRender, selectRender } = vi.hoisted(() => ({
   inputRender: vi.fn(),
@@ -69,6 +69,7 @@ const trades: OptionsTradeRow[] = Array.from({ length: 3 }, (_, index) => ({
   strategy: 'CC',
   ticker: 'SYN',
   month: 'may',
+  expiry_date: null,
   size: -1,
   strike_price: 100,
   credit_debit: 5 + index,
@@ -100,7 +101,10 @@ beforeEach(() => {
   }))
 })
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  scrollPage(0)
+})
 
 function clearRenders() {
   inputRender.mockClear()
@@ -206,7 +210,7 @@ describe('tracker edit isolation', () => {
     expect(screen.getByText('$89,400.00')).toBeTruthy()
     expect(screen.getByRole('table', { name: 'Trades' }).getAttribute('aria-rowcount')).toBe('302')
 
-    fireEvent.scroll(screen.getByRole('region', { name: 'Trades table' }), { target: { scrollTop: 16250 } })
+    act(() => scrollPage(16250))
     const last = await screen.findByLabelText('Ticker row row-299')
     expect(last.closest('tr')!.cells[0].textContent).toBe('300')
     for (const spacer of screen.getByRole('table', { name: 'Trades' }).querySelectorAll('tr[aria-hidden="true"] td')) {
@@ -244,7 +248,7 @@ describe('tracker edit isolation', () => {
     const credit = await screen.findByLabelText('Credit debit row row-0') as HTMLInputElement
     act(() => credit.focus())
     fireEvent.change(credit, { target: { value: '5.' } })
-    fireEvent.scroll(screen.getByRole('region', { name: 'Trades table' }), { target: { scrollTop: 10000 } })
+    act(() => scrollPage(10000))
     await screen.findByLabelText('Ticker row row-190')
     expect(document.activeElement).toBe(credit)
     expect(credit.value).toBe('5.')

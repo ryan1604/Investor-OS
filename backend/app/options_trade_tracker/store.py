@@ -43,6 +43,7 @@ class OptionsTrade:
     exit: float | None
     created_at: str
     updated_at: str
+    expiry_date: str | None = None
 
 
 class OptionsTradeTrackerStore(RowDatabase):
@@ -189,6 +190,7 @@ class OptionsTradeTrackerStore(RowDatabase):
                     strategy,
                     ticker,
                     month,
+                    expiry_date,
                     size,
                     strike_price,
                     credit_debit,
@@ -233,6 +235,7 @@ class OptionsTradeTrackerStore(RowDatabase):
                         strategy,
                         ticker,
                         month,
+                        expiry_date,
                         size,
                         strike_price,
                         credit_debit,
@@ -240,7 +243,7 @@ class OptionsTradeTrackerStore(RowDatabase):
                         created_at,
                         updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -251,6 +254,7 @@ class OptionsTradeTrackerStore(RowDatabase):
                             trade.strategy,
                             trade.ticker,
                             trade.month,
+                            trade.expiry_date,
                             trade.size,
                             trade.strike_price,
                             trade.credit_debit,
@@ -362,6 +366,7 @@ def trade_from_row(row: sqlite3.Row) -> OptionsTrade:
         strategy=row["strategy"],
         ticker=row["ticker"],
         month=row["month"],
+        expiry_date=row["expiry_date"],
         size=row["size"],
         strike_price=row["strike_price"],
         credit_debit=row["credit_debit"],
@@ -382,6 +387,7 @@ def create_trade_rows_table(connection: sqlite3.Connection) -> None:
             strategy TEXT,
             ticker TEXT,
             month TEXT,
+            expiry_date TEXT,
             size REAL,
             strike_price REAL,
             credit_debit REAL,
@@ -396,3 +402,9 @@ def create_trade_rows_table(connection: sqlite3.Connection) -> None:
         )
         """
     )
+    trade_row_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(options_trade_rows)")
+    }
+    if "expiry_date" not in trade_row_columns:
+        connection.execute("ALTER TABLE options_trade_rows ADD COLUMN expiry_date TEXT")

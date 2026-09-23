@@ -8,7 +8,7 @@ import type { CompletedTradeProjection } from '../lib/tradeTracker'
 
 const trades: CompletedTradeProjection[] = ['CC', 'CUSTOM / RATIO SPREAD'].map((strategy, index) => ({
   pnl: 0, row: { id: `row-${index}`, display_order: index + 1, status: 'Completed', strategy,
-    ticker: 'SYN', month: 'may', size: -(index + 1), strike_price: 100, credit_debit: 0.02, exit: 0, created_at: '', updated_at: '' },
+    ticker: 'SYN', month: 'may', expiry_date: null, size: -(index + 1), strike_price: 100, credit_debit: 0.02, exit: 0, created_at: '', updated_at: '' },
 }))
 
 beforeEach(() => {

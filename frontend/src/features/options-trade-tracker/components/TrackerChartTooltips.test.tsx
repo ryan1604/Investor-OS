@@ -27,7 +27,7 @@ beforeEach(() => { tooltip.index = 4 })
 function trade(strategy: string, pnl: number, size = -1): CompletedTradeProjection {
   return { pnl, row: {
     id: `${strategy}-${pnl}`, display_order: 1, status: 'Completed', strategy,
-    ticker: 'SYN', month: 'may', size, strike_price: 100, credit_debit: 5, exit: 2,
+    ticker: 'SYN', month: 'may', expiry_date: null, size, strike_price: 100, credit_debit: 5, exit: 2,
     created_at: '', updated_at: '',
   } }
 }

@@ -6,9 +6,9 @@ import {
   ChartLegend,
   ChartLegendContent,
   ChartTooltip,
-  ChartTooltipContent,
 } from '@/components/ui/chart'
 import { StatsChartEmptyState } from '@/features/options-trade-tracker/components/MonthlyPerformanceChart'
+import { StrategyExecutionTooltip } from '@/features/options-trade-tracker/components/StrategyExecutionTooltip'
 import {
   deriveStrategyCountPieData,
   type CompletedTradeProjection,
@@ -19,7 +19,6 @@ import {
   strategyChartConfig,
   strategyChartKey,
 } from '@/features/options-trade-tracker/lib/trackerCharts'
-import { formatNumber } from '@/lib/format'
 
 type StrategyExecutionPieChartProps = {
   completedTrades: CompletedTradeProjection[]
@@ -51,21 +50,17 @@ export function StrategyExecutionPieChart({
           initialDimension={{ width: 520, height: 320 }}
         >
           <PieChart accessibilityLayer>
-            <ChartTooltip
-              content={
-                <ChartTooltipContent
-                  nameKey="strategyKey"
-                  formatter={(value) => formatNumber(Number(value))}
-                />
-              }
-            />
+            <ChartTooltip content={<StrategyExecutionTooltip data={keyedData} />} />
             <Pie
               data={keyedData}
               dataKey="count"
-              nameKey="strategyKey"
+              nameKey="strategy"
               innerRadius={62}
               outerRadius={104}
               paddingAngle={2}
+              // Animated sectors remount their hover targets and can miss mouseleave.
+              // Keep the slices stable; the tooltip still animates between positions.
+              isAnimationActive={false}
             >
               {keyedData.map((slice, index) => (
                 <Cell

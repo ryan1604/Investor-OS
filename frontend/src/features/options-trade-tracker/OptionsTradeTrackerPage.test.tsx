@@ -7,6 +7,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -22,6 +23,7 @@ import {
   updateOptionsTradeTrackerNotes,
 } from '@/api/optionsTradeTrackers'
 import { OptionsTradeTrackerPage } from '@/features/options-trade-tracker/OptionsTradeTrackerPage'
+import { mockTableLayout } from '@/features/options-trade-tracker/mockTableLayout.test-support'
 
 vi.mock('@/api/optionsTradeTrackers', () => ({
   createOptionsTradeTracker: vi.fn(),
@@ -36,6 +38,7 @@ vi.mock('@/api/optionsTradeTrackers', () => ({
 }))
 
 beforeAll(() => {
+  mockTableLayout()
   Element.prototype.hasPointerCapture ??= vi.fn(() => false)
   Element.prototype.setPointerCapture ??= vi.fn()
   Element.prototype.releasePointerCapture ??= vi.fn()
@@ -75,6 +78,7 @@ beforeEach(() => {
               strategy: 'SPREAD',
               ticker: 'MSFT',
               month: 'feb',
+              expiry_date: null,
               size: null,
               strike_price: null,
               credit_debit: null,
@@ -100,6 +104,7 @@ beforeEach(() => {
         strategy: trade.strategy ?? null,
         ticker: trade.ticker ?? null,
         month: trade.month ?? null,
+        expiry_date: trade.expiry_date ?? null,
         size: trade.size ?? null,
         strike_price: trade.strike_price ?? null,
         credit_debit: trade.credit_debit ?? null,
@@ -289,7 +294,13 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
+    const table = screen.getByRole('table', { name: 'Trades' })
+    expect(table.querySelector('th')!.textContent).toBe('Row')
+    expect(table.querySelector('tbody td')!.getAttribute('colspan')).toBe('11')
+    expect(table.querySelector('tfoot td')!.getAttribute('colspan')).toBe('9')
     fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
+    const firstRow = screen.getByLabelText(/Ticker row/).closest('tr')!
+    expect(firstRow.cells[0].textContent).toBe('1')
 
     setFirstStrategy('WHEEL')
     fireEvent.change(screen.getByLabelText(/Ticker row/), {
@@ -305,6 +316,8 @@ describe('OptionsTradeTrackerPage', () => {
       target: { value: '1.5' },
     })
     fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
+    const secondRow = screen.getAllByLabelText(/Ticker row/)[1].closest('tr')!
+    expect(secondRow.cells[0].textContent).toBe('2')
 
     expect((screen.getAllByLabelText(/Ticker row/)[0] as HTMLInputElement).value).toBe(
       'AAPL',
@@ -314,7 +327,10 @@ describe('OptionsTradeTrackerPage', () => {
       screen.getAllByLabelText(/Drag row/)[0],
       screen.getAllByLabelText(/Drag row/)[1],
     )
+    expect(secondRow.cells[0].textContent).toBe('1')
+    expect(firstRow.cells[0].textContent).toBe('2')
     fireEvent.click(screen.getAllByLabelText(/Delete row/)[0])
+    expect(firstRow.cells[0].textContent).toBe('1')
     fireEvent.click(screen.getByRole('button', { name: 'Save trades' }))
 
     await waitFor(() => {
@@ -331,6 +347,125 @@ describe('OptionsTradeTrackerPage', () => {
         expect.any(AbortSignal),
       )
     })
+  })
+
+  it('colors row P&L and the total by their own signs as unsaved drafts cross zero', async () => {
+    vi.mocked(fetchOptionsTradeTracker).mockResolvedValueOnce({
+      tracker: incomeTracker,
+      trades: [-1, 2, -1].map((size, index) => ({
+        id: `pnl-${index}`,
+        display_order: index + 1,
+        status: 'Completed',
+        strategy: 'WHEEL',
+        ticker: 'SYN',
+        month: 'may',
+        expiry_date: null,
+        size,
+        strike_price: 100,
+        credit_debit: index === 2 ? 2.02 : 5,
+        exit: 2,
+        created_at: '',
+        updated_at: '',
+      })),
+      notes: '',
+      strategy_options: ['WHEEL', 'SPREAD'],
+    })
+    render(<OptionsTradeTrackerPage />)
+
+    const size = await screen.findByLabelText('Size row pnl-0')
+    const rowPnl = (id: string) =>
+      screen.getByLabelText(`Size row ${id}`).closest('tr')!.cells[9]
+    const total = screen.getByRole('table', { name: 'Trades' }).querySelector('tfoot')!
+    const totalPnl = total.querySelectorAll('td')[1]
+    expectPnlCell(rowPnl('pnl-0'), '$298.00', 'positive')
+    expectPnlCell(rowPnl('pnl-1'), '-$596.00', 'negative')
+    expectPnlCell(rowPnl('pnl-2'), '$0.00', 'neutral')
+    expectPnlCell(totalPnl, '-$298.00', 'negative')
+    expect(rowPnl('pnl-0').classList.contains('font-medium')).toBe(true)
+
+    fireEvent.change(size, { target: { value: '-3' } })
+    expectPnlCell(rowPnl('pnl-0'), '$894.00', 'positive')
+    expectPnlCell(totalPnl, '$298.00', 'positive')
+
+    fireEvent.change(size, { target: { value: '-2' } })
+    expectPnlCell(totalPnl, '$0.00', 'neutral')
+
+    fireEvent.change(screen.getByLabelText('Credit debit row pnl-0'), {
+      target: { value: '2.02' },
+    })
+    expectPnlCell(rowPnl('pnl-0'), '$0.00', 'neutral')
+    expectPnlCell(totalPnl, '-$596.00', 'negative')
+
+    fireEvent.change(size, { target: { value: '-' } })
+    expectPnlCell(rowPnl('pnl-0'), '', 'neutral')
+    expectPnlCell(totalPnl, '-$596.00', 'negative')
+    expect(total.querySelector('td')!.className).not.toMatch(/text-(emerald|red)/)
+    expect(replaceOptionsTradeTrackerTrades).not.toHaveBeenCalled()
+  })
+
+  it('updates P&L colors when a new draft is completed, edited, and deleted', async () => {
+    render(<OptionsTradeTrackerPage />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
+    const rowPnl = screen.getByLabelText(/Size row/).closest('tr')!.cells[9]
+    const totalPnl = screen.getByRole('table', { name: 'Trades' })
+      .querySelectorAll('tfoot td')[1]
+    expectPnlCell(rowPnl, '', 'neutral')
+    expectPnlCell(totalPnl, '$0.00', 'neutral')
+
+    setFirstStrategy('WHEEL')
+    for (const [field, value] of [
+      ['Ticker', 'SYN'], ['Size', '-1'], ['Strike price', '100'],
+      ['Credit debit', '5'], ['Exit', '2'],
+    ]) {
+      fireEvent.change(screen.getByLabelText(new RegExp(`${field} row`)), {
+        target: { value },
+      })
+    }
+    expectPnlCell(rowPnl, '', 'neutral')
+    setFirstStatus('Completed')
+    expectPnlCell(rowPnl, '$298.00', 'positive')
+    expectPnlCell(totalPnl, '$298.00', 'positive')
+
+    fireEvent.change(screen.getByLabelText(/Size row/), { target: { value: '1' } })
+    expectPnlCell(rowPnl, '-$298.00', 'negative')
+    expectPnlCell(totalPnl, '-$298.00', 'negative')
+
+    setFirstStatus('In Progress')
+    expectPnlCell(rowPnl, '', 'neutral')
+    expectPnlCell(totalPnl, '$0.00', 'neutral')
+    setFirstStatus('Completed')
+    expectPnlCell(totalPnl, '-$298.00', 'negative')
+    fireEvent.click(screen.getByLabelText(/Delete row/))
+    expectPnlCell(totalPnl, '$0.00', 'neutral')
+    expect(replaceOptionsTradeTrackerTrades).not.toHaveBeenCalled()
+  })
+
+  it('picks an expiry date and shows the colored month with DTE in US time', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-09-23T16:00:00Z'))
+    try {
+      render(<OptionsTradeTrackerPage />)
+      fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
+      const trigger = screen.getByLabelText(/Month row/)
+      expect(trigger.textContent).toBe('Sep')
+
+      fireEvent.click(trigger)
+      fireEvent.click(within(await screen.findByRole('grid')).getByText('25'))
+      expect(trigger.textContent).toBe('Sep - 2 DTE')
+      expect(trigger.querySelector('.rounded-sm')!.className).toMatch(
+        /bg-pink-500\/10 text-pink-700/,
+      )
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save trades' }))
+      await waitFor(() => expect(replaceOptionsTradeTrackerTrades).toHaveBeenCalledWith(
+        'income',
+        { trades: [expect.objectContaining({ month: 'sep', expiry_date: '2026-09-25' })] },
+        expect.any(AbortSignal),
+      ))
+      expect(screen.getByLabelText(/Month row/).textContent).toBe('Sep - 2 DTE')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('creates global strategy options from strategy cells', async () => {
@@ -493,6 +628,40 @@ describe('OptionsTradeTrackerPage', () => {
     expect(screen.getByDisplayValue('AAPL')).toBeTruthy()
     expect(screen.getByDisplayValue('Unsaved notes')).toBeTruthy()
     expect(screen.queryByDisplayValue('STALE NOTES')).toBeNull()
+  })
+
+  it('preserves newer edits on the same tracker when a trade save finishes', async () => {
+    const tradesSave = deferred<
+      Awaited<ReturnType<typeof replaceOptionsTradeTrackerTrades>>
+    >()
+    vi.mocked(replaceOptionsTradeTrackerTrades).mockReturnValueOnce(tradesSave.promise)
+
+    render(<OptionsTradeTrackerPage />)
+    await screen.findByText('Income')
+    fireEvent.click(await screen.findByRole('button', { name: 'Add row' }))
+    fireEvent.change(screen.getByLabelText(/Ticker row/), {
+      target: { value: 'aapl' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Save trades' }))
+    fireEvent.change(screen.getByLabelText(/Ticker row/), {
+      target: { value: 'msft' },
+    })
+    fireEvent.change(screen.getByLabelText(/Size row/), {
+      target: { value: '-2' },
+    })
+
+    tradesSave.resolve(trackerDetail(incomeTracker, '', 'AAPL'))
+    await act(async () => { await tradesSave.promise })
+
+    expect(screen.getByDisplayValue('MSFT')).toBeTruthy()
+    expect(screen.getByDisplayValue('-2')).toBeTruthy()
+    expect(screen.queryByDisplayValue('AAPL')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save trades' }))
+    await waitFor(() => expect(replaceOptionsTradeTrackerTrades).toHaveBeenLastCalledWith(
+      'income',
+      { trades: [expect.objectContaining({ ticker: 'MSFT', size: -2 })] },
+      expect.any(AbortSignal),
+    ))
   })
 
   it('keeps simultaneous trade and notes saves independent out of order', async () => {
@@ -690,6 +859,13 @@ describe('OptionsTradeTrackerPage', () => {
 
 })
 
+function expectPnlCell(cell: Element, text: string, sign: 'positive' | 'negative' | 'neutral') {
+  expect(cell.textContent).toBe(text)
+  expect(cell.classList.contains('text-right')).toBe(true)
+  expect(cell.classList.contains('text-emerald-400')).toBe(sign === 'positive')
+  expect(cell.classList.contains('text-red-400')).toBe(sign === 'negative')
+}
+
 function openSelect(label: string | RegExp) {
   fireEvent.pointerDown(screen.getByLabelText(label), {
     button: 0,
@@ -739,6 +915,7 @@ function trackerDetail(
         strategy: 'WHEEL',
         ticker,
         month: 'jan' as const,
+        expiry_date: null,
         size: null,
         strike_price: null,
         credit_debit: null,

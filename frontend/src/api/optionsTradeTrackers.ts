@@ -39,6 +39,7 @@ export type OptionsTradeRow = {
   strategy: string | null
   ticker: string | null
   month: OptionsTradeMonth | null
+  expiry_date: string | null
   size: number | null
   strike_price: number | null
   credit_debit: number | null
@@ -54,6 +55,7 @@ export type OptionsTradeRowRequest = {
   strategy?: string | null
   ticker?: string | null
   month?: OptionsTradeMonth | null
+  expiry_date?: string | null
   size?: number | null
   strike_price?: number | null
   credit_debit?: number | null

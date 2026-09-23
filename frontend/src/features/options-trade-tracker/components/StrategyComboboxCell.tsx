@@ -14,6 +14,7 @@ type StrategySelectCellProps = {
   strategies: string[]
   onChange: (value: string) => void
   onAddStrategy: () => void
+  onOpenChange?: (open: boolean) => void
 }
 
 export function StrategySelectCell({
@@ -22,9 +23,10 @@ export function StrategySelectCell({
   strategies,
   onChange,
   onAddStrategy,
+  onOpenChange,
 }: StrategySelectCellProps) {
   return (
-    <Select value={value} onValueChange={onChange}>
+    <Select value={value} onValueChange={onChange} onOpenChange={onOpenChange}>
       <SelectTrigger
         aria-label={`Strategy row ${id}`}
         className="w-full justify-between"

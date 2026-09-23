@@ -1,5 +1,5 @@
 from collections.abc import Hashable, Iterable
-from datetime import datetime
+from datetime import date, datetime
 import math
 import re
 from typing import Annotated, Any, Literal, NotRequired, Self, TypeVar, TypedDict
@@ -295,6 +295,7 @@ class OptionsTradeRowRequest(BaseModel):
     strategy: str | None = None
     ticker: str | None = None
     month: str | None = None
+    expiry_date: date | None = None
     size: float | None = None
     strike_price: float | None = None
     credit_debit: float | None = None
@@ -425,6 +426,7 @@ class OptionsTradeRowResponse(BaseModel):
     strategy: str | None = None
     ticker: str | None = None
     month: str | None = None
+    expiry_date: str | None = None
     size: float | None = None
     strike_price: float | None = None
     credit_debit: float | None = None
