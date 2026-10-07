@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from threading import Event, Lock
+from threading import Condition, Event, Lock
 from time import monotonic, perf_counter
 from typing import Protocol
 from zoneinfo import ZoneInfo
@@ -75,9 +75,11 @@ class OptionMetadataProvider(Protocol):
 
 OPTION_METADATA_CACHE_TTL_SECONDS = 15 * 60
 ANALYSIS_UNDERLYING_PRICE_CACHE_TTL_SECONDS = 60
-OPTION_CHAIN_CONTRACT_CACHE_TTL_SECONDS = 15 * 60
+# Exact fallback resolves the displayed strikes plus this margin on each side.
+OPTION_CHAIN_FALLBACK_STRIKE_MARGIN = 8
 OPTION_CHAIN_QUOTE_CACHE_TTL_SECONDS = 5
 OPTION_CHAIN_PREFETCH_EXPIRATION_COUNT = 3
+OPTION_CHAIN_PREFETCH_PRICE_WAIT_SECONDS = 10
 UNDERLYING_PRICE_LOOKBACK_DAYS = 7
 US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 
@@ -105,11 +107,15 @@ class CachedOptionMetadataProvider:
         self.current_time = current_time
         self.entries: dict[str, CachedOptionMetadata] = {}
         self.lock = Lock()
+        # One lock per ticker, so a slow fetch never holds up other tickers.
+        self.ticker_locks: dict[str, Lock] = {}
 
     def fetch_option_metadata(self, ticker: str) -> OptionMetadata:
         normalized_ticker = normalize_ticker(ticker)
 
         with self.lock:
+            ticker_lock = self.ticker_locks.setdefault(normalized_ticker, Lock())
+        with ticker_lock:
             current_time = self.current_time()
             entry = self.entries.get(normalized_ticker)
             if entry is None or current_time >= entry.expires_at:
@@ -137,22 +143,12 @@ class CachedUnderlyingPrice:
 
 
 @dataclass(frozen=True)
-class CachedOptionChainContracts:
-    contracts: list[ScannerOptionContract]
-    expires_at: float
-
-
-@dataclass(frozen=True)
 class OptionChainContractHydration:
     contracts: list[ScannerOptionContract]
     timed_out_strikes: frozenset[float] = frozenset()
     invalid_strikes: frozenset[float] = frozenset()
-
-
-@dataclass(frozen=True)
-class PartialOptionChainContracts:
-    contracts: list[ScannerOptionContract]
-    retryable_strikes: frozenset[float]
+    # Strikes left unrequested because the exact fallback was limited.
+    skipped_strikes: frozenset[float] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -165,8 +161,22 @@ class CachedOptionChainQuote:
 @dataclass
 class OptionChainContractsInFlight:
     ready: Event
+    priority: ContractLookupPriority
     contracts: list[ScannerOptionContract] | None = None
     error: BaseException | None = None
+
+
+class ContractLookupPriority:
+    """Mark preload lookups as background until someone waits on them."""
+
+    def __init__(self, *, background: bool = False) -> None:
+        self.background = background
+
+    def is_background(self) -> bool:
+        return self.background
+
+    def promote(self) -> None:
+        self.background = False
 
 
 class AnalysisUnderlyingPriceCache:
@@ -179,28 +189,40 @@ class AnalysisUnderlyingPriceCache:
         self.ttl_seconds = ttl_seconds
         self.current_time = current_time
         self.entries: dict[str, CachedUnderlyingPrice] = {}
-        self.lock = Lock()
+        self.condition = Condition()
 
     def get(self, ticker: str) -> float | None:
-        normalized_ticker = normalize_ticker(ticker)
+        with self.condition:
+            return self._get(normalize_ticker(ticker))
 
-        with self.lock:
-            entry = self.entries.get(normalized_ticker)
-            if entry is None:
-                return None
-            if self.current_time() >= entry.expires_at:
-                self.entries.pop(normalized_ticker, None)
-                return None
-            return entry.price
+    def wait(self, ticker: str, timeout: float) -> float | None:
+        """Return the price once analysis caches it, or None after timeout."""
+        normalized_ticker = normalize_ticker(ticker)
+        with self.condition:
+            self.condition.wait_for(
+                lambda: self._get(normalized_ticker) is not None,
+                timeout=max(0, timeout),
+            )
+            return self._get(normalized_ticker)
 
     def set(self, ticker: str, price: float) -> None:
         normalized_ticker = normalize_ticker(ticker)
 
-        with self.lock:
+        with self.condition:
             self.entries[normalized_ticker] = CachedUnderlyingPrice(
                 price=price,
                 expires_at=self.current_time() + self.ttl_seconds,
             )
+            self.condition.notify_all()
+
+    def _get(self, normalized_ticker: str) -> float | None:
+        entry = self.entries.get(normalized_ticker)
+        if entry is None:
+            return None
+        if self.current_time() >= entry.expires_at:
+            self.entries.pop(normalized_ticker, None)
+            return None
+        return entry.price
 
 
 class OptionChainSnapshotProvider(Protocol):
@@ -210,6 +232,9 @@ class OptionChainSnapshotProvider(Protocol):
         expiration: str,
         strikes: list[float],
         stop_event: Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority: ContractLookupPriority | None = None,
     ) -> OptionChainContractHydration:
         ...
 
@@ -225,7 +250,10 @@ class OptionChainStreamProvider(Protocol):
         self,
         contracts: list[ScannerOptionContract],
         stop_event: Event,
-    ) -> Iterable[list[tuple[tuple[float, str], OptionQuote]]]:
+        rotation: OptionChainRotation | None = None,
+    ) -> Iterable[
+        list[tuple[tuple[float, str], OptionQuote]] | OptionChainStreamNotice
+    ]:
         ...
 
 
@@ -249,20 +277,29 @@ class ScannerOptionQuote:
     bid: float | None
     ask: float | None
     delta: float | None
+    line_limited: bool = False
+
+
+@dataclass(frozen=True)
+class OptionChainStreamNotice:
+    """Stream status from the provider; None clears the previous warning."""
+
+    warning: str | None
 
 
 @dataclass(frozen=True)
 class ScannerContractSelection:
     contracts: list[ScannerOptionContract]
     excluded_contracts: int = 0
+    invalid_lookups: frozenset[tuple[str, float]] = frozenset()
+    timed_out_lookups: frozenset[tuple[str, float]] = frozenset()
 
 
 class OptionScannerProvider(Protocol):
     def fetch_option_contracts(
         self,
         ticker: str,
-        expirations: list[str],
-        strikes: list[float],
+        lookups: list[tuple[str, float]],
         right: str,
         cancel_event: Event,
     ) -> ScannerContractSelection:
@@ -298,6 +335,7 @@ class FullOptionChainSnapshot:
     underlying_price_captured_at: datetime
     contracts: list[ScannerOptionQuote]
     excluded_contracts: int = 0
+    line_limited_contracts: int = 0
 
 
 @dataclass(frozen=True)
@@ -326,6 +364,88 @@ class OptionChainContext:
     contracts: list[ScannerOptionContract]
 
 
+class OptionContractCache:
+    """Resolved option contracts per strike for the current US market date.
+
+    An empty entry records a strike IB reported as nonexistent. Timeouts are
+    never stored, so those strikes are requested again.
+    """
+
+    def __init__(
+        self,
+        current_date_provider: Callable[[], date] = current_us_market_date,
+    ) -> None:
+        self.current_date_provider = current_date_provider
+        self.market_date: date | None = None
+        self.entries: dict[
+            tuple[str, str, str, float],
+            tuple[ScannerOptionContract, ...],
+        ] = {}
+        self.skipped_strikes: dict[tuple[str, str], frozenset[float]] = {}
+        self.lock = Lock()
+
+    def get_many(
+        self,
+        ticker: str,
+        right: str,
+        lookups: Iterable[tuple[str, float]],
+    ) -> dict[tuple[str, float], tuple[ScannerOptionContract, ...]]:
+        with self.lock:
+            self._roll_market_date()
+            return {
+                (expiration, strike): self.entries[key]
+                for expiration, strike in lookups
+                if (key := (ticker, expiration, right, strike)) in self.entries
+            }
+
+    def store(
+        self,
+        ticker: str,
+        right: str,
+        entries: dict[tuple[str, float], Iterable[ScannerOptionContract]],
+    ) -> None:
+        with self.lock:
+            self._roll_market_date()
+            for (expiration, strike), contracts in entries.items():
+                self.entries[(ticker, expiration, right, strike)] = tuple(contracts)
+
+    def chain_skipped_strikes(self, ticker: str, expiration: str) -> frozenset[float]:
+        with self.lock:
+            self._roll_market_date()
+            return self.skipped_strikes.get((ticker, expiration), frozenset())
+
+    def remember_chain_skipped_strikes(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: Iterable[float],
+    ) -> None:
+        with self.lock:
+            self._roll_market_date()
+            key = (ticker, expiration)
+            self.skipped_strikes[key] = self.skipped_strikes.get(
+                key,
+                frozenset(),
+            ).union(strikes)
+
+    def clear(self, ticker: str, expiration: str) -> None:
+        with self.lock:
+            for key in [
+                key
+                for key in self.entries
+                if key[0] == ticker and key[1] == expiration
+            ]:
+                self.entries.pop(key, None)
+            self.skipped_strikes.pop((ticker, expiration), None)
+
+    def _roll_market_date(self) -> None:
+        market_date = self.current_date_provider()
+        if market_date != self.market_date:
+            self.entries.clear()
+            self.skipped_strikes.clear()
+            self.market_date = market_date
+
+
 class OptionsClient:
     def __init__(
         self,
@@ -338,7 +458,9 @@ class OptionsClient:
         scanner_provider: OptionScannerProvider | None = None,
         current_date_provider: Callable[[], date] = current_us_market_date,
         chain_context_workers: int = 2,
+        max_chain_strikes: int = 80,
         max_chain_stream_strikes: int = 80,
+        contract_cache: OptionContractCache | None = None,
     ) -> None:
         self.store = store
         self.historical_provider = historical_provider
@@ -349,18 +471,16 @@ class OptionsClient:
         self.historical_stream_provider = historical_stream_provider
         self.scanner_provider = scanner_provider
         self.current_date_provider = current_date_provider
+        self.max_chain_strikes = max(1, max_chain_strikes)
         self.max_chain_stream_strikes = max(1, max_chain_stream_strikes)
-        self.contract_cache_ttl_seconds = OPTION_CHAIN_CONTRACT_CACHE_TTL_SECONDS
-        self.contract_cache: dict[
-            tuple[str, str, tuple[float, ...]],
-            CachedOptionChainContracts,
-        ] = {}
-        self.partial_contract_cache: dict[
-            tuple[str, str, tuple[float, ...]],
-            PartialOptionChainContracts,
-        ] = {}
+        self.chain_fallback_strike_count = (
+            self.max_chain_strikes + 2 * OPTION_CHAIN_FALLBACK_STRIKE_MARGIN
+        )
+        self.contract_cache = contract_cache or OptionContractCache(
+            current_date_provider
+        )
         self.contract_cache_in_flight: dict[
-            tuple[str, str, tuple[float, ...]],
+            tuple[str, str],
             OptionChainContractsInFlight,
         ] = {}
         self.contract_cache_lock = Lock()
@@ -371,6 +491,7 @@ class OptionsClient:
         ] = {}
         self.quote_cache_lock = Lock()
         self.chain_prefetch_generation = 0
+        self.chain_prefetch_price_wait_seconds = OPTION_CHAIN_PREFETCH_PRICE_WAIT_SECONDS
         self.chain_prefetch_lock = Lock()
         self.chain_prefetch_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -407,12 +528,16 @@ class OptionsClient:
             raise OptionsDataUnavailable("Ticker is required.")
 
         as_of_date = current_date or self.current_date_provider()
+        started_at = perf_counter()
         underlying_price = self.get_underlying_price(
             normalized_ticker,
             current_date=as_of_date,
         )
+        price_ms = elapsed_ms(started_at)
         captured_at = datetime.now(US_MARKET_TIME_ZONE)
+        metadata_started_at = perf_counter()
         metadata = self.metadata_provider.fetch_option_metadata(normalized_ticker)
+        metadata_ms = elapsed_ms(metadata_started_at)
         expirations = [
             expiration
             for expiration in sorted_expirations(metadata.expirations)
@@ -429,16 +554,35 @@ class OptionsClient:
                 else strike > underlying_price
             )
         ]
-        selection = self.scanner_provider.fetch_option_contracts(
+        contracts_started_at = perf_counter()
+        selection = self.scanner_contracts(
             normalized_ticker,
             expirations,
             strikes,
             right,
             cancel_event,
         )
+        contracts_ms = elapsed_ms(contracts_started_at)
+        quotes_started_at = perf_counter()
         quotes = self.scanner_provider.fetch_quotes(
             selection.contracts,
             cancel_event,
+        )
+        logger.info(
+            "Options scanner chain timing ticker=%s right=%s expirations=%s "
+            "strikes=%s contracts=%s excluded_contracts=%s price_ms=%.1f "
+            "metadata_ms=%.1f contracts_ms=%.1f quotes_ms=%.1f total_ms=%.1f",
+            normalized_ticker,
+            right,
+            len(expirations),
+            len(strikes),
+            len(selection.contracts),
+            selection.excluded_contracts,
+            price_ms,
+            metadata_ms,
+            contracts_ms,
+            elapsed_ms(quotes_started_at),
+            elapsed_ms(started_at),
         )
         return FullOptionChainSnapshot(
             ticker=normalized_ticker,
@@ -446,6 +590,56 @@ class OptionsClient:
             underlying_price_captured_at=captured_at,
             contracts=quotes,
             excluded_contracts=selection.excluded_contracts,
+            line_limited_contracts=sum(1 for quote in quotes if quote.line_limited),
+        )
+
+    def scanner_contracts(
+        self,
+        ticker: str,
+        expirations: list[str],
+        strikes: list[float],
+        right: str,
+        cancel_event: Event,
+    ) -> ScannerContractSelection:
+        assert self.scanner_provider is not None
+        lookups = [
+            (expiration, strike)
+            for expiration in expirations
+            for strike in sorted(set(strikes))
+        ]
+        resolved = self.contract_cache.get_many(ticker, right, lookups)
+        missing = [lookup for lookup in lookups if lookup not in resolved]
+        if missing:
+            selection = self.scanner_provider.fetch_option_contracts(
+                ticker,
+                missing,
+                right,
+                cancel_event,
+            )
+            fetched: dict[tuple[str, float], list[ScannerOptionContract]] = {
+                lookup: [] for lookup in selection.invalid_lookups
+            }
+            for contract in selection.contracts:
+                fetched.setdefault((contract.expiration, contract.strike), []).append(
+                    contract
+                )
+            self.contract_cache.store(ticker, right, fetched)
+            resolved = {**resolved, **{key: tuple(value) for key, value in fetched.items()}}
+        logger.info(
+            "Options scanner contract cache ticker=%s right=%s lookups=%s "
+            "cached=%s requested=%s",
+            ticker,
+            right,
+            len(lookups),
+            len(lookups) - len(missing),
+            len(missing),
+        )
+        contracts = [
+            contract for lookup in lookups for contract in resolved.get(lookup, ())
+        ]
+        return ScannerContractSelection(
+            contracts=contracts,
+            excluded_contracts=sum(1 for lookup in lookups if not resolved.get(lookup)),
         )
 
     def cancel_scanner(self) -> None:
@@ -584,14 +778,10 @@ class OptionsClient:
         expirations: list[str],
     ) -> None:
         selected_expirations = expirations[:OPTION_CHAIN_PREFETCH_EXPIRATION_COUNT]
-        underlying_price = self.analysis_underlying_price_cache.get(ticker)
-        if underlying_price is None or not selected_expirations:
+        if not selected_expirations:
             logger.info(
-                "Option chain prefetch skipped ticker=%s reason=%s",
+                "Option chain prefetch skipped ticker=%s reason=missing_expirations",
                 ticker,
-                "missing_underlying_price"
-                if underlying_price is None
-                else "missing_expirations",
             )
             return
 
@@ -628,23 +818,28 @@ class OptionsClient:
         strikes: list[float],
         generation: int,
     ) -> None:
+        underlying_price = self.prefetch_underlying_price(ticker, generation)
         for expiration in expirations:
-            with self.chain_prefetch_lock:
-                if generation != self.chain_prefetch_generation:
-                    logger.info(
-                        "Option chain prefetch cancelled ticker=%s expiration=%s",
-                        ticker,
-                        expiration,
-                    )
-                    return
+            if self.chain_prefetch_superseded(generation):
+                logger.info(
+                    "Option chain prefetch cancelled ticker=%s expiration=%s",
+                    ticker,
+                    expiration,
+                )
+                return
 
             started_at = perf_counter()
             try:
+                # Without a price, exact fallback would look up every strike
+                # and crowd out the chain the user opens.
                 contracts = self.chain_contracts(
                     ticker,
                     expiration,
                     strikes,
                     cacheable=True,
+                    underlying_price=underlying_price,
+                    fallback_without_price=False,
+                    background=True,
                 )
             except Exception:
                 logger.exception(
@@ -662,6 +857,27 @@ class OptionsClient:
                 len(contracts),
                 elapsed_ms(started_at),
             )
+
+    def prefetch_underlying_price(self, ticker: str, generation: int) -> float | None:
+        # Expirations are requested alongside analysis, which caches the price
+        # that limits exact-lookup fallback to strikes near the money.
+        deadline = monotonic() + self.chain_prefetch_price_wait_seconds
+        while True:
+            remaining = deadline - monotonic()
+            underlying_price = self.analysis_underlying_price_cache.wait(
+                ticker,
+                min(0.25, remaining),
+            )
+            if (
+                underlying_price is not None
+                or remaining <= 0
+                or self.chain_prefetch_superseded(generation)
+            ):
+                return underlying_price
+
+    def chain_prefetch_superseded(self, generation: int) -> bool:
+        with self.chain_prefetch_lock:
+            return generation != self.chain_prefetch_generation
 
     def get_chain(
         self,
@@ -709,6 +925,7 @@ class OptionsClient:
         if not expiration:
             raise OptionsDataUnavailable("Expiration is required.")
 
+        started_at = perf_counter()
         context = self.chain_context(
             normalized_ticker,
             expiration,
@@ -717,55 +934,112 @@ class OptionsClient:
         )
         if stop_event.is_set():
             return
-        stream_strikes = capped_chain_strikes(
+        context_ms = elapsed_ms(started_at)
+        display_strikes = capped_chain_strikes(
             context.strikes,
+            context.underlying_price,
+            self.max_chain_strikes,
+        )
+        display_strike_set = set(display_strikes)
+        display_contracts = [
+            contract
+            for contract in context.contracts
+            if contract.strike in display_strike_set
+        ]
+        live_strikes = capped_chain_strikes(
+            display_strikes,
             context.underlying_price,
             self.max_chain_stream_strikes,
         )
-        stream_strike_set = set(stream_strikes)
-        stream_contracts = [
-            contract
-            for contract in context.contracts
-            if contract.strike in stream_strike_set
-        ]
-        if len(stream_strikes) < len(context.strikes):
+        live_strike_set = set(live_strikes)
+        stream_contracts = nearest_contracts_first(
+            [
+                contract
+                for contract in display_contracts
+                if contract.strike in live_strike_set
+            ],
+            context.underlying_price,
+        )
+        # Strikes outside the live window are quoted in rotating batches.
+        rotation = (
+            OptionChainRotation(
+                context.ticker,
+                context.expiration,
+                display_strikes,
+                display_contracts,
+                live_strikes,
+                context.underlying_price,
+            )
+            if len(live_strikes) < len(display_strikes)
+            else None
+        )
+        if len(display_strikes) < len(context.strikes) or rotation is not None:
             logger.info(
                 "Options chain stream strikes capped ticker=%s expiration=%s "
-                "requested_strikes=%s streamed_strikes=%s",
+                "requested_strikes=%s displayed_strikes=%s live_strikes=%s",
                 context.ticker,
                 context.expiration,
                 len(context.strikes),
-                len(stream_strikes),
+                len(display_strikes),
+                len(live_strikes),
             )
-        quotes = self.cached_chain_quotes(stream_contracts)
-        delta_bounds = option_chain_delta_bounds(stream_strikes, quotes)
+        quotes = self.cached_chain_quotes(display_contracts)
+        delta_bounds = option_chain_delta_bounds(display_strikes, quotes)
+        if rotation is not None:
+            rotation.observe(quotes, delta_bounds)
+        timing = ChainStreamTiming(
+            context.ticker,
+            context.expiration,
+            started_at,
+            context_ms,
+            display_strikes,
+            len(context.strikes),
+        )
+        timing.observe(quotes, delta_bounds)
+        streaming_message = (
+            f"Streaming {len(display_strikes)} strike(s) for "
+            f"{context.ticker} {context.expiration}."
+        )
 
         yield OptionChainLiveMessage(
             type="snapshot",
             ticker=context.ticker,
             expiration=context.expiration,
-            rows=option_chain_rows(stream_strikes, quotes),
-            message=(
-                f"Streaming {len(stream_strikes)} strike(s) for "
-                f"{context.ticker} {context.expiration}."
-            ),
+            rows=option_chain_rows(display_strikes, quotes),
+            message=streaming_message,
         )
 
+        stream_warning = None
         for quote_batch in self.chain_stream_provider.stream_chain_quotes(
             stream_contracts,
             stop_event,
+            rotation,
         ):
             if stop_event.is_set():
                 break
+            if isinstance(quote_batch, OptionChainStreamNotice):
+                stream_warning = quote_batch.warning
+                yield OptionChainLiveMessage(
+                    type="snapshot",
+                    ticker=context.ticker,
+                    expiration=context.expiration,
+                    rows=option_chain_rows(display_strikes, quotes),
+                    message=streaming_message,
+                    warning=stream_warning,
+                )
+                continue
 
             changed_quotes = dict(quote_batch)
             quotes.update(changed_quotes)
-            self.remember_chain_quotes(stream_contracts, changed_quotes)
-            rows = option_chain_rows(stream_strikes, quotes)
+            self.remember_chain_quotes(display_contracts, changed_quotes)
+            rows = option_chain_rows(display_strikes, quotes)
             next_delta_bounds = option_chain_delta_bounds(
-                stream_strikes,
+                display_strikes,
                 quotes,
             )
+            if rotation is not None:
+                rotation.observe(quotes, next_delta_bounds)
+            timing.observe(quotes, next_delta_bounds)
             if next_delta_bounds != delta_bounds:
                 delta_bounds = next_delta_bounds
                 yield OptionChainLiveMessage(
@@ -773,10 +1047,8 @@ class OptionsClient:
                     ticker=context.ticker,
                     expiration=context.expiration,
                     rows=rows,
-                    message=(
-                        f"Streaming {len(stream_strikes)} strike(s) for "
-                        f"{context.ticker} {context.expiration}."
-                    ),
+                    message=streaming_message,
+                    warning=stream_warning,
                 )
                 continue
             for changed_strike in sorted({key[0] for key, _quote in quote_batch}):
@@ -904,6 +1176,7 @@ class OptionsClient:
             strikes,
             cacheable=not metadata.expirations or expiration in metadata.expirations,
             stop_event=stop_event,
+            underlying_price=underlying_price,
         )
         contract_strikes = sorted({contract.strike for contract in contracts})
 
@@ -923,45 +1196,55 @@ class OptionsClient:
         *,
         cacheable: bool,
         stop_event: Event | None = None,
+        underlying_price: float | None = None,
+        fallback_without_price: bool = True,
+        background: bool = False,
     ) -> list[ScannerOptionContract]:
+        fallback_strikes = (
+            self.chain_fallback_strikes(strikes, underlying_price)
+            if underlying_price is not None or fallback_without_price
+            else []
+        )
         if not cacheable:
             self.clear_contract_cache(ticker, expiration)
-            return self.chain_provider.fetch_chain_contract_hydration(
-                ticker,
-                expiration,
-                strikes,
-                stop_event,
-            ).contracts
+            return preferred_chain_contracts(
+                self.chain_provider.fetch_chain_contract_hydration(
+                    ticker,
+                    expiration,
+                    strikes,
+                    stop_event,
+                    fallback_strikes,
+                ).contracts
+            )
 
-        key = (ticker, expiration, tuple(strikes))
-        current_time = monotonic()
+        key = (ticker, expiration)
         with self.contract_cache_lock:
-            entry = self.contract_cache.get(key)
-            if entry is not None and current_time < entry.expires_at:
+            cached = self.cached_chain_contract_entries(ticker, expiration, strikes)
+            skipped = self.contract_cache.chain_skipped_strikes(ticker, expiration)
+            fallback_strike_set = set(fallback_strikes)
+            requested_strikes = [
+                strike
+                for strike in strikes
+                if any((strike, right) not in cached for right in OPTION_RIGHT_CODES)
+                and (strike not in skipped or strike in fallback_strike_set)
+            ]
+            if not requested_strikes:
                 logger.info(
                     "Option chain contract cache hit ticker=%s expiration=%s "
                     "strikes=%s contracts=%s",
                     ticker,
                     expiration,
                     len(strikes),
-                    len(entry.contracts),
+                    sum(1 for entry in cached.values() if entry),
                 )
-                return list(entry.contracts)
-            if entry is not None:
-                self.contract_cache.pop(key, None)
+                return preferred_chain_contracts_from_entries(cached)
 
-            partial_entry = self.partial_contract_cache.get(key)
-            requested_strikes = (
-                sorted(partial_entry.retryable_strikes)
-                if partial_entry is not None
-                else strikes
-            )
-            retained_contracts = (
-                list(partial_entry.contracts) if partial_entry is not None else []
-            )
             in_flight = self.contract_cache_in_flight.get(key)
             if in_flight is None:
-                in_flight = OptionChainContractsInFlight(ready=Event())
+                in_flight = OptionChainContractsInFlight(
+                    ready=Event(),
+                    priority=ContractLookupPriority(background=background),
+                )
                 self.contract_cache_in_flight[key] = in_flight
                 owner = True
                 logger.info(
@@ -971,10 +1254,12 @@ class OptionsClient:
                     expiration,
                     len(strikes),
                     len(requested_strikes),
-                    len(retained_contracts),
+                    sum(1 for entry in cached.values() if entry),
                 )
             else:
                 owner = False
+                if not background:
+                    in_flight.priority.promote()
                 logger.info(
                     "Option chain contract cache sharing in-flight hydration "
                     "ticker=%s expiration=%s strikes=%s",
@@ -986,26 +1271,28 @@ class OptionsClient:
         if not owner:
             while not in_flight.ready.wait(timeout=0.05):
                 if stop_event is not None and stop_event.is_set():
-                    return retained_contracts
+                    return preferred_chain_contracts_from_entries(cached)
             if in_flight.error is not None:
                 raise in_flight.error
-            return list(in_flight.contracts or [])
+            with self.contract_cache_lock:
+                return preferred_chain_contracts_from_entries(
+                    self.cached_chain_contract_entries(ticker, expiration, strikes)
+                )
 
         started_at = perf_counter()
+        requested_strike_set = set(requested_strikes)
+        resolved_keys = frozenset(
+            key for key in cached if key[0] in requested_strike_set
+        )
         try:
             hydration = self.chain_provider.fetch_chain_contract_hydration(
                 ticker,
                 expiration,
                 requested_strikes,
                 stop_event,
-            )
-            contracts_by_key = {
-                (contract.strike, contract.right): contract
-                for contract in [*retained_contracts, *hydration.contracts]
-            }
-            contracts = sorted(
-                contracts_by_key.values(),
-                key=lambda contract: (contract.strike, contract.right),
+                [strike for strike in fallback_strikes if strike in requested_strike_set],
+                resolved_keys,
+                priority=in_flight.priority,
             )
         except BaseException as error:
             with self.contract_cache_lock:
@@ -1015,26 +1302,22 @@ class OptionsClient:
             raise
 
         with self.contract_cache_lock:
-            in_flight.contracts = contracts
-            if hydration.timed_out_strikes:
-                self.partial_contract_cache[key] = PartialOptionChainContracts(
-                    contracts=list(contracts),
-                    retryable_strikes=hydration.timed_out_strikes,
-                )
-                self.contract_cache.pop(key, None)
-            else:
-                self.contract_cache[key] = CachedOptionChainContracts(
-                    contracts=list(contracts),
-                    expires_at=monotonic() + self.contract_cache_ttl_seconds,
-                )
-                self.partial_contract_cache.pop(key, None)
+            self.store_chain_hydration(
+                ticker,
+                expiration,
+                requested_strikes,
+                hydration,
+                resolved_keys,
+            )
+            entries = self.cached_chain_contract_entries(ticker, expiration, strikes)
             self.contract_cache_in_flight.pop(key, None)
             in_flight.ready.set()
 
+        contracts = preferred_chain_contracts_from_entries(entries)
         logger.info(
             "Option chain contract hydration ticker=%s expiration=%s state=%s "
             "requested_strikes=%s resolved_strikes=%s timed_out_strikes=%s "
-            "invalid_strikes=%s contracts=%s ib_wait_ms=%.1f",
+            "invalid_strikes=%s skipped_strikes=%s contracts=%s ib_wait_ms=%.1f",
             ticker,
             expiration,
             "partial" if hydration.timed_out_strikes else "complete",
@@ -1042,19 +1325,80 @@ class OptionsClient:
             len({contract.strike for contract in hydration.contracts}),
             len(hydration.timed_out_strikes),
             len(hydration.invalid_strikes),
+            len(hydration.skipped_strikes),
             len(contracts),
             elapsed_ms(started_at),
         )
-        return list(contracts)
+        return contracts
+
+    def chain_fallback_strikes(
+        self,
+        strikes: list[float],
+        underlying_price: float | None,
+    ) -> list[float]:
+        if underlying_price is None:
+            return list(strikes)
+        return capped_chain_strikes(
+            strikes,
+            underlying_price,
+            self.chain_fallback_strike_count,
+        )
+
+    def cached_chain_contract_entries(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+    ) -> dict[tuple[float, str], tuple[ScannerOptionContract, ...]]:
+        lookups = [(expiration, strike) for strike in strikes]
+        return {
+            (strike, right): contracts
+            for right in OPTION_RIGHT_CODES
+            for (_expiration, strike), contracts in self.contract_cache.get_many(
+                ticker,
+                right,
+                lookups,
+            ).items()
+        }
+
+    def store_chain_hydration(
+        self,
+        ticker: str,
+        expiration: str,
+        requested_strikes: list[float],
+        hydration: OptionChainContractHydration,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+    ) -> None:
+        unsettled_strikes = hydration.timed_out_strikes | hydration.skipped_strikes
+        resolved: dict[tuple[float, str], list[ScannerOptionContract]] = {}
+        for contract in hydration.contracts:
+            resolved.setdefault(
+                (contract.strike, option_right_code(contract.right)),
+                [],
+            ).append(contract)
+        for right in OPTION_RIGHT_CODES:
+            self.contract_cache.store(
+                ticker,
+                right,
+                {
+                    (expiration, strike): resolved.get((strike, right), [])
+                    for strike in requested_strikes
+                    if (strike, right) in resolved
+                    or (
+                        strike not in unsettled_strikes
+                        and (strike, right) not in resolved_keys
+                    )
+                },
+            )
+        if hydration.skipped_strikes:
+            self.contract_cache.remember_chain_skipped_strikes(
+                ticker,
+                expiration,
+                hydration.skipped_strikes,
+            )
 
     def clear_contract_cache(self, ticker: str, expiration: str) -> None:
-        with self.contract_cache_lock:
-            for key in list(self.contract_cache):
-                if key[0] == ticker and key[1] == expiration:
-                    self.contract_cache.pop(key, None)
-            for key in list(self.partial_contract_cache):
-                if key[0] == ticker and key[1] == expiration:
-                    self.partial_contract_cache.pop(key, None)
+        self.contract_cache.clear(ticker, expiration)
 
     def cached_chain_quotes(
         self,
@@ -1273,6 +1617,243 @@ def append_completed_bar(
     ]
 
 
+class ChainStreamTiming:
+    def __init__(
+        self,
+        ticker: str,
+        expiration: str,
+        started_at: float,
+        context_ms: float,
+        stream_strikes: list[float],
+        contract_strike_count: int,
+    ) -> None:
+        self.ticker = ticker
+        self.expiration = expiration
+        self.started_at = started_at
+        self.context_ms = context_ms
+        self.stream_strikes = stream_strikes
+        self.contract_strike_count = contract_strike_count
+        self.first_quote_logged = False
+        self.delta_bounds_logged = False
+
+    def observe(
+        self,
+        quotes: dict[tuple[float, str], OptionQuote],
+        delta_bounds: tuple[float | None, float | None],
+    ) -> None:
+        if not self.first_quote_logged and any(
+            quote.bid is not None or quote.ask is not None
+            for quote in quotes.values()
+        ):
+            self.first_quote_logged = True
+            logger.info(
+                "Option chain first quoted row ticker=%s expiration=%s "
+                "context_ms=%.1f elapsed_ms=%.1f",
+                self.ticker,
+                self.expiration,
+                self.context_ms,
+                elapsed_ms(self.started_at),
+            )
+        lower_bound, upper_bound = delta_bounds
+        if self.delta_bounds_logged or lower_bound is None or upper_bound is None:
+            return
+        self.delta_bounds_logged = True
+        logger.info(
+            "Option chain delta bounds ticker=%s expiration=%s lower=%s upper=%s "
+            "window_strikes=%s stream_strikes=%s contract_strikes=%s "
+            "lower_at_stream_edge=%s upper_at_stream_edge=%s elapsed_ms=%.1f",
+            self.ticker,
+            self.expiration,
+            lower_bound,
+            upper_bound,
+            sum(
+                1
+                for strike in self.stream_strikes
+                if lower_bound <= strike <= upper_bound
+            ),
+            len(self.stream_strikes),
+            self.contract_strike_count,
+            lower_bound == self.stream_strikes[0],
+            upper_bound == self.stream_strikes[-1],
+            elapsed_ms(self.started_at),
+        )
+
+
+OPTION_CHAIN_RECENTER_STRIKES = 3
+
+
+class OptionChainRotation:
+    """Live window and rotating refresh plan for one open option chain.
+
+    The stream provider reads the live window and takes rotation batches from
+    its own threads; the client reports merged quotes through observe().
+    """
+
+    def __init__(
+        self,
+        ticker: str,
+        expiration: str,
+        display_strikes: list[float],
+        contracts: list[ScannerOptionContract],
+        live_strikes: list[float],
+        underlying_price: float | None,
+        *,
+        recenter_strikes: int = OPTION_CHAIN_RECENTER_STRIKES,
+        clock: Callable[[], float] = monotonic,
+    ) -> None:
+        self.ticker = ticker
+        self.expiration = expiration
+        self.display_strikes = sorted(display_strikes)
+        self.contracts_by_strike: dict[float, list[ScannerOptionContract]] = {}
+        for contract in contracts:
+            self.contracts_by_strike.setdefault(contract.strike, []).append(contract)
+        self.live_strike_count = len(live_strikes)
+        self.live_strikes = sorted(live_strikes)
+        self.center_price = underlying_price
+        self.recenter_strikes = recenter_strikes
+        self.clock = clock
+        self.delta_bounds: tuple[float | None, float | None] = (None, None)
+        self.pending_strikes: list[float] = []
+        self.passes = 0
+        self.pass_strike_count = 0
+        self.pass_started_at: float | None = None
+        self.captured_at: dict[tuple[float, str], float] = {}
+        self.lock = Lock()
+
+    def live_contracts(self) -> list[ScannerOptionContract]:
+        with self.lock:
+            live_strikes = list(self.live_strikes)
+            center_price = self.center_price
+        return nearest_contracts_first(
+            [
+                contract
+                for strike in live_strikes
+                for contract in self.contracts_by_strike.get(strike, [])
+            ],
+            center_price,
+        )
+
+    def next_batch(self, max_contracts: int) -> list[ScannerOptionContract]:
+        """Return whole outer strikes to quote next, starting a pass as needed."""
+        with self.lock:
+            if not self.pending_strikes:
+                self._start_pass()
+            live_strike_set = set(self.live_strikes)
+            batch: list[ScannerOptionContract] = []
+            while self.pending_strikes:
+                strike = self.pending_strikes[0]
+                strike_contracts = self.contracts_by_strike.get(strike, [])
+                if batch and len(batch) + len(strike_contracts) > max_contracts:
+                    break
+                self.pending_strikes.pop(0)
+                if strike not in live_strike_set:
+                    batch.extend(strike_contracts)
+            return batch
+
+    def record(self, keys: Iterable[tuple[float, str]]) -> None:
+        captured_at = self.clock()
+        with self.lock:
+            for key in keys:
+                self.captured_at[key] = captured_at
+
+    def observe(
+        self,
+        quotes: dict[tuple[float, str], OptionQuote],
+        delta_bounds: tuple[float | None, float | None],
+    ) -> None:
+        """Track delta bounds and recenter the live window on large moves."""
+        at_the_money = at_the_money_strike(self.display_strikes, quotes)
+        with self.lock:
+            self.delta_bounds = delta_bounds
+            if at_the_money is None:
+                return
+            center = self.live_strikes[len(self.live_strikes) // 2]
+            moved = abs(
+                self.display_strikes.index(at_the_money)
+                - self.display_strikes.index(center)
+            )
+            if moved < self.recenter_strikes:
+                return
+            self.center_price = at_the_money
+            self.live_strikes = capped_chain_strikes(
+                self.display_strikes,
+                at_the_money,
+                self.live_strike_count,
+            )
+        logger.info(
+            "Option chain live window recentered ticker=%s expiration=%s "
+            "center_strike=%s moved_strikes=%s",
+            self.ticker,
+            self.expiration,
+            at_the_money,
+            moved,
+        )
+
+    def _start_pass(self) -> None:
+        now = self.clock()
+        if self.pass_strike_count and self.pass_started_at is not None:
+            logger.info(
+                "Option chain rotation pass complete ticker=%s expiration=%s "
+                "pass=%s strikes=%s oldest_quote_age_ms=%.0f elapsed_ms=%.0f",
+                self.ticker,
+                self.expiration,
+                self.passes,
+                self.pass_strike_count,
+                (now - min(self.captured_at.values(), default=now)) * 1_000,
+                (now - self.pass_started_at) * 1_000,
+            )
+        live_strike_set = set(self.live_strikes)
+        strikes = [
+            strike for strike in self.display_strikes if strike not in live_strike_set
+        ]
+        if self.passes:
+            # Later passes refresh the displayed range plus one strike beyond
+            # each bound, so the range can widen when the market moves.
+            lower_bound, upper_bound = self.delta_bounds
+            lower_index = (
+                self.display_strikes.index(lower_bound) - 1
+                if lower_bound is not None
+                else 0
+            )
+            upper_index = (
+                self.display_strikes.index(upper_bound) + 1
+                if upper_bound is not None
+                else len(self.display_strikes) - 1
+            )
+            strikes = [
+                strike
+                for strike in strikes
+                if lower_index
+                <= self.display_strikes.index(strike)
+                <= upper_index
+            ]
+        # Outward from the live window on both sides.
+        self.pending_strikes = sorted(
+            strikes,
+            key=lambda strike: (
+                abs(strike - self.center_price)
+                if self.center_price is not None
+                else 0,
+                strike,
+            ),
+        )
+        self.passes += 1
+        self.pass_strike_count = len(self.pending_strikes)
+        self.pass_started_at = now
+
+
+def at_the_money_strike(
+    strikes: list[float],
+    quotes: dict[tuple[float, str], OptionQuote],
+) -> float | None:
+    quoted = []
+    for strike in strikes:
+        call = quotes.get((strike, "C"))
+        if call is not None and call.delta is not None:
+            quoted.append((abs(call.delta - 0.5), strike))
+    return min(quoted)[1] if quoted else None
+
+
 def capped_chain_strikes(
     strikes: list[float],
     underlying_price: float | None,
@@ -1285,6 +1866,58 @@ def capped_chain_strikes(
         sorted(strikes, key=lambda strike: (abs(strike - underlying_price), strike))[
             :maximum_count
         ]
+    )
+
+
+OPTION_RIGHT_CODES = ("C", "P")
+
+
+def option_right_code(right: str) -> str:
+    return {"CALL": "C", "PUT": "P"}.get(right, right)
+
+
+def option_contract_preference(contract: ScannerOptionContract) -> tuple[int, int]:
+    return (0 if contract.exchange == "SMART" else 1, contract.con_id)
+
+
+def preferred_chain_contracts(
+    contracts: Iterable[ScannerOptionContract],
+) -> list[ScannerOptionContract]:
+    selected: dict[tuple[float, str], ScannerOptionContract] = {}
+    for contract in contracts:
+        key = (contract.strike, option_right_code(contract.right))
+        current = selected.get(key)
+        if current is None or option_contract_preference(
+            contract
+        ) < option_contract_preference(current):
+            selected[key] = contract
+    return sorted(
+        selected.values(),
+        key=lambda contract: (contract.strike, contract.right),
+    )
+
+
+def preferred_chain_contracts_from_entries(
+    entries: dict[tuple[float, str], tuple[ScannerOptionContract, ...]],
+) -> list[ScannerOptionContract]:
+    return preferred_chain_contracts(
+        contract for contracts in entries.values() for contract in contracts
+    )
+
+
+def nearest_contracts_first(
+    contracts: list[ScannerOptionContract],
+    underlying_price: float | None,
+) -> list[ScannerOptionContract]:
+    if underlying_price is None:
+        return contracts
+    return sorted(
+        contracts,
+        key=lambda contract: (
+            abs(contract.strike - underlying_price),
+            contract.strike,
+            contract.right,
+        ),
     )
 
 

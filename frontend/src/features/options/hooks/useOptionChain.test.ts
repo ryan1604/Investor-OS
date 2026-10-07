@@ -250,6 +250,52 @@ describe('useOptionChain', () => {
     ])
   })
 
+  it('keeps the latest line-budget warning across row updates', async () => {
+    const { result } = renderHook(() =>
+      useOptionChain(analysis, '2026-06-19', false),
+    )
+
+    await waitFor(() => expect(FakeWebSocket.sockets).toHaveLength(1))
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [{ strike: 100, call: quote({ delta: 0.5 }), put: null }],
+        message: null,
+        warning: 'Waiting for free IB market-data lines.',
+      })
+      FakeWebSocket.sockets[0].receive({
+        type: 'update',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        row: { strike: 100, call: quote({ bid: 3 }), put: null },
+      })
+    })
+
+    act(() => {
+      animationFrameCallbacks.splice(0).forEach((callback) => callback(0))
+    })
+
+    expect(result.current.chain?.warning).toBe(
+      'Waiting for free IB market-data lines.',
+    )
+
+    act(() => {
+      FakeWebSocket.sockets[0].receive({
+        type: 'snapshot',
+        ticker: 'AAPL',
+        expiration: '2026-06-19',
+        rows: [{ strike: 100, call: quote({ delta: 0.5 }), put: null }],
+        message: null,
+        warning: null,
+      })
+    })
+
+    expect(result.current.chain?.warning).toBeNull()
+  })
+
   it('clears stream errors after a valid active snapshot', async () => {
     const { result } = renderHook(() =>
       useOptionChain(analysis, '2026-06-19', false),

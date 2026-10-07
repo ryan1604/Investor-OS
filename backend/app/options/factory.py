@@ -64,9 +64,13 @@ def create_options_client(
         historical_provider=IbHistoricalDailyBarProvider(app),
         metadata_provider=IbOptionMetadataProvider(app),
         chain_provider=IbOptionChainSnapshotProvider(app),
-        chain_stream_provider=IbOptionChainStreamProvider(app),
+        chain_stream_provider=IbOptionChainStreamProvider(
+            app,
+            rotation_lines=settings.option_chain_rotation_lines,
+        ),
         historical_stream_provider=IbHistoricalDailyBarStreamProvider(app),
         scanner_provider=IbOptionScannerProvider(app),
         chain_context_workers=settings.option_chain_context_workers,
+        max_chain_strikes=settings.max_option_chain_strikes,
         max_chain_stream_strikes=settings.max_option_chain_stream_strikes,
     )

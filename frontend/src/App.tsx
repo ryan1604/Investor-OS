@@ -13,6 +13,7 @@ import { OptionsScreenersProvider } from '@/features/options-screeners/OptionsSc
 import { OrdersPage } from '@/features/orders/OrdersPage'
 import { useOrders } from '@/features/orders/hooks/useOrders'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
+import { PortfolioAnalysisPage } from '@/features/portfolio-analysis/PortfolioAnalysisPage'
 import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
 import { portfolioAccountIds } from '@/features/portfolio/hooks/useSelectedAccount'
 import { RankStocksPage } from '@/features/rank-stocks/RankStocksPage'
@@ -20,6 +21,7 @@ import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
 
 export type AppPage =
   | 'portfolio'
+  | 'portfolio-analysis'
   | 'options'
   | 'csp-screener'
   | 'cc-screener'
@@ -92,6 +94,12 @@ function App() {
             <PortfolioPage
               portfolioState={portfolioState}
               selectedAccount={selectedAccount}
+              onSelectedAccountChange={setSelectedAccount}
+            />
+          ) : activePage === 'portfolio-analysis' ? (
+            <PortfolioAnalysisPage
+              accounts={accounts}
+              selectedAccount={tradingAccount}
               onSelectedAccountChange={setSelectedAccount}
             />
           ) : activePage === 'csp-screener' ? (

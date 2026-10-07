@@ -57,6 +57,7 @@ export type PortfolioResponse = {
 }
 
 export const PORTFOLIO_WS_URL = apiWebSocketUrl('/portfolio/ws')
+export const PORTFOLIO_QUOTES_WS_URL = apiWebSocketUrl('/portfolio/quotes/ws')
 
 export async function fetchPortfolio() {
   return requestJson<PortfolioResponse>('/portfolio', 'Portfolio')

@@ -3,8 +3,10 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Callable
 from datetime import date, datetime
+import logging
 import math
 import threading
+from time import perf_counter
 
 from app.options.client import (
     FullOptionChainSnapshot,
@@ -20,6 +22,7 @@ from app.options_screeners.domain import (
 from app.options_screeners.service import (
     OptionsScreenerServiceUnavailable,
     OptionsScreenerTickerResult,
+    line_limit_warning,
 )
 from app.options_screeners.single_leg import (
     FullOptionChainClient,
@@ -39,6 +42,7 @@ from app.schemas import (
 )
 
 WIDTH_TOLERANCE = 1e-6
+logger = logging.getLogger(__name__)
 
 
 class CreditSpreadOptionsScreenerScanService:
@@ -80,8 +84,10 @@ class CreditSpreadOptionsScreenerScanService:
         assert isinstance(filters, CreditSpreadScreenerFilters)
 
         current_date = self.current_date_provider()
+        started_at = perf_counter()
         candidates = []
         excluded_contracts = 0
+        line_limited_contracts = 0
 
         for right, strategy in strategy_requests(filters.strategy_types):
             if cancel_event.is_set():
@@ -108,6 +114,7 @@ class CreditSpreadOptionsScreenerScanService:
             candidates.extend(result.candidates)
             excluded_contracts += snapshot.excluded_contracts
             excluded_contracts += result.excluded_contracts
+            line_limited_contracts += snapshot.line_limited_contracts
 
         warnings = []
         if excluded_contracts:
@@ -123,6 +130,8 @@ class CreditSpreadOptionsScreenerScanService:
                     count=excluded_contracts,
                 )
             )
+        if line_limited_contracts:
+            warnings.append(line_limit_warning(ticker, line_limited_contracts))
         if not candidates:
             warnings.append(
                 OptionsScreenerTickerWarning(
@@ -131,6 +140,15 @@ class CreditSpreadOptionsScreenerScanService:
                     message="No credit spreads matched the saved filters.",
                 )
             )
+        logger.info(
+            "Options screener ticker scanned screener=%s ticker=%s "
+            "candidates=%s excluded_contracts=%s elapsed_ms=%.1f",
+            screener,
+            ticker,
+            len(candidates),
+            excluded_contracts,
+            (perf_counter() - started_at) * 1_000,
+        )
         return OptionsScreenerTickerResult(
             candidates=sort_candidates(candidates),
             excluded_contracts=excluded_contracts,

@@ -14,6 +14,7 @@ class FullChainClient:
         self.quotes = quotes
         self.requests = []
         self.cancelled = False
+        self.line_limited_contracts = 0
 
     def get_full_option_chain(self, ticker, **kwargs):
         self.requests.append((ticker, kwargs))
@@ -28,6 +29,7 @@ class FullChainClient:
                 tzinfo=ZoneInfo("America/New_York"),
             ),
             contracts=self.quotes,
+            line_limited_contracts=self.line_limited_contracts,
         )
 
     def cancel_scanner(self):

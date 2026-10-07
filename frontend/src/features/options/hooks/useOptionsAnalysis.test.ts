@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   fetchOptionExpirations,
   fetchOptionsAnalysis,
+  type OptionExpirationsResponse,
   type OptionsAnalysisResponse,
 } from '@/api/options'
 import { useOptionsAnalysis } from '@/features/options/hooks/useOptionsAnalysis'
@@ -107,7 +108,127 @@ describe('useOptionsAnalysis', () => {
 
     expect(requestSignals[0].aborted).toBe(true)
   })
+
+  it('requests expirations while analysis is loading', async () => {
+    let resolveAnalysis: (analysis: OptionsAnalysisResponse) => void = () =>
+      undefined
+    vi.mocked(fetchOptionsAnalysis).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveAnalysis = resolve
+        }),
+    )
+    vi.mocked(fetchOptionExpirations).mockResolvedValue(
+      expirationsResponse('AAPL'),
+    )
+
+    const { result } = renderHook(() => useOptionsAnalysis())
+
+    submitTicker(result, 'AAPL')
+    await waitFor(() => {
+      expect(fetchOptionExpirations).toHaveBeenCalledWith(
+        'AAPL',
+        expect.any(AbortSignal),
+      )
+    })
+    await act(async () => {
+      await Promise.resolve()
+    })
+    expect(result.current.expirations).toEqual([])
+    expect(result.current.isExpirationsLoading).toBe(true)
+
+    await act(async () => {
+      resolveAnalysis(analysisResponse('AAPL'))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(result.current.selectedExpiration).toBe('2026-06-19')
+    })
+    expect(result.current.expirations).toHaveLength(2)
+    expect(result.current.isExpirationsLoading).toBe(false)
+  })
+
+  it('does not show expirations when analysis fails', async () => {
+    vi.mocked(fetchOptionsAnalysis).mockRejectedValue(new Error('No data.'))
+    vi.mocked(fetchOptionExpirations).mockResolvedValue(
+      expirationsResponse('AAPL'),
+    )
+
+    const { result } = renderHook(() => useOptionsAnalysis())
+
+    submitTicker(result, 'AAPL')
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull()
+    })
+    expect(result.current.expirations).toEqual([])
+    expect(result.current.selectedExpiration).toBe('')
+    expect(result.current.isExpirationsLoading).toBe(false)
+  })
+
+  it('ignores expirations from an older ticker', async () => {
+    const expirationRequests: Array<
+      (response: OptionExpirationsResponse) => void
+    > = []
+    vi.mocked(fetchOptionsAnalysis).mockImplementation((ticker) =>
+      Promise.resolve(analysisResponse(ticker)),
+    )
+    vi.mocked(fetchOptionExpirations).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          expirationRequests.push(resolve)
+        }),
+    )
+
+    const { result } = renderHook(() => useOptionsAnalysis())
+
+    submitTicker(result, 'AAPL')
+    await waitFor(() => expect(expirationRequests).toHaveLength(1))
+    submitTicker(result, 'MSFT')
+    await waitFor(() => expect(expirationRequests).toHaveLength(2))
+
+    await act(async () => {
+      expirationRequests[0](expirationsResponse('AAPL', '2026-07-17'))
+      expirationRequests[1](expirationsResponse('MSFT'))
+      await Promise.resolve()
+    })
+
+    await waitFor(() => {
+      expect(result.current.analysis?.ticker).toBe('MSFT')
+      expect(result.current.selectedExpiration).toBe('2026-06-19')
+    })
+  })
 })
+
+function submitTicker(
+  result: { current: ReturnType<typeof useOptionsAnalysis> },
+  ticker: string,
+) {
+  act(() => {
+    result.current.setTicker(ticker)
+  })
+  act(() => {
+    void result.current.handleSubmit({
+      preventDefault: vi.fn(),
+    } as unknown as FormEvent<HTMLFormElement>)
+  })
+}
+
+function expirationsResponse(
+  ticker: string,
+  firstExpiration = '2026-06-19',
+): OptionExpirationsResponse {
+  return {
+    ticker,
+    expirations: [
+      { date: firstExpiration, days_to_expiration: 20 },
+      { date: '2026-08-21', days_to_expiration: 83 },
+    ],
+    selected_expiration: firstExpiration,
+    message: null,
+  }
+}
 
 function analysisResponse(ticker: string): OptionsAnalysisResponse {
   return {

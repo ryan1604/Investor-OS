@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import Settings, get_settings
@@ -14,6 +15,7 @@ from app.earnings_watch.provider import (
 from app.earnings_watch.routes import router as earnings_watch_router
 from app.earnings_watch.service import EarningsWatchService
 from app.earnings_watch.store import EarningsWatchStore
+from app.ib.options import IbHistoricalDailyBarProvider
 from app.ib.portfolio import IbPortfolioClient, PortfolioClient
 from app.ib.routes import router as ib_router
 from app.options.factory import OptionsAnalysisClient, create_options_client
@@ -42,6 +44,12 @@ from app.portfolio.nav_store import DailyNavStore
 from app.portfolio.flex import FlexClient
 from app.portfolio.nav_sync import NavSyncService
 from app.portfolio.routes import router as portfolio_router
+from app.portfolio_analysis.beta import BetaService
+from app.portfolio_analysis.beta_store import BetaStore
+from app.portfolio_analysis.limits_store import RiskLimitsStore
+from app.portfolio_analysis.routes import router as portfolio_analysis_router
+from app.portfolio_analysis.service import PortfolioAnalysisService
+from app.portfolio_analysis.snapshot_store import RiskSnapshotStore
 from app.portfolio.service import (
     PortfolioRefreshService,
     PortfolioSnapshotCache,
@@ -51,6 +59,7 @@ from app.portfolio.service import (
 from app.request_limits import RequestLimiter
 from app.stock_analysis.routes import router as stock_analysis_router
 from app.stock_analysis.store import StockAnalysisStore
+from app.validation import json_safe_validation_exception_handler
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,18 @@ def create_app(
             or create_options_client(app_settings, client)
         )
         setup_stores(app, app_settings)
+        ib_app = getattr(client, "app", None)
+        app.state.beta_service = BetaService(
+            app.state.beta_store,
+            IbHistoricalDailyBarProvider(ib_app) if ib_app is not None else None,
+        )
+        app.state.portfolio_analysis_service = PortfolioAnalysisService(
+            client,
+            app.state.beta_service,
+            risk_free_rate=app_settings.risk_free_rate,
+            snapshot_store=app.state.risk_snapshot_store,
+            nav_store=app.state.portfolio_nav_store,
+        )
         app.state.earnings_calendar_provider = (
             app_overrides.earnings_calendar_provider
             or AlphaVantageEarningsCalendarClient(app_settings.alpha_vantage_api_key)
@@ -121,6 +142,7 @@ def create_app(
         client.stop()
 
     api = FastAPI(title="Investor OS API", lifespan=lifespan)
+    api.add_exception_handler(RequestValidationError, json_safe_validation_exception_handler)
     api.add_middleware(
         CORSMiddleware,
         allow_origins=app_settings.allowed_origins,
@@ -130,6 +152,7 @@ def create_app(
     )
     api.include_router(ib_router)
     api.include_router(portfolio_router)
+    api.include_router(portfolio_analysis_router)
     api.include_router(options_router)
     api.include_router(options_screeners_router)
     api.include_router(options_trade_tracker_router)
@@ -154,6 +177,9 @@ def setup_stores(
     app.state.portfolio_nav_store = DailyNavStore(
         settings.portfolio_chart_values_database_path,
     )
+    app.state.beta_store = BetaStore(settings.portfolio_analysis_database_path)
+    app.state.risk_limits_store = RiskLimitsStore(settings.portfolio_analysis_database_path)
+    app.state.risk_snapshot_store = RiskSnapshotStore(settings.portfolio_analysis_database_path)
     app.state.options_trade_tracker_store = OptionsTradeTrackerStore(
         settings.options_trade_trackers_database_path,
     )

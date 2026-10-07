@@ -16,6 +16,7 @@ import {
   type SortState,
 } from '@/features/portfolio/lib/positions'
 import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
+import { usePortfolioQuotes } from '@/features/portfolio/hooks/usePortfolioQuotes'
 import { useSelectedAccount } from '@/features/portfolio/hooks/useSelectedAccount'
 
 type PortfolioPageProps = {
@@ -30,6 +31,7 @@ export function PortfolioPage({
   onSelectedAccountChange,
 }: PortfolioPageProps) {
   const { portfolio, isLoading, error, loadPortfolio } = portfolioState
+  usePortfolioQuotes()
   const [sort, setSort] = useState<SortState>(DEFAULT_SORT)
   const saved = useNavAccounts()
   const {

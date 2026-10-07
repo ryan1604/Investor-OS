@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { PortfolioResponse } from '@/api/portfolio'
 import { PortfolioPage } from '@/features/portfolio/PortfolioPage'
 
+vi.mock('@/features/portfolio/hooks/usePortfolioQuotes', () => ({
+  usePortfolioQuotes: () => undefined,
+}))
+
 vi.mock('@/features/portfolio/hooks/usePortfolioChartValues', () => ({
   usePortfolioChartValues: () => ({
     rows: [],

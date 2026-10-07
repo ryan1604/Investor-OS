@@ -1,12 +1,13 @@
 # Investor OS
 
-Investor OS is an investment and trading dashboard for Interactive Brokers. It combines live portfolio monitoring, US equity options analysis, options screening, order management, trade journaling, valuation modeling, stock ranking, earnings tracking, and day-trading notes.
+Investor OS is an investment and trading dashboard for Interactive Brokers. It combines live portfolio monitoring, portfolio risk analysis, US equity options analysis, options screening, order management, trade journaling, valuation modeling, stock ranking, earnings tracking, and day-trading notes.
 
 It is intended for personal use and does not currently provide alerts, non-US options support, authentication, or a hosted deployment configuration.
 
 ## Features
 
 - **Portfolio** - Monitor IBKR account summaries, positions, market prices, and P&L. View saved daily net account value (NAV) with date ranges and an editable monthly **Amount invested** history. Cached history remains available when TWS is offline.
+- **Portfolio Analysis** - See the account's option-adjusted, beta-weighted exposure, Greeks, assignment exposure, margin headroom, a stress grid with an estimated distance to margin call, user-set risk limits, realised volatility and drawdown, and a daily risk history. Read-only.
 - **Options** - Analyze US equity tickers with daily candles, Bollinger Bands, RSI, expirations, and live option chains. Bid/ask selections can build stock or multi-leg option order tickets.
 - **CSP, CC, and CS Screeners** - Scan saved ticker lists for cash-secured puts, covered calls, and put/call credit spreads. Shared features include durable filters, live scan progress, warnings, quote refresh, and option-ticket hand-off; CS also supports configurable spread widths and two-leg mapping.
 - **Orders** - Preview and transmit whole-share stock orders or option strategies. Track active and current-day terminal orders, reconcile IBKR state, amend supported orders, and cancel active orders.
@@ -23,15 +24,15 @@ flowchart TD
     browser["Browser<br/>React + Vite"]
     api["FastAPI backend"]
     sqlite[("SQLite<br/>backend/data/")]
-    gateway["TWS / IB Gateway"]
+    tws["TWS"]
     ib["Interactive Brokers"]
     flex["IBKR Flex Web Service"]
     alpha["Alpha Vantage"]
 
     browser -->|"REST + WebSockets"| api
     api --> sqlite
-    api -->|"ibapi"| gateway
-    gateway --> ib
+    api -->|"ibapi"| tws
+    tws --> ib
     api -->|"daily NAV"| flex
     api -->|"earnings calendar"| alpha
 ```
@@ -73,7 +74,7 @@ Install the following before starting:
 - [`uv`](https://docs.astral.sh/uv/)
 - Node.js with [`pnpm`](https://pnpm.io/installation)
 
-TWS/IB Gateway is required for live IBKR data, portfolio synchronization, and order workflows. Saved valuation and tracker data can be edited without a live connection, although the backend still initializes its IB client. Configure TWS/IB Gateway to accept API socket connections. The default settings are:
+Trader Workstation (TWS) is required for live IBKR data, portfolio synchronization, and order workflows. The app is used with TWS; IB Gateway is not supported because its data-server connections proved unstable under the app's option lookups. Saved valuation and tracker data can be edited without a live connection, although the backend still initializes its IB client. Configure TWS to accept API socket connections. The default settings are:
 
 ```text
 Host:      127.0.0.1
@@ -81,7 +82,7 @@ Port:      7496
 Client ID: 0
 ```
 
-If your TWS/IB Gateway instance uses another port, update `Settings.ib_port` in `backend/app/config.py`. Order transmission and editing also require API writes to be enabled and read-only API mode to be disabled. Available quotes and Greeks depend on the IBKR market-data permissions or delayed-data settings on the account.
+The default is the TWS live-trading port. If your TWS instance uses another port, such as 7497 for paper trading, update `Settings.ib_port` in `backend/app/config.py`. Order transmission and editing also require API writes to be enabled and read-only API mode to be disabled. Available quotes and Greeks depend on the IBKR market-data permissions or delayed-data settings on the account.
 
 ## Installation
 

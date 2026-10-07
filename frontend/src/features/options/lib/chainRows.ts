@@ -14,6 +14,7 @@ export function mergeLiveChainRows(
       underlying_price: chain?.underlying_price ?? null,
       rows: chain?.rows ?? [],
       message: message ?? chain?.message ?? null,
+      warning: chain?.warning ?? null,
     }
   }
 
@@ -50,6 +51,7 @@ export function mergeLiveChainRows(
     underlying_price: chain?.underlying_price ?? null,
     rows: nextRows,
     message: message ?? chain?.message ?? null,
+    warning: chain?.warning ?? null,
   }
 }
 
@@ -59,6 +61,7 @@ export function mergeLiveChainSnapshot(
   expiration: string,
   rows: OptionChainRow[],
   message: string | null,
+  warning: string | null = null,
 ): OptionChainResponse {
   return {
     ticker,
@@ -66,6 +69,7 @@ export function mergeLiveChainSnapshot(
     underlying_price: chain?.underlying_price ?? null,
     rows,
     message: message ?? chain?.message ?? null,
+    warning,
   }
 }
 

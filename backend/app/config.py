@@ -18,6 +18,7 @@ class Settings(BaseModel):
     stock_analysis_database_path: str = "data/stock_analysis.sqlite3"
     portfolio_chart_values_database_path: str = "data/portfolio_chart_values.sqlite3"
     earnings_watch_database_path: str = "data/earnings_watch.sqlite3"
+    portfolio_analysis_database_path: str = "data/portfolio_analysis.sqlite3"
     alpha_vantage_api_key: str | None = None
     ibkr_flex_token: SecretStr | None = Field(default=None, exclude=True, repr=False)
     ibkr_flex_query_id: str | None = None
@@ -31,8 +32,13 @@ class Settings(BaseModel):
     options_screener_job_retention_minutes: int = 30
     options_screener_subscriber_queue_size: int = 64
     option_chain_context_workers: int = 2
-    max_option_chain_stream_strikes: int = 80
+    max_option_chain_strikes: int = 80
+    max_option_chain_stream_strikes: int = 32
+    max_market_data_lines: int = 100
+    market_data_line_reserve: int = 5
+    option_chain_rotation_lines: int = 10
     order_subscriber_queue_size: int = 32
+    risk_free_rate: float = 0.04
     allowed_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

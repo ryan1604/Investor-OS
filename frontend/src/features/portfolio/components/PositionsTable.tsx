@@ -126,7 +126,7 @@ export function PositionsTable({
         ) : null}
         {!error && !isConnected && !isLoading ? (
           <Alert variant="muted" className="mb-4">
-            Start TWS or IB Gateway paper trading, then refresh this view.
+            Start TWS, then refresh this view.
           </Alert>
         ) : null}
 

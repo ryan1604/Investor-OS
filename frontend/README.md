@@ -1,6 +1,6 @@
 # Investor OS Frontend
 
-React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Options, CSP/CC/CS screeners, Options Trade Tracker, Orders, Stock Analysis, Earnings Watch, and Rank Stocks workflows backed by the FastAPI service.
+React and Vite frontend for the Investor OS local dashboard. It includes Portfolio, Portfolio Analysis, Options, CSP/CC/CS screeners, Options Trade Tracker, Orders, Stock Analysis, Earnings Watch, and Rank Stocks workflows backed by the FastAPI service.
 
 ## Local Setup
 
@@ -69,6 +69,14 @@ PUT /portfolio/chart-values?account={account}
 ```
 
 Net account value displays saved daily NAV with date ranges, tooltips, and sync status. 3Y/5Y appear when history covers them. Amount/Percentage toggles between NAV and change from the selected range's first value, including cash flows. The chart polls every 30 seconds, separates currency periods, and supports saved accounts while TWS is offline. Monthly Amount invested has its own chart and editor. Account switches isolate data and drafts.
+
+## Portfolio Analysis View
+
+The Portfolio Analysis page shows the selected account's market risk from `/portfolio/analysis/ws`: summary cards, a coverage banner, an exposure table grouped by underlying and strategy, the stress grid with the estimated distance to margin call, Realised Risk cards, and Risk History charts. It is read-only.
+
+Risk limits and beta overrides are edited on the page. Limits are saved per account and colour the limited metrics green, amber, or red; nothing is banded until limits are saved. Risk History loads `/portfolio/analysis/history` every minute, keeps missed sessions as gaps, and marks intraday snapshots.
+
+Leaving the page closes the WebSocket, which releases the extra market-data feeds.
 
 ## Options View
 
@@ -231,6 +239,7 @@ src/features/
 ├── options-trade-tracker/  Page root with components/, hooks/, and lib/ modules
 ├── orders/                 Active and terminal IB order management
 ├── portfolio/              Live portfolio, daily NAV, and monthly invested amounts
+├── portfolio-analysis/     Read-only risk dashboard, limits, and risk history
 ├── rank-stocks/            Rankings over saved Stock Analysis models
 └── stock-analysis/         Valuation models, scenarios, autosave, and price lookup
 ```

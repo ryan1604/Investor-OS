@@ -1,3 +1,5 @@
+import time
+
 from fastapi.testclient import TestClient
 
 from app.portfolio.service import get_portfolio_response
@@ -112,3 +114,23 @@ def test_portfolio_websockets_share_one_refresh_loop():
     assert first_payload["positions"][0]["symbol"] == "AAPL"
     assert second_payload["positions"][0]["symbol"] == "AAPL"
     assert portfolio_client.positions_requests == 1
+
+
+def test_portfolio_quote_websocket_holds_position_quotes_while_open():
+    portfolio_client = FakePortfolioClient(connected=True)
+    api = make_api(portfolio_client)
+
+    with TestClient(api) as client:
+        with (
+            client.websocket_connect("/portfolio/quotes/ws"),
+            client.websocket_connect("/portfolio/quotes/ws"),
+        ):
+            wait_for(lambda: portfolio_client.quote_viewers == 2)
+        wait_for(lambda: portfolio_client.quote_viewers == 0)
+
+
+def wait_for(predicate, timeout_seconds: float = 1) -> None:
+    deadline = time.monotonic() + timeout_seconds
+    while not predicate() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert predicate()

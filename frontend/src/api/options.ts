@@ -78,6 +78,7 @@ export type OptionChainResponse = {
   underlying_price: number | null
   rows: OptionChainRow[]
   message: string | null
+  warning?: string | null
 }
 
 export type OptionChainLiveMessage = {
@@ -87,6 +88,7 @@ export type OptionChainLiveMessage = {
   rows?: OptionChainRow[]
   row?: OptionChainRow
   message?: string | null
+  warning?: string | null
 }
 
 export type OptionsChartLiveMessage = {

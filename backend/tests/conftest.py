@@ -5,10 +5,17 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.config import Settings
+from app.ib.market_data_lines import MarketDataLineBudget
+from app.ib.portfolio import AnalysisMarketData
 from app.main import AppOverrides, create_app
 from app.options.client import OptionsDataUnavailable
 from app.options_screeners.service import OptionsScreenerService
-from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
+from app.schemas import (
+    IbStatus,
+    MarketDataLineUsage,
+    PortfolioAccountSummary,
+    PortfolioPosition,
+)
 
 
 class FakePortfolioClient:
@@ -25,6 +32,10 @@ class FakePortfolioClient:
         self.stopped = False
         self.positions_requests = 0
         self.account_summary_refreshes = 0
+        self.quote_viewers = 0
+        self.analysis_viewers = 0
+        self.analysis_market_data = AnalysisMarketData(by_con_id={}, underlyings={})
+        self.market_data_lines = MarketDataLineBudget(95)
         self.block_refresh = block_refresh
         self.refresh_started = threading.Event()
         self.allow_refresh = threading.Event()
@@ -41,6 +52,15 @@ class FakePortfolioClient:
             host="127.0.0.1",
             port=7497,
             client_id=1,
+        )
+
+    def get_market_data_lines(self) -> MarketDataLineUsage:
+        snapshot = self.market_data_lines.snapshot()
+        return MarketDataLineUsage(
+            capacity=snapshot.capacity,
+            used=snapshot.used,
+            used_by_group=snapshot.used_by_group,
+            pending_by_group=snapshot.pending_by_group,
         )
 
     def get_positions(self) -> list[PortfolioPosition]:
@@ -91,6 +111,21 @@ class FakePortfolioClient:
 
     def refresh_account_summaries(self) -> None:
         self.account_summary_refreshes += 1
+
+    def add_quote_viewer(self) -> None:
+        self.quote_viewers += 1
+
+    def remove_quote_viewer(self) -> None:
+        self.quote_viewers -= 1
+
+    def add_analysis_viewer(self) -> None:
+        self.analysis_viewers += 1
+
+    def remove_analysis_viewer(self) -> None:
+        self.analysis_viewers -= 1
+
+    def get_analysis_market_data(self) -> AnalysisMarketData:
+        return self.analysis_market_data
 
 
 class FakeIbOrderApp:
@@ -244,6 +279,7 @@ def make_api(
     orders_database_path: str | Path | None = None,
     options_screeners_database_path: str | Path | None = None,
     options_screener_scan_service: OptionsScreenerService | None = None,
+    portfolio_analysis_database_path: str | Path | None = None,
 ) -> FastAPI:
     explicit_portfolio_client = portfolio_client or FakePortfolioClient()
     data_dir = Path(tempfile.mkdtemp())
@@ -255,6 +291,7 @@ def make_api(
         day_trading_tracker_database_path=day_trading_tracker_database_path,
         orders_database_path=orders_database_path,
         options_screeners_database_path=options_screeners_database_path,
+        portfolio_analysis_database_path=portfolio_analysis_database_path,
     )
 
     return create_app(
@@ -277,6 +314,7 @@ def make_test_settings(
     orders_database_path: str | Path | None = None,
     options_screeners_database_path: str | Path | None = None,
     earnings_watch_database_path: str | Path | None = None,
+    portfolio_analysis_database_path: str | Path | None = None,
 ) -> Settings:
     data_path = Path(data_dir)
     return Settings(
@@ -298,6 +336,10 @@ def make_test_settings(
         orders_database_path=str(orders_database_path or data_path / "orders.sqlite3"),
         options_screeners_database_path=str(
             options_screeners_database_path or data_path / "options_screeners.sqlite3",
+        ),
+        portfolio_analysis_database_path=str(
+            portfolio_analysis_database_path
+            or data_path / "portfolio_analysis.sqlite3",
         ),
         earnings_watch_database_path=str(
             earnings_watch_database_path or data_path / "earnings_watch.sqlite3",

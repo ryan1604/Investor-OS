@@ -84,7 +84,7 @@ export type OptionsScreenerCompletedSnapshot = {
 
 export type OptionsScreenerTickerWarning = {
   ticker: string
-  category: 'excluded_contracts' | 'no_matches'
+  category: 'excluded_contracts' | 'line_limit' | 'no_matches'
   message: string
   count: number
 }

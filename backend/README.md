@@ -1,6 +1,6 @@
 # Investor OS Backend
 
-FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS or IB Gateway through `ibapi` and serves portfolio, options, screeners, orders, stock analysis, portfolio history, trade trackers, and Earnings Watch.
+FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS through `ibapi` and serves portfolio, portfolio analysis, options, screeners, orders, stock analysis, portfolio history, trade trackers, and Earnings Watch.
 
 ## Local Setup
 
@@ -10,7 +10,7 @@ Install or update dependencies:
 uv sync
 ```
 
-Start TWS or IB Gateway, then run the API:
+Start TWS, then run the API:
 
 ```sh
 uv run uvicorn app.main:app --host 127.0.0.1 --port 8000
@@ -33,6 +33,8 @@ Settings.orders_database_path = "data/orders.sqlite3"
 Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
 Settings.earnings_watch_database_path = "data/earnings_watch.sqlite3"
+Settings.portfolio_analysis_database_path = "data/portfolio_analysis.sqlite3"
+Settings.risk_free_rate = 0.04
 Settings.alpha_vantage_api_key = ALPHA_VANTAGE_API_KEY from .env
 Settings.ibkr_flex_token = IBKR_FLEX_TOKEN from .env (secret, excluded from settings serialization)
 Settings.ibkr_flex_query_id = IBKR_FLEX_QUERY_ID from .env
@@ -55,6 +57,8 @@ Settings.allowed_origins = [
 `Settings.orders_database_path` stores local order previews and reconciled order records.
 
 `Settings.earnings_watch_database_path` stores Earnings Watch tickers, review flags, and refresh state.
+
+`Settings.portfolio_analysis_database_path` stores per-session beta cache rows, beta overrides, per-account risk limits, and daily risk snapshots. `Settings.risk_free_rate` is the fixed rate used by the Portfolio Analysis Black-Scholes model.
 
 All seven local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization is handled by the stores.
 
@@ -93,6 +97,34 @@ Daily NAV uses exact decimal strings keyed by account and report date. Responses
 Flex sync runs at startup and hourly, independently of TWS. It seeds the latest report on an empty store, then recovers missed dates in bounded 30-day ranges with a seven-day correction overlap. Reports must include all saved accounts. Failures preserve history and retry next hour.
 
 Closing reports can lag market close. Status reflects the latest report date: `unconfigured`, `pending`, `syncing`, `failed`, `current`, or `stale`. Missing dates are not filled. Requests have bounded retries and timeouts; shutdown cancels pending work.
+
+## IB Status API
+
+```text
+GET /ib/status
+GET /ib/market-data-lines
+```
+
+`/ib/status` returns the IB connection details. `/ib/market-data-lines` reports the shared market-data line budget: `capacity`, `used`, and per-group `used_by_group` and `pending_by_group` for the portfolio, chart, chain, quote-refresh, and screener groups. It only reads the budget and sends nothing to IB.
+
+## Portfolio Analysis API
+
+```text
+GET    /portfolio/analysis?account={account}
+WS     /portfolio/analysis/ws?account={account}
+GET    /portfolio/analysis/history?account={account}
+GET    /portfolio/analysis/beta-overrides
+PUT    /portfolio/analysis/beta-overrides/{ticker}
+DELETE /portfolio/analysis/beta-overrides/{ticker}
+GET    /portfolio/analysis/limits/{account}
+PUT    /portfolio/analysis/limits/{account}
+```
+
+Analysis is read-only and built from the cached portfolio snapshot. It returns exposure, strategy groups, coverage counts, the stress grid with the Reg T margin estimate, and NAV-based realised statistics. The WebSocket streams one analysis per portfolio refresh and accepts `{"account": "<id>"}` to switch accounts.
+
+Each WebSocket connection registers an analysis viewer. While one exists, position quotes stay subscribed and the stocks underlying option positions that are not held are quoted in the portfolio market-data line group; they are released when the last viewer disconnects.
+
+Beta is a one-year daily regression against SPY, cached per ticker per US session; overrides (`{"beta": x}`, |x| <= 10) take precedence. Limits are replaced as a whole set (`{"limits": {...}}`; an empty object clears them). A risk snapshot is saved at most once a minute while a viewer has been connected for at least a minute; `post_close` snapshots replace `intraday` ones for the same session.
 
 ## Options API
 
@@ -146,7 +178,7 @@ Order requests require an explicit account. Stock orders support whole-share buy
 
 `/orders/preview` validates without transmitting, `/orders/transmit` submits to IB, and `/orders/reconcile` requests an IB open-order refresh. Amendments update supported active orders, and `/orders/ws` streams active and current-day terminal state.
 
-External IBKR orders are discovered through the API open-order feed. The backend connects with client ID `0`, enables automatic binding for manual TWS orders, and requests all open orders after connecting. TWS or IB Gateway must allow API writes, and read-only API mode must be disabled before externally created orders can be edited. Some orders may be visible without being bindable by this session; those orders stay visible but read-only. Binding manual orders can assign or change API order IDs, so IB permanent IDs are treated as the durable identity when available. Only reconstructed stock market/limit orders, single-option limit orders, and fully described supported option combo limit orders are marked editable; other IB order types remain read-only.
+External IBKR orders are discovered through the API open-order feed. The backend connects with client ID `0`, enables automatic binding for manual TWS orders, and requests all open orders after connecting. TWS must allow API writes, and read-only API mode must be disabled before externally created orders can be edited. Some orders may be visible without being bindable by this session; those orders stay visible but read-only. Binding manual orders can assign or change API order IDs, so IB permanent IDs are treated as the durable identity when available. Only reconstructed stock market/limit orders, single-option limit orders, and fully described supported option combo limit orders are marked editable; other IB order types remain read-only.
 
 ## Stock Analysis API
 

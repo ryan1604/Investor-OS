@@ -160,7 +160,7 @@ function strategyName(legs: PortfolioPosition[]) {
     first.quantity < 0 &&
     second.quantity > 0
   ) {
-    return 'Bull Call'
+    return 'Bear Call'
   }
 
   if (
@@ -178,7 +178,7 @@ function strategyName(legs: PortfolioPosition[]) {
     first.quantity > 0 &&
     second.quantity < 0
   ) {
-    return 'Bear Call'
+    return 'Bull Call'
   }
 
   return null

@@ -75,6 +75,22 @@ describe('OptionChainTable', () => {
     expect(scrollers[1].getAttribute('dir')).toBeNull()
   })
 
+  it('shows the chain stream warning', () => {
+    render(
+      <OptionChainTable
+        analysis={analysis}
+        chain={{ ...chain, warning: 'Waiting for free IB market-data lines.' }}
+        error={null}
+        isLoading={false}
+        selectedExpiration={chain.expiration}
+      />,
+    )
+
+    expect(
+      screen.getByText('Waiting for free IB market-data lines.'),
+    ).toBeTruthy()
+  })
+
   it('uses the live chart price and keeps quote and strike rows the same height', () => {
     const { container } = render(
       <OptionChainTable

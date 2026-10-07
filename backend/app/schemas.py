@@ -27,6 +27,15 @@ class IbStatus(BaseModel):
     client_id: int
 
 
+class MarketDataLineUsage(BaseModel):
+    """Read-only view of the shared IB market-data line budget."""
+
+    capacity: int
+    used: int
+    used_by_group: dict[str, int]
+    pending_by_group: dict[str, int]
+
+
 class PortfolioPosition(BaseModel):
     account: str
     con_id: int | None = None
@@ -76,6 +85,267 @@ class PortfolioResponse(BaseModel):
     accounts: list[PortfolioAccountSummary] = Field(default_factory=list)
     positions: list[PortfolioPosition]
     message: str | None = None
+
+
+MAX_BETA_OVERRIDE = 10
+
+
+class BetaOverrideRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    beta: float
+
+    @field_validator("beta")
+    @classmethod
+    def bounded_finite_beta(cls, value: float) -> float:
+        if not math.isfinite(value) or abs(value) > MAX_BETA_OVERRIDE:
+            raise ValueError(f"beta must be a finite number between -{MAX_BETA_OVERRIDE} and {MAX_BETA_OVERRIDE}.")
+        return value
+
+
+class BetaOverrideResponse(BaseModel):
+    ticker: str
+    beta: float
+    updated_at: str
+
+
+# Upper bounds: beta-weighted delta (x NLV), margin use, assignment, largest underlying (%).
+# Lower bounds, stored as positive numbers: realistic-path -20% loss (P&L >= -value %)
+# and distance to margin call (SPY drop >= value %).
+RiskLimitKey = Literal[
+    "beta_weighted_delta_multiple",
+    "margin_utilisation_percent",
+    "assignment_exposure_percent",
+    "largest_underlying_percent",
+    "realistic_path_loss_percent",
+    "margin_call_distance_percent",
+]
+
+
+class RiskLimitsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    limits: dict[RiskLimitKey, float]
+
+    @field_validator("limits")
+    @classmethod
+    def finite_non_negative_limits(cls, limits: dict[str, float]) -> dict[str, float]:
+        for key, value in limits.items():
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} must be a finite number of at least 0.")
+        return limits
+
+
+class RiskLimitResponse(BaseModel):
+    key: RiskLimitKey
+    value: float
+    updated_at: str
+
+
+class RiskLimitsResponse(BaseModel):
+    account: str
+    limits: list[RiskLimitResponse] = Field(default_factory=list)
+
+
+AnalysisGreeksSource = Literal["ib", "fallback", "solved_iv", "missing"]
+AnalysisBetaSource = Literal["override", "computed", "fallback"]
+
+
+class AnalysisExposure(BaseModel):
+    """USD exposure; gamma is the change in dollar delta for a 1% underlying move."""
+
+    dollar_delta: float = 0
+    beta_weighted_delta: float = 0
+    gamma: float = 0
+    theta: float = 0
+    vega: float = 0
+
+
+class AnalysisLeg(AnalysisExposure):
+    con_id: int | None = None
+    symbol: str
+    sec_type: str
+    local_symbol: str | None = None
+    right: str | None = None
+    strike: float | None = None
+    expiry: str | None = None
+    currency: str
+    # Signed shares or contracts assigned to the group.
+    quantity: float
+    price: float | None = None
+    underlying_price: float | None = None
+    implied_volatility: float | None = None
+    delta: float | None = None
+    greeks_source: AnalysisGreeksSource | None = None
+    fx_rate: float = 1
+    flags: list[str] = Field(default_factory=list)
+
+
+class AnalysisGroup(AnalysisExposure):
+    kind: str
+    label: str
+    quantity: float
+    premium_type: Literal["credit", "debit"] | None = None
+    net_premium: float | None = None
+    # None means unlimited.
+    max_loss: float | None = None
+    assignment_exposure: float = 0
+    legs: list[AnalysisLeg] = Field(default_factory=list)
+
+
+class AnalysisUnderlying(AnalysisExposure):
+    symbol: str
+    beta: float
+    beta_source: AnalysisBetaSource
+    beta_observations: int | None = None
+    underlying_price: float | None = None
+    net_liquidation_percent: float | None = None
+    max_loss: float | None = None
+    max_loss_unlimited: bool = False
+    assignment_exposure: float = 0
+    groups: list[AnalysisGroup] = Field(default_factory=list)
+
+
+class AnalysisUnsupportedPosition(BaseModel):
+    con_id: int | None = None
+    symbol: str
+    sec_type: str
+    local_symbol: str | None = None
+    currency: str
+    quantity: float
+    reason: str
+
+
+class AnalysisCoverage(BaseModel):
+    positions: int = 0
+    fallback_greeks: int = 0
+    fallback_beta: int = 0
+    unsupported: int = 0
+    fx_converted: int = 0
+    missing_price: int = 0
+
+
+class AnalysisSummary(BaseModel):
+    net_liquidation: float | None = None
+    gross_dollar_delta: float = 0
+    net_dollar_delta: float = 0
+    beta_weighted_delta: float = 0
+    beta_weighted_delta_multiple: float | None = None
+    net_gamma: float = 0
+    net_theta: float = 0
+    net_vega: float = 0
+    assignment_exposure: float = 0
+    assignment_exposure_percent: float | None = None
+    maintenance_margin: float | None = None
+    margin_utilisation_percent: float | None = None
+    excess_liquidity: float | None = None
+    largest_underlying: str | None = None
+    largest_underlying_percent: float | None = None
+    coverage: AnalysisCoverage = Field(default_factory=AnalysisCoverage)
+
+
+class AnalysisStressCell(BaseModel):
+    spy_move_percent: float
+    iv_shock_percent: float
+    pnl: float
+    pnl_percent: float | None = None
+    # Stressed net liquidation minus calibrated model margin; None without net liquidation.
+    excess_liquidity: float | None = None
+    realistic_path: bool = False
+
+
+class AnalysisMarginEstimate(BaseModel):
+    """Reg T model margin at no shock, scaled up to IB's figure by the calibration factor."""
+
+    model_margin: float = 0
+    ib_maintenance_margin: float | None = None
+    calibration_factor: float = 1
+    # Groups with a leg that could not be priced add no model margin.
+    excluded_groups: int = 0
+    # SPY drop along the realistic path at which excess liquidity reaches zero.
+    distance_to_margin_call_percent: float | None = None
+    margin_call_beyond_path: bool = False
+
+
+class AnalysisStressGrid(BaseModel):
+    """Estimated P&L per SPY move x relative IV shock; cells run SPY move first."""
+
+    spy_moves_percent: list[float] = Field(default_factory=list)
+    iv_shocks_percent: list[float] = Field(default_factory=list)
+    cells: list[AnalysisStressCell] = Field(default_factory=list)
+    realistic_path: list[AnalysisStressCell] = Field(default_factory=list)
+    legs: int = 0
+    excluded_legs: int = 0
+    margin: AnalysisMarginEstimate = Field(default_factory=AnalysisMarginEstimate)
+
+
+class AnalysisRealisedValue(BaseModel):
+    """A realised statistic; value is None with a reason when history is too short."""
+
+    value: float | None = None
+    observations: int = 0
+    reason: str | None = None
+
+
+class AnalysisRealisedStats(BaseModel):
+    """Statistics from the daily NAV history (Flex), which includes deposits and withdrawals."""
+
+    currency: str | None = None
+    start_date: date | None = None
+    end_date: date | None = None
+    nav_observations: int = 0
+    volatility_20d_percent: AnalysisRealisedValue
+    volatility_60d_percent: AnalysisRealisedValue
+    # Drawdowns are negative percents from the running peak.
+    max_drawdown_percent: AnalysisRealisedValue
+    current_drawdown_percent: AnalysisRealisedValue
+    beta: AnalysisRealisedValue
+
+
+class PortfolioAnalysisResponse(BaseModel):
+    status: IbStatus
+    account: str | None = None
+    accounts: list[str] = Field(default_factory=list)
+    as_of: datetime
+    summary: AnalysisSummary = Field(default_factory=AnalysisSummary)
+    underlyings: list[AnalysisUnderlying] = Field(default_factory=list)
+    unsupported: list[AnalysisUnsupportedPosition] = Field(default_factory=list)
+    stress: AnalysisStressGrid | None = None
+    realised: AnalysisRealisedStats | None = None
+    message: str | None = None
+
+
+RiskSnapshotKind = Literal["post_close", "intraday"]
+
+
+class AnalysisRiskSnapshot(BaseModel):
+    """Account-level risk metrics captured for one US trading session."""
+
+    session_date: date
+    kind: RiskSnapshotKind
+    captured_at: datetime
+    net_liquidation: float | None = None
+    beta_weighted_delta: float = 0
+    beta_weighted_delta_multiple: float | None = None
+    net_gamma: float = 0
+    net_theta: float = 0
+    net_vega: float = 0
+    assignment_exposure: float = 0
+    assignment_exposure_percent: float | None = None
+    maintenance_margin: float | None = None
+    margin_utilisation_percent: float | None = None
+    excess_liquidity: float | None = None
+    largest_underlying: str | None = None
+    largest_underlying_percent: float | None = None
+    realistic_down_20_pnl: float | None = None
+    realistic_down_20_pnl_percent: float | None = None
+    model_margin: float | None = None
+    calibration_factor: float | None = None
+    distance_to_margin_call_percent: float | None = None
+    margin_call_beyond_path: bool = False
+
+
+class PortfolioAnalysisHistoryResponse(BaseModel):
+    account: str
+    snapshots: list[AnalysisRiskSnapshot] = Field(default_factory=list)
 
 
 MONTH_KEY_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
@@ -525,6 +795,7 @@ class OptionChainLiveMessage(BaseModel):
     rows: list[OptionChainRow] | None = None
     row: OptionChainRow | None = None
     message: str | None = None
+    warning: str | None = None
 
 
 class OptionsChartLiveMessage(BaseModel):
@@ -776,7 +1047,7 @@ OptionsScreenerJobStatus = Literal[
 
 class OptionsScreenerTickerWarning(BaseModel):
     ticker: str
-    category: Literal["excluded_contracts", "no_matches"]
+    category: Literal["excluded_contracts", "no_matches", "line_limit"]
     message: str
     count: int = Field(default=0, ge=0)
 

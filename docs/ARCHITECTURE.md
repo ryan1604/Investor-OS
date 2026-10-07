@@ -2,9 +2,9 @@
 
 ## 1. Project Overview
 
-Investor OS is a local trading dashboard for monitoring an Interactive Brokers portfolio, analyzing US equity options, screening cash-secured puts, covered calls, and credit spreads, tracking manual options trades, drafting/transmitting stock or option-strategy orders, maintaining manual stock valuation models, ranking saved valuation models, and watching upcoming earnings dates for a global ticker list.
+Investor OS is a local trading dashboard for monitoring an Interactive Brokers portfolio, analyzing its market risk, analyzing US equity options, screening cash-secured puts, covered calls, and credit spreads, tracking manual options trades, drafting/transmitting stock or option-strategy orders, maintaining manual stock valuation models, ranking saved valuation models, and watching upcoming earnings dates for a global ticker list.
 
-The application runs as a FastAPI backend connected to TWS or IB Gateway through the official `ibapi`, with a React/Vite frontend for the browser UI. It is structured for local development first and still does not include alerts or non-US option support.
+The application runs as a FastAPI backend connected to TWS through the official `ibapi`, with a React/Vite frontend for the browser UI. It is structured for local development first and still does not include alerts or non-US option support.
 
 ---
 
@@ -14,9 +14,9 @@ The application runs as a FastAPI backend connected to TWS or IB Gateway through
 
 * **Python**
 * **FastAPI** - REST API and WebSocket server
-* **ibapi** - Interactive Brokers TWS / IB Gateway integration
+* **ibapi** - Interactive Brokers TWS integration
 * **Pydantic** - request/response validation
-* **SQLite** - local completed daily-bar cache, stock-analysis models, daily portfolio NAV and monthly invested amounts, options trade tracker workspaces, durable screener settings, Earnings Watch state, and order metadata
+* **SQLite** - local completed daily-bar cache, stock-analysis models, daily portfolio NAV and monthly invested amounts, portfolio analysis betas, risk limits, and daily risk snapshots, options trade tracker workspaces, durable screener settings, Earnings Watch state, and order metadata
 * **httpx** - Alpha Vantage earnings calendar HTTP client
 * **uv** - Python package and environment management
 
@@ -29,11 +29,11 @@ The application runs as a FastAPI backend connected to TWS or IB Gateway through
 * **shadcn/ui**
 * **pnpm** - frontend package manager
 * **TradingView Lightweight Charts** - daily candle, Bollinger Band, and RSI charts
-* **Recharts** - Portfolio history and Options Trade Tracker stats charts
+* **Recharts** - Portfolio history, Portfolio Analysis risk history, and Options Trade Tracker stats charts
 
 ### External Dependency
 
-* **Interactive Brokers TWS or IB Gateway**
+* **Interactive Brokers TWS**
 * **Alpha Vantage** `EARNINGS_CALENDAR` CSV endpoint for Earnings Watch dates
 
 ---
@@ -45,13 +45,13 @@ flowchart TD
     frontend[React Vite Frontend]
     backend[FastAPI Backend]
     ibapi[IBAPI Client Thread]
-    gateway[TWS / IB Gateway]
+    tws[TWS]
     ib[Interactive Brokers]
 
     frontend -->|REST commands + portfolio, option-chain, order, and screener WebSockets| backend
     backend -->|thread-safe IBAPI state, locks, request IDs| ibapi
-    ibapi --> gateway
-    gateway --> ib
+    ibapi --> tws
+    tws --> ib
 ```
 
 ---
@@ -70,7 +70,7 @@ flowchart TD
 * Shared formatting helpers live in `frontend/src/lib/format.ts`.
 * The Portfolio, Options, Options Screener, Options Trade Tracker, Orders, Stock Analysis, and Rank Stocks views use shadcn/ui components for common controls, including buttons, button groups, cards, select dropdowns, tables, checkboxes, dialogs, badges, skeleton loading rows, tooltips, and toast notifications.
 * The app is currently forced into shadcn dark mode.
-* The sidebar switches between **Portfolio**, **Options**, **Orders**, **CSP Screener**, **CC Screener**, **CS Screener**, **Options Trade Tracker**, **Stock Analysis**, **Earnings Watch**, and **Rank Stocks** without URL routing.
+* The sidebar switches between **Portfolio**, **Portfolio Analysis**, **Options**, **Orders**, **CSP Screener**, **CC Screener**, **CS Screener**, **Options Trade Tracker**, **Stock Analysis**, **Earnings Watch**, and **Rank Stocks** without URL routing.
 * `App.tsx` owns one session-only selected brokerage account shared by Portfolio, Options, screeners, and Orders. Account choices come only from portfolio summaries and positions, and the first valid account is selected when portfolio data loads.
 
 #### Portfolio View
@@ -85,6 +85,15 @@ flowchart TD
 * Portfolio chart values are loaded through `frontend/src/api/portfolioChartValues.ts`, shaped by pure helpers in `frontend/src/features/portfolio/lib/chartValues.ts`, and maintained through a hidden Collapsible editor with explicit Save and Cancel actions.
 * Portfolio chart edits preview locally while the editor is open, validate client-side before save, and replace the selected account's saved rows only when Save is clicked.
 * Chart state is account-keyed; switching accounts clears drafts, aborts obsolete requests, and shows account-scoped loading state.
+
+#### Portfolio Analysis View
+
+* Portfolio Analysis UI lives under `frontend/src/features/portfolio-analysis/` with `components/`, `hooks/`, and `lib/`, and uses `frontend/src/api/portfolioAnalysis.ts`. It is read-only: it sends no orders and never hedges.
+* The page shows one account at a time from the shared selected account. `usePortfolioAnalysis` holds one `/portfolio/analysis/ws` connection; account switches are sent on the open socket and updates for a previous account are dropped. Leaving the page closes the socket, which releases the analysis feeds.
+* Sections, top to bottom: the limit-status strip, summary cards, a coverage banner when fallbacks or unsupported positions exist, stress summary cards, the exposure table (underlying, then strategy group, then leg), the stress grid, Realised Risk cards, Risk History charts, the limits editor, and the beta override editor.
+* Fallback-sourced values carry an amber indicator whose tooltip names the source. Missing values render `-`. Every stress and margin figure is labelled as an estimate.
+* Limits are loaded per account (`useRiskLimits`). The editor is pre-filled with suggested values, but nothing is banded until saved. Limited metrics are coloured green, amber, or red (`lib/limits.ts`).
+* Risk History (`useRiskHistory`, `lib/history.ts`) reloads every minute and charts beta-weighted delta, margin used, assignment exposure, and theta on a weekday axis. Missing sessions stay as gaps, intraday snapshots use hollow dots, and saved limits are dashed reference lines.
 
 #### Options View
 
@@ -171,6 +180,7 @@ flowchart TD
 * Long-running IB, SQLite, and order mutation paths use app-level concurrency guardrails.
 * Option-chain cache misses share a bounded backend executor for daily-bar and metadata fallback work. Resolved option contract identities are cached in memory with single-flight hydration, and a small background prefetch warms selected and nearby expirations after expirations load.
 * `/ib/status` returns current IB connection details.
+* `/ib/market-data-lines` reports the shared market-data line budget: capacity, lines in use, and waiting demand per group. It is read-only and sends nothing to IB.
 
 #### Portfolio Services
 
@@ -178,6 +188,15 @@ flowchart TD
 * `/portfolio` returns the latest in-memory cached Portfolio snapshot immediately.
 * One backend refresh service updates account summaries and the Portfolio cache every three seconds, then broadcasts the latest immutable-by-convention snapshot through `/portfolio/ws`.
 * Manual Portfolio chart history is stored separately from live IB data in `backend/app/portfolio/chart_values_store.py` and exposed through `GET`/`PUT /portfolio/chart-values?account=...`. PUT transactionally replaces all rows for the selected account.
+
+#### Portfolio Analysis Services
+
+* `backend/app/portfolio_analysis/` holds pure calculations tested without IB: `pricing.py` (Black-Scholes and IV solver), `pairing.py` (strategy groups), `exposure.py` (hybrid Greeks and aggregates), `stress.py` (stress grid), `margin.py` (Reg T estimate and distance to margin call), `realised.py` (NAV-based statistics), and `sessions.py` (New York session keys). IB access stays in `backend/app/ib/`.
+* `service.py` builds one analysis per published portfolio snapshot in a worker thread, so the 3 s portfolio refresh is never blocked. Betas are read without IB calls; missing betas and SPY bars are fetched by one background thread, and the flagged 1.0 fallback shows until they arrive.
+* `beta.py` regresses up to 252 daily returns against SPY (at least 60) and caches each ticker's beta per US session. Overrides win over computed values.
+* `GET /portfolio/analysis?account=` returns one analysis. `WS /portfolio/analysis/ws?account=` streams it and accepts `{"account": ...}` to switch accounts; each connection registers an analysis viewer and releases it on disconnect.
+* `GET`/`PUT`/`DELETE /portfolio/analysis/beta-overrides[/{ticker}]` manage beta overrides. `GET`/`PUT /portfolio/analysis/limits/{account}` read and replace an account's risk limits. `GET /portfolio/analysis/history?account=` returns saved daily risk snapshots.
+* While a viewer is connected, a risk snapshot is saved at most once a minute, after a one-minute warm-up so the first write has live Greeks. Views with no analysed positions, or with a leg missing a price or Greeks, are not saved.
 
 #### Options Services
 
@@ -200,7 +219,7 @@ flowchart TD
 * Settings survive backend restarts; jobs, candidates, and completed snapshots intentionally do not.
 * `/options-screeners/settings` manages durable settings. `/options-screeners/state`, `/jobs/{id}`, `/snapshots/{screener}`, `/scans/{screener}`, scan cancellation, single-leg quote refresh, spread quote refresh, and `/scans/ws` expose the in-memory lifecycle.
 * The scan manager depends on the combined scan-and-refresh service interface. Single-leg and credit-spread leaf services expose only their supported scan and quote-refresh capabilities; the default combined service routes CSP/CC and CS work to the appropriate leaf.
-* Screener discovery filters expirations and strikes from `reqSecDefOptParams`, then resolves exact option contracts per strike; scans do not submit throttled strike-wildcard `reqContractDetails` chain requests.
+* Screener discovery filters expirations and strikes from `reqSecDefOptParams`, then resolves exact option contracts per strike through the shared contract cache and lookup cap, with lookups running concurrently; scans do not submit throttled strike-wildcard `reqContractDetails` chain requests. A repeated scan on the same market date sends lookups only for strikes it has not resolved yet.
 * Single-leg scanning captures one underlying price per ticker, evaluates all standard OTM puts for CSP or OTM calls for CC in the inclusive New York DTE range, deduplicates equivalent contracts, rejects invalid markets, and retains the globally sorted top 500 with the pre-cap match count.
 * CS scanning builds exact-width put and call credit spreads from refreshed same-expiration chains, applies delta filters to the short leg, requires positive executable net-credit markets, and ranks by annualized return on maximum loss.
 * CSP return uses premium divided by strike and discount from underlying to strike. CC return uses premium divided by captured underlying price and gain from underlying to strike. The screener does not check cash, margin, owned shares, or whether a later order would be covered.
@@ -264,15 +283,35 @@ Manual Portfolio chart history is user-authored and is not inferred from live IB
 
 Daily NAV and sync metadata use separate tables in the same database. `portfolio/nav_store.py` stores exact decimals by account/date, rejects currency conflicts, and prioritizes Flex corrections. `flex.py` and `nav_sync.py` fetch completed reports at startup and hourly with bounded retries and catch-up. Saved history and account discovery remain available without TWS. The chart polls every 30 seconds, isolates account responses, and separates currency periods. Monthly Amount invested remains independently editable.
 
+### Portfolio Analysis Data
+
+Portfolio Analysis covers US stocks, ETFs, and standard 100-multiplier equity options. Other instruments are listed as unsupported and left out of totals. Values are in USD; non-USD positions are converted at IB's ledger exchange rate and flagged.
+
+Greeks come from IB's `tickOptionComputation` on the portfolio market-data requests. Missing Greeks are filled from Black-Scholes (`Settings.risk_free_rate`, no dividends) at IB's IV, or at an IV solved from the option's last, close, or IB position mark. A price at or below the zero-volatility model value (a deep ITM call under the European bound) solves to the minimum IV. Coverage counts report fallback Greeks, fallback betas, and unsupported positions.
+
+Short option legs are paired per account and underlying: same-expiry verticals first, then held shares (covered calls), then a later or same-expiry long (PMCC and its put mirror), otherwise naked. This grouping is separate from the Portfolio tab's Bull/Bear display grouping.
+
+The stress grid moves each underlying by beta x SPY move (-30% to +10%, floored at -95%) and IV by 0 to +100% relative, repricing options with Black-Scholes. A strategy group with a leg that has no price or IV is left out of the grid whole. Margin uses Reg T maintenance rules per group, scaled up by `max(1, MaintMarginReq / model margin)`. Distance to margin call is where stressed excess liquidity reaches zero along the realistic path.
+
+`data/portfolio_analysis.sqlite3` holds `beta_cache`, `beta_overrides`, per-account risk limits, and `risk_snapshots`. Snapshots are keyed by account and US session: a view during market hours is saved as `intraday`, and a view outside market hours as `post_close` for the last completed session, which always wins over `intraday`. Gaps are not filled. Daily bars for a beta that miss SPY's latest session or more than 5 of SPY's dates (a timed-out or partial chunk) are refetched after 60 s, up to three times a session, before they are cached. Realised volatility, drawdown, and beta are computed from the Flex daily NAV history and include deposits and withdrawals as returns.
+
 ### Options Data
 
 Options analysis qualifies US equity underlyings as `STK`, `USD`, `SMART`. Completed daily candles are cached in SQLite by normalized ticker and trading date; the current trading day is returned separately and is not finalized into SQLite. Bollinger Bands use 20-period SMA with 2 standard deviations, and RSI uses 14-period Wilder smoothing.
 
-Option-chain rows are built from resolved IB option contracts for the requested expiration, not from metadata-only strikes. Contract resolution starts from every positive, deduplicated metadata strike. Complete contract hydrations are cached in memory by ticker, expiration, and strike set, and concurrent loads share one hydration. Broad and exact fallback requests share a 30-second aggregate hydration deadline; a chain WebSocket cancellation interrupts an active contract-detail wait. Resolved contracts survive partial attempts, while timed-out or unattempted strikes retry on a later load; explicitly invalid or unavailable strikes are excluded without retry. Selected/nearby expirations are prefetched best-effort after expirations load when an analysis price is already cached. Cache entries are process-local and clear on backend restart.
+Option-chain rows are built from resolved IB option contracts for the requested expiration, not from metadata-only strikes. Contract resolution starts from every positive, deduplicated metadata strike. One broad `reqContractDetails` request per expiration covers calls and puts together, because IB answers broad requests one at a time and slowly for expirations it has not loaded recently. If it times out, the backend remembers that for the market day and falls back to exact per-strike lookups for both rights concurrently, limited to strikes near the money that can be streamed or displayed. Broad and exact requests share a 30-second aggregate hydration deadline; a chain WebSocket cancellation interrupts an active contract-detail wait.
 
-Displayed rows are trimmed to the first put and last call whose absolute delta is greater than `0.095` once both usable bounds exist. Before Greeks arrive, quoted resolved contracts remain visible. Live quote changes are coalesced per IB callback batch; whenever either delta bound changes, the backend sends an authoritative snapshot that replaces provisional or stale rows. Quote-only batches keep the row-update path. Rows place calls on the left, strike in the middle, and puts on the right. `mid` is derived from bid/ask when both exist; breakeven is `strike + ask` for calls and `strike - ask` for puts. Missing IB values remain missing.
+Resolved contracts are cached in memory per ticker, expiration, right, and strike, including known-invalid strikes, until the US market date changes. The chain and the screeners share this cache, and concurrent loads share one in-flight hydration. Timed-out or unattempted strikes retry on a later load; explicitly invalid or unavailable strikes are not re-requested that day. The cache is keyed on the expiration string as given, so callers use ISO dates. Selected and nearby expirations are prefetched best-effort once expirations load. Cache entries are process-local and clear on backend restart.
 
-Live option-chain streams resolve the same selected expiration from the full normalized metadata strike set as the snapshot endpoint, then apply a configured stream strike cap before opening IB subscriptions. The backend subscribes to IB option market data for calls and puts in that range, isolates quote state by IB request ID, sends snapshots plus row updates as ticks arrive, and cancels only that stream's market-data subscriptions when the WebSocket disconnects or the frontend switches ticker or expiration. A short in-memory quote cache can seed a newly opened stream with recently seen display quotes while fresh live subscriptions continue. Quote and Greek availability depends on the user's IB market-data subscriptions and delayed-data settings.
+All contract-detail requests share one app-wide cap of 16 outstanding lookups; IB rejects or queues more across every client. A slot is held until IB answers or errors. Prefetch lookups are background work: they use at most 4 slots and wait while any foreground lookup waits, and they become foreground when a user opens the chain they are hydrating. Single lookups a user or scan is blocked on (a ticker's options metadata, a chart contract, a quote refresh) are urgent and take the next free slot ahead of waiting bulk lookups. Screener exact lookups and the metadata stock lookup may queue up to 60 seconds for a slot, then get the full IB timeout once sent, so local queueing behind other tickers is never reported as an IB timeout. The options metadata cache locks per ticker, so one slow fetch does not hold up other tickers. Market-data requests and lookups share a client-side message-rate limiter below IB's 50 messages per second.
+
+Market-data lines come from one shared budget (`max_market_data_lines` less `market_data_line_reserve`). Groups are granted in priority order: portfolio, charts, chain streams, quote refreshes, then screener batches. While Portfolio Analysis is open, position quotes stay subscribed and the stocks underlying option positions that are not held are quoted too, all in the portfolio group; the last viewer leaving releases the underlying lines. Unmet demand from a higher group blocks grants to lower groups. Screener batch size shrinks or waits for free lines. IB error 101 on a request is recorded against it and surfaced as a scan warning or chain message instead of a silent exclusion.
+
+Screener quotes run through a rolling window of up to 40 lines per ticker. Each contract frees its line when its own quote is usable: when it has bid, ask, and delta, or when it has delta and at least one of bid or ask and no new field has arrived for 300 ms. Otherwise it frees its line at the 4-second maximum, where contracts that never quote end. Freed lines go to the next contract without waiting, unless a higher-priority group is waiting for lines, in which case the window shrinks. REST chain quote batches and single-quote refreshes apply the same rule to the batch as a whole. Each subscription group has its own wakeup signal.
+
+Displayed rows are trimmed to the first put and last call whose absolute delta is greater than `0.095` once both usable bounds exist. Before Greeks arrive, quoted resolved contracts remain visible. Live quote changes are coalesced per IB callback batch; whenever either delta bound changes, the backend sends an authoritative snapshot that replaces provisional or stale rows. Quote-only batches keep the row-update path. Rows place calls on the left, strike in the middle, and puts on the right. `mid` is derived from bid/ask when both exist; breakeven is `strike + ask` for calls and `strike - ask` for puts. Option-chain and screener delta, IV, gamma, theta, and model price come only from IB's model option computation (tick 13, delayed 83); bid, ask, and last computations solve IV from that one price, so a wide quote skews their delta, and they are ignored. Missing IB values remain missing.
+
+Live option-chain streams resolve the same selected expiration from the full normalized metadata strike set as the snapshot endpoint, then stream calls and puts for the `max_option_chain_stream_strikes` strikes nearest the money. The remaining hydrated strikes are quoted by rotation through `option_chain_rotation_lines` reserved lines. Each batch is subscribed, read once it completes or reaches its maximum wait, then cancelled. The first pass works outward from the live window; later passes refresh strikes inside or next to the delta bounds, plus one beyond each bound, so the displayed range can widen. The live window recenters once the at-the-money strike is three or more strikes from its center. For SPY, a first pass over 48 outer strikes took about 28 s and later passes about 5 s, so rotated rows carry no staleness indicator. The backend subscribes to IB option market data for these strikes, isolates quote state by IB request ID, sends snapshots plus row updates as ticks arrive, and cancels only that stream's market-data subscriptions when the WebSocket disconnects or the frontend switches ticker or expiration. A short in-memory quote cache can seed a newly opened stream with recently seen display quotes while fresh live subscriptions continue. Quote and Greek availability depends on the user's IB market-data subscriptions and delayed-data settings.
 
 Live chart streams load the completed historical window once per stream, then update the active underlying candle and latest Bollinger Band and RSI points without persisting the current trading day's temporary candle.
 
@@ -304,7 +343,7 @@ On startup the backend loads durable order records, enables manual TWS order bin
 
 ## 5. Local Development Setup
 
-Start TWS or IB Gateway.
+Start TWS.
 
 ### Terminal 1
 
@@ -343,6 +382,7 @@ Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
 Settings.options_trade_trackers_database_path = "data/options_trade_trackers.sqlite3"
 Settings.earnings_watch_database_path = "data/earnings_watch.sqlite3"
+Settings.portfolio_analysis_database_path = "data/portfolio_analysis.sqlite3"
 Settings.alpha_vantage_api_key = ALPHA_VANTAGE_API_KEY from .env
 Settings.ib_request_queue_timeout_seconds = 0.25
 Settings.max_concurrent_options_analysis = 2
@@ -354,8 +394,13 @@ Settings.max_concurrent_options_screener_tickers = 4
 Settings.options_screener_job_retention_minutes = 30
 Settings.options_screener_subscriber_queue_size = 64
 Settings.option_chain_context_workers = 2
-Settings.max_option_chain_stream_strikes = 80
+Settings.max_option_chain_strikes = 80
+Settings.max_option_chain_stream_strikes = 32
+Settings.max_market_data_lines = 100
+Settings.market_data_line_reserve = 5
+Settings.option_chain_rotation_lines = 10
 Settings.order_subscriber_queue_size = 32
+Settings.risk_free_rate = 0.04
 ```
 
 The frontend reads `VITE_API_BASE_URL` and defaults to `http://127.0.0.1:8000` when it is not set. API ticker paths are normalized and encoded through the shared frontend API helper. WebSocket URLs are derived from the same base URL by replacing `http` with `ws`.

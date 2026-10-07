@@ -55,6 +55,12 @@ vi.mock('@/features/portfolio/PortfolioPage', () => ({
   ),
 }))
 
+vi.mock('@/features/portfolio-analysis/PortfolioAnalysisPage', () => ({
+  PortfolioAnalysisPage: ({ selectedAccount }: { selectedAccount: string | null }) => (
+    <main>Portfolio analysis route {selectedAccount}</main>
+  ),
+}))
+
 vi.mock('@/features/options/OptionsPage', () => ({
   OptionsPage: ({
     accounts,
@@ -149,6 +155,12 @@ describe('App', () => {
     expect(screen.getByText('Portfolio route')).toBeTruthy()
     expect(screen.queryByText('Options route')).toBeNull()
     expect(screen.getByRole('button', { name: 'Portfolio' }).getAttribute('aria-current')).toBe('page')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Portfolio Analysis' }))
+    expect(await screen.findByText('Portfolio analysis route')).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: 'Portfolio Analysis' }).getAttribute('aria-current'),
+    ).toBe('page')
 
     fireEvent.click(screen.getByRole('button', { name: 'Options' }))
     expect(await screen.findByText('Options route')).toBeTruthy()

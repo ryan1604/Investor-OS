@@ -1,5 +1,6 @@
 import logging
 import threading
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Protocol
 
@@ -12,19 +13,42 @@ from app.ib.app import (
     IbPortfolioApp,
 )
 from app.ib.contracts import market_data_contract
+from app.ib.market_data_lines import market_data_line_budget
 from app.portfolio.domain import (
     build_account_summary,
     merge_portfolio_rows,
 )
-from app.schemas import IbStatus, PortfolioAccountSummary, PortfolioPosition
+from app.schemas import (
+    IbStatus,
+    MarketDataLineUsage,
+    PortfolioAccountSummary,
+    PortfolioPosition,
+)
 
 logger = logging.getLogger(__name__)
 
+LEDGER_EXCHANGE_RATE_TAG = "ExchangeRate"
+EXCHANGE_RATE_FIELD = "exchange_rate"
 LEDGER_ACCOUNT_SUMMARY_REQUESTS = (
     ("$LEDGER:SGD", "cash_total_sgd"),
     ("$LEDGER:USD", "cash_total_usd"),
     ("$LEDGER", "cash_total"),
 )
+
+
+@dataclass(frozen=True)
+class AnalysisMarketData:
+    """Raw quote and Greek values for Portfolio Analysis.
+
+    `by_con_id` holds position quotes plus, for options, IB Greeks: IV as a
+    fraction, per-share delta/gamma/vega/theta, and the underlying price.
+    `underlyings` holds quotes for option underlyings whose stock is not held.
+    `exchange_rates` maps account to currency to IB's ledger rate into base.
+    """
+
+    by_con_id: dict[int, dict[str, float]]
+    underlyings: dict[str, dict[str, float]]
+    exchange_rates: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 class PortfolioClient(Protocol):
@@ -35,6 +59,9 @@ class PortfolioClient(Protocol):
         ...
 
     def get_status(self) -> IbStatus:
+        ...
+
+    def get_market_data_lines(self) -> MarketDataLineUsage:
         ...
 
     def get_positions(self) -> list[PortfolioPosition]:
@@ -49,15 +76,40 @@ class PortfolioClient(Protocol):
     def refresh_account_summaries(self) -> None:
         ...
 
+    def add_quote_viewer(self) -> None:
+        ...
+
+    def remove_quote_viewer(self) -> None:
+        ...
+
+    def add_analysis_viewer(self) -> None:
+        ...
+
+    def remove_analysis_viewer(self) -> None:
+        ...
+
+    def get_analysis_market_data(self) -> AnalysisMarketData:
+        ...
+
 
 class IbPortfolioClient:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        self.app = IbPortfolioApp()
+        self.app = IbPortfolioApp(
+            market_data_line_capacity=(
+                settings.max_market_data_lines - settings.market_data_line_reserve
+            ),
+        )
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
         self.positions_request_lock = threading.Lock()
         self.positions_subscribed = False
+        self.market_data_lock = threading.Lock()
+        self.quote_viewers = 0
+        self.analysis_viewers = 0
+        # Underlying lines wait for the budget separately from position quotes.
+        self.underlying_line_owner = object()
+        self.option_underlyings: set[str] = set()
 
     def start(self) -> None:
         with self.lock:
@@ -86,7 +138,10 @@ class IbPortfolioClient:
     def stop(self) -> None:
         if self.app.isConnected():
             with self.app.lock:
-                req_ids = list(self.app.market_req_to_con_id)
+                req_ids = [
+                    *self.app.market_req_to_con_id,
+                    *self.app.underlying_req_to_symbol,
+                ]
                 pnl_req_ids = list(self.app.pnl_req_to_position_key)
                 account_pnl_req_ids = list(self.app.account_pnl_req_to_account)
 
@@ -112,6 +167,15 @@ class IbPortfolioClient:
             client_id=self.settings.ib_client_id,
         )
 
+    def get_market_data_lines(self) -> MarketDataLineUsage:
+        snapshot = market_data_line_budget(self.app).snapshot()
+        return MarketDataLineUsage(
+            capacity=snapshot.capacity,
+            used=snapshot.used,
+            used_by_group=snapshot.used_by_group,
+            pending_by_group=snapshot.pending_by_group,
+        )
+
     def get_positions(self) -> list[PortfolioPosition]:
         if not self.app.isConnected():
             return []
@@ -125,10 +189,15 @@ class IbPortfolioClient:
 
         positions_ms = elapsed_ms(positions_started_at)
         contracts_started_at = perf_counter()
-        self._register_market_contracts(raw_positions)
-        contracts_ms = elapsed_ms(contracts_started_at)
-        market_data_started_at = perf_counter()
-        self._subscribe_market_data()
+        with self.market_data_lock:
+            self._register_market_contracts(raw_positions)
+            contracts_ms = elapsed_ms(contracts_started_at)
+            market_data_started_at = perf_counter()
+            self.option_underlyings = unheld_option_underlyings(raw_positions)
+            if self.quote_viewers or self.analysis_viewers:
+                self._subscribe_market_data()
+            if self.analysis_viewers:
+                self._sync_underlying_market_data()
         market_data_ms = elapsed_ms(market_data_started_at)
         pnl_started_at = perf_counter()
         self._subscribe_pnl(raw_positions)
@@ -204,7 +273,10 @@ class IbPortfolioClient:
             self._refresh_account_summary_feed(
                 ledger_tag,
                 preserve_existing=True,
-                tag_aliases={LEDGER_TOTAL_CASH_BALANCE_TAG: field_name},
+                tag_aliases={
+                    LEDGER_TOTAL_CASH_BALANCE_TAG: field_name,
+                    LEDGER_EXCHANGE_RATE_TAG: EXCHANGE_RATE_FIELD,
+                },
             )
 
         logger.info(
@@ -283,15 +355,143 @@ class IbPortfolioClient:
 
         for req_id in stale_req_ids:
             self.app.cancelMktData(req_id)
+        market_data_line_budget(self.app).release("portfolio", len(stale_req_ids))
+
+    def add_quote_viewer(self) -> None:
+        with self.market_data_lock:
+            self.quote_viewers += 1
+            if self.quote_viewers == 1 and self.app.isConnected():
+                self._subscribe_market_data()
+
+    def remove_quote_viewer(self) -> None:
+        with self.market_data_lock:
+            self.quote_viewers = max(0, self.quote_viewers - 1)
+            if not self.quote_viewers and not self.analysis_viewers:
+                self._release_position_quotes()
+
+    def add_analysis_viewer(self) -> None:
+        with self.market_data_lock:
+            self.analysis_viewers += 1
+            if self.analysis_viewers == 1 and self.app.isConnected():
+                self._subscribe_market_data()
+                self._sync_underlying_market_data()
+
+    def remove_analysis_viewer(self) -> None:
+        with self.market_data_lock:
+            self.analysis_viewers = max(0, self.analysis_viewers - 1)
+            if self.analysis_viewers:
+                return
+
+            self._release_underlying_quotes(None)
+            if not self.quote_viewers:
+                self._release_position_quotes()
+
+    def get_analysis_market_data(self) -> AnalysisMarketData:
+        with self.app.lock:
+            return AnalysisMarketData(
+                by_con_id={
+                    con_id: values.copy()
+                    for con_id, values in self.app.market_data.items()
+                },
+                underlyings={
+                    symbol: values.copy()
+                    for symbol, values in self.app.underlying_market_data.items()
+                },
+                exchange_rates=exchange_rates(self.app.account_summary_values),
+            )
+
+    def _release_position_quotes(self) -> None:
+        market_data_line_budget(self.app).clear_pending(self)
+        with self.app.lock:
+            req_ids = list(self.app.market_req_to_con_id)
+            self.app.market_req_ids.clear()
+            self.app.market_req_to_con_id.clear()
+            self.app.market_data.clear()
+
+        if self.app.isConnected():
+            for req_id in req_ids:
+                self.app.cancelMktData(req_id)
+        market_data_line_budget(self.app).release("portfolio", len(req_ids))
+        logger.info(
+            "Portfolio position quotes paused cancelled_lines=%s",
+            len(req_ids),
+        )
+
+    def _sync_underlying_market_data(self) -> None:
+        """Quote option underlyings that are not held, and drop ones no longer needed."""
+        with self.app.lock:
+            subscribed = set(self.app.underlying_req_ids)
+        self._release_underlying_quotes(subscribed - self.option_underlyings)
+
+        missing = sorted(self.option_underlyings - subscribed)
+        granted = market_data_line_budget(self.app).try_acquire(
+            "portfolio",
+            len(missing),
+            owner=self.underlying_line_owner,
+        )
+        if granted < len(missing):
+            logger.info(
+                "Portfolio underlying quotes waiting for market-data lines "
+                "subscribed=%s waiting=%s",
+                granted,
+                len(missing) - granted,
+            )
+
+        requests = []
+        with self.app.lock:
+            for symbol in missing[:granted]:
+                req_id = self.app.next_market_req_id
+                self.app.next_market_req_id += 1
+                self.app.underlying_req_ids[symbol] = req_id
+                self.app.underlying_req_to_symbol[req_id] = symbol
+                requests.append((req_id, underlying_stock_contract(symbol)))
+
+        for req_id, contract in requests:
+            self.app.reqMktData(req_id, contract, "", False, False, [])
+
+    def _release_underlying_quotes(self, symbols: set[str] | None) -> None:
+        """Cancel underlying quotes for symbols, or all of them when symbols is None."""
+        budget = market_data_line_budget(self.app)
+        if symbols is None:
+            budget.clear_pending(self.underlying_line_owner)
+        with self.app.lock:
+            if symbols is None:
+                symbols = set(self.app.underlying_req_ids)
+            req_ids = []
+            for symbol in symbols:
+                req_id = self.app.underlying_req_ids.pop(symbol, None)
+                self.app.underlying_market_data.pop(symbol, None)
+                if req_id is not None:
+                    self.app.underlying_req_to_symbol.pop(req_id, None)
+                    req_ids.append(req_id)
+
+        if self.app.isConnected():
+            for req_id in req_ids:
+                self.app.cancelMktData(req_id)
+        budget.release("portfolio", len(req_ids))
 
     def _subscribe_market_data(self) -> None:
         requests = []
         with self.app.lock:
-            contracts = [
+            missing_contracts = [
                 contract
                 for con_id, contract in self.app.market_contracts.items()
                 if con_id not in self.app.market_req_ids
             ]
+        granted = market_data_line_budget(self.app).try_acquire(
+            "portfolio",
+            len(missing_contracts),
+            owner=self,
+        )
+        contracts = missing_contracts[:granted]
+        if len(contracts) < len(missing_contracts):
+            logger.info(
+                "Portfolio position quotes waiting for market-data lines "
+                "subscribed=%s waiting=%s",
+                len(contracts),
+                len(missing_contracts) - len(contracts),
+            )
+        with self.app.lock:
             for contract in contracts:
                 req_id = self.app.next_market_req_id
                 self.app.next_market_req_id += 1
@@ -408,6 +608,36 @@ class IbPortfolioClient:
             account_summary_values,
             account_pnl_data,
         )
+
+
+def exchange_rates(
+    account_summary_values: dict[tuple[str, str, str], float],
+) -> dict[str, dict[str, float]]:
+    rates: dict[str, dict[str, float]] = {}
+    for (account, tag, currency), value in account_summary_values.items():
+        if tag == EXCHANGE_RATE_FIELD and value > 0:
+            rates.setdefault(account, {})[currency] = value
+    return rates
+
+
+def unheld_option_underlyings(positions: list[PortfolioPosition]) -> set[str]:
+    held_stocks = {
+        position.symbol for position in positions if position.sec_type == "STK"
+    }
+    return {
+        position.symbol
+        for position in positions
+        if position.sec_type == "OPT" and position.symbol not in held_stocks
+    }
+
+
+def underlying_stock_contract(symbol: str) -> Contract:
+    contract = Contract()
+    contract.symbol = symbol
+    contract.secType = "STK"
+    contract.exchange = "SMART"
+    contract.currency = "USD"
+    return contract
 
 
 def elapsed_ms(started_at: float) -> float:

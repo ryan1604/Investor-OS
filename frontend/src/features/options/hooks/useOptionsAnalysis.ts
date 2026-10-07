@@ -56,7 +56,16 @@ export function useOptionsAnalysis() {
     }
 
     setIsLoading(true)
+    setIsExpirationsLoading(true)
     setError(null)
+
+    // Expirations load alongside analysis so backend contract prefetch starts
+    // sooner; they are shown only after analysis succeeds.
+    const expirationsRequest = fetchOptionExpirations(
+      normalizedTicker,
+      requestController.signal,
+    )
+    expirationsRequest.catch(() => undefined)
 
     try {
       const nextAnalysis = await fetchOptionsAnalysis(
@@ -79,6 +88,7 @@ export function useOptionsAnalysis() {
 
       setAnalysis(null)
       setError(errorMessage(nextError))
+      setIsExpirationsLoading(false)
       return
     } finally {
       if (analysisRequestIdRef.current === requestId) {
@@ -90,13 +100,8 @@ export function useOptionsAnalysis() {
       return
     }
 
-    setIsExpirationsLoading(true)
-
     try {
-      const nextExpirations = await fetchOptionExpirations(
-        normalizedTicker,
-        requestController.signal,
-      )
+      const nextExpirations = await expirationsRequest
       if (analysisRequestIdRef.current !== requestId) {
         return
       }

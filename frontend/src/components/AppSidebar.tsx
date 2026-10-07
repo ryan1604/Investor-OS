@@ -5,6 +5,7 @@ import {
   ChartCandlestick,
   ChartNoAxesCombined,
   ClipboardList,
+  Gauge,
   ListOrdered,
   ListChecks,
   Radar,
@@ -26,6 +27,11 @@ const navigationItems: {
     page: 'portfolio',
     label: 'Portfolio',
     icon: BriefcaseBusiness,
+  },
+  {
+    page: 'portfolio-analysis',
+    label: 'Portfolio Analysis',
+    icon: Gauge,
   },
   {
     page: 'options',

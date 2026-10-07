@@ -5,6 +5,7 @@ from ibapi.contract import Contract
 
 from app.config import Settings
 from app.ib.app import IbPortfolioApp
+from app.ib.market_data_lines import MarketDataLineBudget
 from app.ib.contracts import (
     clean_ib_price,
 )
@@ -24,6 +25,9 @@ class FakeIbApp:
         self.market_req_ids: dict[int, int] = {}
         self.market_req_to_con_id: dict[int, int] = {}
         self.market_data: dict[int, dict[str, float]] = {}
+        self.underlying_req_ids: dict[str, int] = {}
+        self.underlying_req_to_symbol: dict[int, str] = {}
+        self.underlying_market_data: dict[str, dict[str, float]] = {}
         self.pnl_req_ids: dict[tuple[str, int], int] = {}
         self.pnl_req_to_position_key: dict[int, tuple[str, int]] = {}
         self.pnl_data: dict[tuple[str, int], dict[str, float | None]] = {}
@@ -247,6 +251,66 @@ def test_subscribe_market_data_requests_streaming_data_for_positions():
     assert app.ib_calls_inside_lock == []
 
 
+def test_position_quotes_subscribe_only_while_viewed_and_release_lines():
+    client = IbPortfolioClient(Settings())
+    app = FakeIbApp()
+    app.market_data_lines = MarketDataLineBudget(10)
+    app.positions_response = [
+        PortfolioPosition(
+            account="DU1234567",
+            con_id=123,
+            symbol="AMD",
+            sec_type="STK",
+            exchange="NASDAQ",
+            currency="USD",
+            quantity=100,
+        )
+    ]
+    client.app = app
+
+    client.get_positions()
+    assert app.market_requests == []
+
+    client.add_quote_viewer()
+    client.add_quote_viewer()
+    app.market_data[123] = {"last": 110}
+    assert [request[0] for request in app.market_requests] == [10_000]
+    assert app.market_data_lines.used() == 1
+
+    client.remove_quote_viewer()
+    assert app.cancelled_market_requests == []
+
+    client.remove_quote_viewer()
+    assert app.cancelled_market_requests == [10_000]
+    assert app.market_req_ids == {}
+    assert app.market_data == {}
+    assert app.market_data_lines.used() == 0
+
+    client.get_positions()
+    assert len(app.market_requests) == 1
+
+
+def test_position_quotes_wait_for_free_market_data_lines():
+    client = IbPortfolioClient(Settings())
+    app = FakeIbApp()
+    app.market_data_lines = MarketDataLineBudget(2)
+    app.market_data_lines.try_acquire("chain", 1)
+    app.market_contracts = {
+        1: contract(1, "HIMS", "OPT"),
+        2: contract(2, "HIMS", "STK"),
+    }
+    client.app = app
+
+    client.add_quote_viewer()
+    assert [request[1].conId for request in app.market_requests] == [1]
+
+    app.market_data_lines.release("chain", 1)
+    assert app.market_data_lines.try_acquire("screener", 1) == 0
+    client._subscribe_market_data()
+    assert [request[1].conId for request in app.market_requests] == [1, 2]
+    assert app.market_data_lines.used() == 2
+
+
 def test_get_positions_uses_raw_position_feed_without_account_updates(caplog):
     client = IbPortfolioClient(Settings())
     app = FakeIbApp()
@@ -335,6 +399,8 @@ def test_delayed_option_prices_and_volume_are_stored():
 def test_option_computation_allows_missing_ib_values():
     app = IbPortfolioApp()
     app.option_market_req_to_key[90_000] = (100, "C")
+    ready = threading.Event()
+    app.option_market_ready_by_req_id[90_000] = ready
 
     app.tickOptionComputation(
         90_000,
@@ -354,7 +420,37 @@ def test_option_computation_allows_missing_ib_values():
         "delta": 0.45,
         "theta": -0.02,
     }
-    assert app.option_market_data_ready.is_set()
+    assert ready.is_set()
+
+
+def test_option_computation_keeps_model_greeks_over_quote_computations():
+    # A wide ask implies a high IV, so IB's ask computation (11) understates an
+    # in-the-money call's delta; the bid computation (10) overstates it.
+    app = IbPortfolioApp()
+    app.option_market_req_to_key[90_000] = (27, "C")
+
+    app.tickOptionComputation(90_000, 13, 0, 0.62, 0.778, 2.07, None, 0.1, None, -0.05, 28.7)
+    app.tickOptionComputation(90_000, 10, 0, 0.37, 0.891, 1.82, None, 0.2, None, -0.01, 28.7)
+    app.tickOptionComputation(90_000, 11, 0, 1.29, 0.669, 3.0, None, 0.05, None, -0.2, 28.7)
+
+    assert app.option_market_data[90_000] == {
+        "implied_volatility_percent": 62,
+        "delta": 0.778,
+        "gamma": 0.1,
+        "theta": -0.05,
+        "model_price": 2.07,
+    }
+
+
+def test_option_computation_takes_greeks_only_from_live_or_delayed_model_ticks():
+    app = IbPortfolioApp()
+    app.option_market_req_to_key[90_000] = (27, "C")
+
+    app.tickOptionComputation(90_000, 81, 0, 1.29, 0.669, 3.0, None, 0.05, None, -0.2, 28.7)
+    assert "delta" not in app.option_market_data.get(90_000, {})
+
+    app.tickOptionComputation(90_000, 83, 0, 0.62, 0.778, 2.07, None, 0.1, None, -0.05, 28.7)
+    assert app.option_market_data[90_000]["delta"] == 0.778
 
 
 def test_option_computation_preserves_values_from_partial_ticks_and_scales_iv():
@@ -461,6 +557,35 @@ def test_options_callbacks_release_only_their_request_waiters():
     assert not other_historical_ready.is_set()
     assert not other_contract_ready.is_set()
     assert not other_metadata_ready.is_set()
+
+
+def test_market_data_lines_track_active_and_peak_subscriptions(monkeypatch):
+    app = IbPortfolioApp()
+    monkeypatch.setattr("ibapi.client.EClient.reqMktData", lambda *args: None)
+    monkeypatch.setattr("ibapi.client.EClient.cancelMktData", lambda *args: None)
+
+    app.reqMktData(90_000, Contract(), "", False, False, [])
+    app.reqMktData(90_001, Contract(), "", False, False, [])
+    app.cancelMktData(90_000)
+    app.reqMktData(90_002, Contract(), "", False, False, [])
+
+    assert app.market_data_line_usage() == (2, 2)
+
+
+def test_limit_errors_are_counted_per_request_and_release_rejected_lines(
+    monkeypatch,
+):
+    app = IbPortfolioApp()
+    monkeypatch.setattr("ibapi.client.EClient.reqMktData", lambda *args: None)
+    app.reqMktData(90_000, Contract(), "", False, False, [])
+    app.reqMktData(90_001, Contract(), "", False, False, [])
+
+    app.error(90_001, 101, "Max number of tickers has been reached")
+    app.error(-1, 100, "Max rate of messages per second has been exceeded")
+
+    assert app.limit_error_count([90_000, 90_001]) == {101: 1}
+    assert app.limit_error_counts == {100: 1, 101: 1}
+    assert app.market_data_line_usage() == (1, 2)
 
 
 def test_late_contract_details_callback_does_not_recreate_timed_out_request():
@@ -1219,3 +1344,289 @@ def test_completed_orders_end_notifies_listeners():
     app.completedOrdersEnd()
 
     assert calls == ["done"]
+
+
+def option_position(con_id: int, symbol: str, account: str = "DU1234567") -> PortfolioPosition:
+    return PortfolioPosition(
+        account=account,
+        con_id=con_id,
+        symbol=symbol,
+        sec_type="OPT",
+        expiry="20261120",
+        strike=30,
+        right="P",
+        multiplier="100",
+        exchange="SMART",
+        currency="USD",
+        quantity=-1,
+    )
+
+
+def stock_position(con_id: int, symbol: str) -> PortfolioPosition:
+    return PortfolioPosition(
+        account="DU1234567",
+        con_id=con_id,
+        symbol=symbol,
+        sec_type="STK",
+        exchange="NASDAQ",
+        currency="USD",
+        quantity=100,
+    )
+
+
+def test_portfolio_option_greeks_are_stored_by_con_id():
+    app = IbPortfolioApp()
+    app.market_req_to_con_id[10_000] = 555
+
+    app.tickOptionComputation(10_000, 83, 0, 0.52, -0.31, 1.4, 0, 0.04, 0.03, -0.02, 29.5)
+
+    assert app.market_data[555] == {
+        "implied_volatility": 0.52,
+        "delta": -0.31,
+        "gamma": 0.04,
+        "vega": 0.03,
+        "theta": -0.02,
+        "underlying_price": 29.5,
+        "greeks_from_model": 1.0,
+    }
+    assert app.option_market_data == {}
+
+
+def test_portfolio_option_model_ticks_win_over_quote_computation_ticks():
+    app = IbPortfolioApp()
+    app.market_req_to_con_id[10_000] = 555
+
+    app.tickOptionComputation(10_000, 80, 0, 0.6, -0.4, None, None, 0.05, 0.02, -0.03, 29.0)
+    assert app.market_data[555]["delta"] == -0.4
+
+    app.tickOptionComputation(10_000, 13, 0, 0.5, -0.3, None, None, None, None, None, None)
+    app.tickOptionComputation(10_000, 81, 0, 0.9, -0.9, None, None, 0.9, 0.9, -0.9, 99.0)
+
+    # Model values replace quote-tick values; fields the model omitted keep earlier values.
+    assert app.market_data[555] == {
+        "implied_volatility": 0.5,
+        "delta": -0.3,
+        "gamma": 0.05,
+        "vega": 0.02,
+        "theta": -0.03,
+        "underlying_price": 29.0,
+        "greeks_from_model": 1.0,
+    }
+
+
+def test_portfolio_price_ticks_keep_last_and_close_alongside_greeks():
+    app = IbPortfolioApp()
+    app.market_req_to_con_id[10_000] = 555
+
+    app.tickPrice(10_000, 68, 1.25, None)
+    app.tickOptionComputation(10_000, 83, 0, 0.5, -0.3, None, None, None, None, None, None)
+
+    assert app.market_data[555]["last"] == 1.25
+    assert app.market_data[555]["delta"] == -0.3
+
+
+def test_chain_option_computation_is_unchanged_by_portfolio_routing():
+    app = IbPortfolioApp()
+    app.market_req_to_con_id[10_000] = 555
+    app.option_market_req_to_key[90_000] = (100, "C")
+
+    app.tickOptionComputation(90_000, 13, 0, 0.42, 0.45, 1.25, None, 0.01, None, -0.02, None)
+
+    assert app.option_market_data[90_000] == {
+        "implied_volatility_percent": 42,
+        "delta": 0.45,
+        "gamma": 0.01,
+        "theta": -0.02,
+        "model_price": 1.25,
+    }
+    assert app.market_data == {}
+
+
+def test_underlying_ticks_are_stored_by_symbol():
+    app = IbPortfolioApp()
+    app.underlying_req_to_symbol[10_001] = "HIMS"
+
+    app.tickPrice(10_001, 68, 30.5, None)
+    app.tickPrice(10_001, 75, 29.75, None)
+    app.tickPrice(10_001, 66, 30.4, None)
+
+    assert app.underlying_market_data == {"HIMS": {"last": 30.5, "close": 29.75}}
+    assert app.market_data == {}
+
+
+def analysis_client(positions: list[PortfolioPosition], capacity: int = 20):
+    client = IbPortfolioClient(Settings())
+    app = FakeIbApp()
+    app.market_data_lines = MarketDataLineBudget(capacity)
+    app.positions_response = positions
+    client.app = app
+    return client, app
+
+
+def test_analysis_viewer_subscribes_unheld_underlyings_and_releases_all_lines():
+    client, app = analysis_client([
+        option_position(1, "HIMS"),
+        option_position(2, "AMD"),
+        stock_position(3, "AMD"),
+    ])
+    client.get_positions()
+    assert app.market_requests == []
+
+    client.add_analysis_viewer()
+    requested = sorted(
+        (contract.symbol, contract.secType) for _, contract in app.market_requests
+    )
+    assert requested == [
+        ("AMD", "OPT"), ("AMD", "STK"), ("HIMS", "OPT"), ("HIMS", "STK"),
+    ]
+    underlying = next(c for _, c in app.market_requests if c.conId == 0)
+    assert (underlying.symbol, underlying.exchange, underlying.currency) == (
+        "HIMS", "SMART", "USD",
+    )
+    assert app.market_data_lines.usage_by_group() == {"portfolio": 4}
+    assert list(app.underlying_req_ids) == ["HIMS"]
+
+    client.get_positions()
+    assert len(app.market_requests) == 4
+
+    client.remove_analysis_viewer()
+    assert sorted(app.cancelled_market_requests) == sorted(
+        req_id for req_id, _ in app.market_requests
+    )
+    assert app.underlying_req_ids == {}
+    assert app.underlying_req_to_symbol == {}
+    assert app.market_data_lines.used() == 0
+
+
+def test_analysis_viewers_are_counted():
+    client, app = analysis_client([option_position(1, "HIMS")])
+    client.get_positions()
+
+    client.add_analysis_viewer()
+    client.add_analysis_viewer()
+    client.remove_analysis_viewer()
+    assert app.cancelled_market_requests == []
+    assert app.market_data_lines.used() == 2
+
+    client.remove_analysis_viewer()
+    client.remove_analysis_viewer()
+    assert app.market_data_lines.used() == 0
+    assert client.analysis_viewers == 0
+
+
+def test_market_data_line_report_follows_analysis_viewers():
+    client, _ = analysis_client([option_position(1, "HIMS")])
+    client.get_positions()
+    assert client.get_market_data_lines().used == 0
+
+    client.add_analysis_viewer()
+    open_report = client.get_market_data_lines()
+    client.remove_analysis_viewer()
+    closed_report = client.get_market_data_lines()
+
+    assert open_report.capacity == 20
+    assert open_report.used_by_group["portfolio"] == 2
+    assert closed_report.used == 0
+    assert closed_report.used_by_group["portfolio"] == 0
+
+
+def test_market_data_line_report_uses_configured_capacity():
+    report = IbPortfolioClient(Settings()).get_market_data_lines()
+
+    assert report.capacity == Settings().max_market_data_lines - Settings().market_data_line_reserve
+    assert report.used == 0
+
+
+def test_closing_analysis_keeps_portfolio_quotes_for_portfolio_viewers():
+    client, app = analysis_client([option_position(1, "HIMS")])
+    client.get_positions()
+    client.add_quote_viewer()
+    client.add_analysis_viewer()
+    underlying_req = app.underlying_req_ids["HIMS"]
+    assert app.market_data_lines.used() == 2
+
+    client.remove_analysis_viewer()
+    assert app.cancelled_market_requests == [underlying_req]
+    assert app.market_req_ids == {1: 10_000}
+    assert app.market_data_lines.used() == 1
+
+    client.add_analysis_viewer()
+    client.remove_quote_viewer()
+    assert app.market_req_ids == {1: 10_000}
+    assert list(app.underlying_req_ids) == ["HIMS"]
+    assert app.market_data_lines.used() == 2
+
+
+def test_portfolio_viewer_alone_does_not_subscribe_underlyings():
+    client, app = analysis_client([option_position(1, "HIMS")])
+    client.get_positions()
+
+    client.add_quote_viewer()
+    client.get_positions()
+
+    assert [contract.conId for _, contract in app.market_requests] == [1]
+    assert app.underlying_req_ids == {}
+    assert app.market_data_lines.used() == 1
+
+
+def test_underlying_quote_is_released_when_stock_is_bought_or_option_closed():
+    client, app = analysis_client([option_position(1, "HIMS"), option_position(2, "SOFI")])
+    client.get_positions()
+    client.add_analysis_viewer()
+    hims_req = app.underlying_req_ids["HIMS"]
+    sofi_req = app.underlying_req_ids["SOFI"]
+    option_2_req = app.market_req_ids[2]
+    app.underlying_market_data["HIMS"] = {"last": 30}
+
+    app.positions = {
+        ("DU1234567", 1, ""): option_position(1, "HIMS"),
+        ("DU1234567", 4, ""): stock_position(4, "HIMS"),
+    }
+    client.get_positions()
+
+    assert sorted(app.cancelled_market_requests) == sorted([hims_req, sofi_req, option_2_req])
+    assert app.underlying_req_ids == {}
+    assert app.underlying_market_data == {}
+    assert app.market_data_lines.used() == 2
+
+
+def test_underlying_quotes_wait_for_lines_and_clear_demand_on_close():
+    client, app = analysis_client(
+        [option_position(1, "HIMS"), option_position(2, "SOFI")],
+        capacity=3,
+    )
+    client.get_positions()
+
+    client.add_analysis_viewer()
+    assert app.market_data_lines.used() == 3
+    assert len(app.underlying_req_ids) == 1
+    assert app.market_data_lines.try_acquire("chain", 1) == 0
+
+    client.remove_analysis_viewer()
+    assert app.market_data_lines.used() == 0
+    assert app.market_data_lines.try_acquire("chain", 3) == 3
+
+
+def test_get_analysis_market_data_returns_copies():
+    client, app = analysis_client([])
+    app.market_data[1] = {"delta": -0.3}
+    app.underlying_market_data["HIMS"] = {"last": 30}
+
+    data = client.get_analysis_market_data()
+    data.by_con_id[1]["delta"] = 9
+    data.underlyings["HIMS"]["last"] = 9
+
+    assert app.market_data[1] == {"delta": -0.3}
+    assert app.underlying_market_data["HIMS"] == {"last": 30}
+
+
+def test_stop_cancels_underlying_quotes():
+    client, app = analysis_client([option_position(1, "HIMS")])
+    client.get_positions()
+    client.add_analysis_viewer()
+
+    client.stop()
+
+    assert sorted(app.cancelled_market_requests) == sorted(
+        req_id for req_id, _ in app.market_requests
+    )

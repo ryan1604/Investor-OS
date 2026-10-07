@@ -96,6 +96,7 @@ export function useOptionChain(
             activeExpiration,
             message.rows ?? [],
             message.message ?? null,
+            message.warning ?? null,
           ),
         )
         return

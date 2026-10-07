@@ -61,23 +61,15 @@ class ScannerProvider:
     def fetch_option_contracts(
         self,
         ticker,
-        expirations,
-        strikes,
+        lookups,
         right,
         cancel_event,
     ):
-        self.contract_request = (ticker, expirations, strikes, right)
+        self.contract_request = (ticker, lookups, right)
         return ScannerContractSelection(
             contracts=[
                 call_contract(expiration, strike, con_id=index)
-                for index, (expiration, strike) in enumerate(
-                    (
-                        (expiration, strike)
-                        for expiration in expirations
-                        for strike in strikes
-                    ),
-                    start=1,
-                )
+                for index, (expiration, strike) in enumerate(lookups, start=1)
             ]
         )
 
@@ -137,8 +129,11 @@ def test_full_call_chain_scans_every_otm_strike_and_inclusive_expiration(
     ]
     assert scanner.contract_request == (
         "AAPL",
-        ["2026-06-22", "2026-06-26", "2026-07-30"],
-        [105, 110, 115],
+        [
+            (expiration, strike)
+            for expiration in ["2026-06-22", "2026-06-26", "2026-07-30"]
+            for strike in [105, 110, 115]
+        ],
         "C",
     )
     assert len(snapshot.contracts) == 9

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -18,6 +18,8 @@ from app.ib.contracts import (
     market_data_contract,
     parse_ib_bar_date,
 )
+from app.ib.market_data_lines import MarketDataLineBudget
+from app.ib.pacing import MessagePacer, OutstandingRequestLimiter
 from app.options.domain import OptionMetadata
 from app.options.store import CompletedDailyBar
 from app.portfolio.domain import percent
@@ -32,11 +34,22 @@ OPTION_ASK_TICK_TYPES = {2, 67}
 OPTION_BID_SIZE_TICK_TYPES = {0, 69}
 OPTION_ASK_SIZE_TICK_TYPES = {3, 70}
 OPTION_VOLUME_TICK_TYPES = {8, 29, 30, 74}
+MODEL_OPTION_COMPUTATION_TICK_TYPES = {13, 83}
 IB_INFO_CODES = {2104, 2106, 2158}
 IB_DEBUG_CODES = {2100}
 IB_MARKET_DATA_SUBSCRIPTION_CODES = {10089, 10090, 10091, 10167}
 IB_HISTORICAL_NO_DATA_CODES = {162}
 IB_INVALID_CONTRACT_CODES = {200}
+IB_MESSAGE_RATE_CODE = 100
+IB_MARKET_DATA_LINE_LIMIT_CODE = 101
+IB_LIMIT_CODES = {IB_MESSAGE_RATE_CODE, IB_MARKET_DATA_LINE_LIMIT_CODE}
+# IB allows 50 messages per second; the margin covers unpaced requests.
+IB_PACED_MESSAGES_PER_SECOND = 40
+# IB answers roughly 18-35 contract lookups per second; more in flight only
+# lengthens its queue until lookups time out.
+IB_MAX_OUTSTANDING_CONTRACT_DETAILS = 16
+# Chain preloads keep the rest free for the chain or scan someone is waiting on.
+IB_MAX_BACKGROUND_CONTRACT_DETAILS = 4
 ACCOUNT_VALUE_KEYS = {
     "BuyingPower",
     "ExcessLiquidity",
@@ -66,13 +79,28 @@ def completed_daily_bar(ticker: str, bar) -> CompletedDailyBar | None:
 
 
 class IbPortfolioApp(EWrapper, EClient):
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        market_data_line_capacity: int = 95,
+        paced_messages_per_second: int = IB_PACED_MESSAGES_PER_SECOND,
+    ) -> None:
         EClient.__init__(self, self)
+        self.market_data_lines = MarketDataLineBudget(market_data_line_capacity)
+        self.message_pacer = MessagePacer(paced_messages_per_second)
+        self.contract_details_slots = OutstandingRequestLimiter(
+            IB_MAX_OUTSTANDING_CONTRACT_DETAILS,
+            background_capacity=IB_MAX_BACKGROUND_CONTRACT_DETAILS,
+        )
         self.positions: dict[tuple[str, int, str], PortfolioPosition] = {}
         self.market_data: dict[int, dict[str, float]] = {}
         self.market_contracts: dict[int, Contract] = {}
         self.market_req_ids: dict[int, int] = {}
         self.market_req_to_con_id: dict[int, int] = {}
+        # Underlying stock quotes for Portfolio Analysis, keyed by ticker.
+        self.underlying_req_ids: dict[str, int] = {}
+        self.underlying_req_to_symbol: dict[int, str] = {}
+        self.underlying_market_data: dict[str, dict[str, float]] = {}
         self.pnl_req_ids: dict[tuple[str, int], int] = {}
         self.pnl_req_to_position_key: dict[int, tuple[str, int]] = {}
         self.pnl_data: dict[tuple[str, int], dict[str, float | None]] = {}
@@ -114,8 +142,13 @@ class IbPortfolioApp(EWrapper, EClient):
         self.option_metadata_ready_by_req_id: dict[int, threading.Event] = {}
         self.option_market_req_to_key: dict[int, tuple[float, str]] = {}
         self.option_market_data: dict[int, dict[str, float | int | None]] = {}
+        self.option_market_ready_by_req_id: dict[int, threading.Event] = {}
         self.next_option_params_req_id = 80_000
         self.next_option_market_req_id = 90_000
+        self.active_market_data_req_ids: set[int] = set()
+        self.peak_market_data_lines = 0
+        self.limit_errors_by_req_id: dict[int, int] = {}
+        self.limit_error_counts: dict[int, int] = {}
 
         self.next_order_id: int | None = None
         self.next_execution_req_id = 90_000
@@ -131,7 +164,6 @@ class IbPortfolioApp(EWrapper, EClient):
         self.market_data_ready = threading.Event()
         self.pnl_ready = threading.Event()
         self.account_pnl_ready = threading.Event()
-        self.option_market_data_ready = threading.Event()
         self.connected_ready = threading.Event()
         self.lock = threading.Lock()
 
@@ -139,6 +171,43 @@ class IbPortfolioApp(EWrapper, EClient):
         with self.lock:
             self.next_order_id = orderId
         self.connected_ready.set()
+
+    def reqContractDetails(self, reqId: int, contract: Contract) -> None:
+        self.message_pacer.wait()
+        super().reqContractDetails(reqId, contract)
+
+    def reqHistoricalData(self, reqId: int, *args, **kwargs) -> None:
+        self.message_pacer.wait()
+        super().reqHistoricalData(reqId, *args, **kwargs)
+
+    def reqMktData(self, reqId: int, *args, **kwargs) -> None:
+        self.message_pacer.wait()
+        with self.lock:
+            self.active_market_data_req_ids.add(reqId)
+            self.peak_market_data_lines = max(
+                self.peak_market_data_lines,
+                len(self.active_market_data_req_ids),
+            )
+        super().reqMktData(reqId, *args, **kwargs)
+
+    def cancelMktData(self, reqId: int) -> None:
+        self.message_pacer.wait()
+        with self.lock:
+            self.active_market_data_req_ids.discard(reqId)
+        super().cancelMktData(reqId)
+
+    def market_data_line_usage(self) -> tuple[int, int]:
+        with self.lock:
+            return len(self.active_market_data_req_ids), self.peak_market_data_lines
+
+    def limit_error_count(self, req_ids: Iterable[int]) -> dict[int, int]:
+        with self.lock:
+            counts: dict[int, int] = {}
+            for req_id in req_ids:
+                code = self.limit_errors_by_req_id.get(req_id)
+                if code is not None:
+                    counts[code] = counts.get(code, 0) + 1
+            return counts
 
     def add_order_status_listener(self, listener: Callable[..., None]) -> None:
         with self.lock:
@@ -337,16 +406,15 @@ class IbPortfolioApp(EWrapper, EClient):
 
                 if tickType in OPTION_BID_TICK_TYPES:
                     values["bid"] = price
-                    self.option_market_data_ready.set()
                 elif tickType in OPTION_ASK_TICK_TYPES:
                     values["ask"] = price
-                    self.option_market_data_ready.set()
                 elif tickType in LAST_TICK_TYPES:
                     values["last"] = price
-                    self.option_market_data_ready.set()
                 elif tickType in CLOSE_TICK_TYPES:
                     values["close"] = price
-                    self.option_market_data_ready.set()
+                else:
+                    return
+                self._signal_option_market_data(reqId)
                 return
 
             ticker = self.chart_market_req_tickers.get(reqId)
@@ -367,6 +435,15 @@ class IbPortfolioApp(EWrapper, EClient):
                     ready = self.chart_market_ready_by_req_id.get(reqId)
                     if ready is not None:
                         ready.set()
+                return
+
+            symbol = self.underlying_req_to_symbol.get(reqId)
+            if symbol is not None:
+                values = self.underlying_market_data.setdefault(symbol, {})
+                if tickType in LAST_TICK_TYPES:
+                    values["last"] = price
+                elif tickType in CLOSE_TICK_TYPES:
+                    values["close"] = price
                 return
 
             con_id = self.market_req_to_con_id.get(reqId)
@@ -390,16 +467,15 @@ class IbPortfolioApp(EWrapper, EClient):
             values = self.option_market_data.setdefault(reqId, {})
             if tickType in OPTION_BID_SIZE_TICK_TYPES:
                 values["bid_size"] = size
-                self.option_market_data_ready.set()
             elif tickType in OPTION_ASK_SIZE_TICK_TYPES:
                 values["ask_size"] = size
-                self.option_market_data_ready.set()
             elif tickType in OPTION_VOLUME_TICK_TYPES:
                 values["volume"] = size
-                self.option_market_data_ready.set()
             elif tickType in {27, 28}:
                 values["open_interest"] = size
-                self.option_market_data_ready.set()
+            else:
+                return
+            self._signal_option_market_data(reqId)
 
     def tickOptionComputation(
         self,
@@ -416,7 +492,26 @@ class IbPortfolioApp(EWrapper, EClient):
         undPrice: float | None,
     ) -> None:
         with self.lock:
+            con_id = self.market_req_to_con_id.get(reqId)
+            if con_id is not None:
+                self._store_position_greeks(
+                    con_id,
+                    tickType,
+                    impliedVol,
+                    delta,
+                    gamma,
+                    vega,
+                    theta,
+                    undPrice,
+                )
+                return
+
             if reqId not in self.option_market_req_to_key:
+                return
+            # Bid, ask, and last computations solve IV from that one price, so a
+            # wide quote skews their delta; only IB's model Greeks are kept. IB
+            # sends the model tick first, so this does not delay any field.
+            if tickType not in MODEL_OPTION_COMPUTATION_TICK_TYPES:
                 return
 
             values = self.option_market_data.setdefault(reqId, {})
@@ -430,7 +525,7 @@ class IbPortfolioApp(EWrapper, EClient):
                 "theta": clean_ib_float(theta),
             }
             model_price = clean_ib_float(optPrice)
-            if tickType in {13, 83} and model_price is not None and model_price >= 0:
+            if model_price is not None and model_price >= 0:
                 next_values["model_price"] = model_price
             values.update(
                 {
@@ -439,7 +534,45 @@ class IbPortfolioApp(EWrapper, EClient):
                     if value is not None
                 }
             )
-            self.option_market_data_ready.set()
+            self._signal_option_market_data(reqId)
+
+    def _store_position_greeks(
+        self,
+        con_id: int,
+        tick_type: int,
+        implied_vol: float | None,
+        delta: float | None,
+        gamma: float | None,
+        vega: float | None,
+        theta: float | None,
+        underlying_price: float | None,
+    ) -> None:
+        """Keep a portfolio option's Greeks, letting model ticks win over quote ticks."""
+        values = self.market_data.setdefault(con_id, {})
+        is_model = tick_type in MODEL_OPTION_COMPUTATION_TICK_TYPES
+        if not is_model and values.get("greeks_from_model"):
+            return
+
+        next_values = {
+            "implied_volatility": clean_ib_float(implied_vol),
+            "delta": clean_ib_float(delta),
+            "gamma": clean_ib_float(gamma),
+            "vega": clean_ib_float(vega),
+            "theta": clean_ib_float(theta),
+            "underlying_price": clean_ib_price(underlying_price or 0),
+        }
+        values.update(
+            {key: value for key, value in next_values.items() if value is not None}
+        )
+        if is_model:
+            values["greeks_from_model"] = 1.0
+
+    def _signal_option_market_data(self, req_id: int) -> None:
+        # Each subscription group waits on its own event, so one group's
+        # wakeups are never cleared by another group.
+        ready = self.option_market_ready_by_req_id.get(req_id)
+        if ready is not None:
+            ready.set()
 
     def pnlSingle(
         self,
@@ -614,6 +747,7 @@ class IbPortfolioApp(EWrapper, EClient):
                 details.append(contractDetails)
 
     def contractDetailsEnd(self, reqId: int) -> None:
+        self.contract_details_slots.release(reqId)
         with self.lock:
             ready = self.contract_details_ready_by_req_id.get(reqId)
         if ready is not None:
@@ -661,6 +795,7 @@ class IbPortfolioApp(EWrapper, EClient):
         errorString: str,
         advancedOrderRejectJson: str = "",
     ) -> None:
+        self.contract_details_slots.release(reqId)
         if errorCode in IB_INFO_CODES:
             logger.info(
                 "IB API notice reqId=%s code=%s message=%s",
@@ -678,6 +813,16 @@ class IbPortfolioApp(EWrapper, EClient):
                 errorString,
             )
             return
+
+        if errorCode in IB_LIMIT_CODES:
+            with self.lock:
+                self.limit_errors_by_req_id[reqId] = errorCode
+                self.limit_error_counts[errorCode] = (
+                    self.limit_error_counts.get(errorCode, 0) + 1
+                )
+                if errorCode == IB_MARKET_DATA_LINE_LIMIT_CODE:
+                    self.active_market_data_req_ids.discard(reqId)
+                    self._signal_option_market_data(reqId)
 
         warning_key = (reqId, errorCode)
         if errorCode in IB_MARKET_DATA_SUBSCRIPTION_CODES:

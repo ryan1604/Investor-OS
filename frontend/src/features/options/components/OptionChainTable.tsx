@@ -147,6 +147,9 @@ export function OptionChainTable({
             {error}
           </Alert>
         ) : null}
+        {!error && chain?.warning ? (
+          <Alert className="mb-4">{chain.warning}</Alert>
+        ) : null}
 
         {isLoading ? (
           <ChainMessage>Loading chain...</ChainMessage>

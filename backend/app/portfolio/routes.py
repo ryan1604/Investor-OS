@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.concurrency import run_in_threadpool
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -103,6 +104,22 @@ async def portfolio_ws(websocket: WebSocket):
         return
     finally:
         service.unsubscribe(queue)
+
+
+@router.websocket("/portfolio/quotes/ws")
+async def portfolio_quotes_ws(websocket: WebSocket):
+    """Keep position quote lines subscribed only while a Portfolio page is open."""
+    await websocket.accept()
+    client = websocket.app.state.ib_client
+    await run_in_threadpool(client.add_quote_viewer)
+
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        return
+    finally:
+        await run_in_threadpool(client.remove_quote_viewer)
 
 
 def required_account(account: str) -> str:

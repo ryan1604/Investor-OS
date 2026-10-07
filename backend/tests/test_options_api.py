@@ -377,6 +377,7 @@ def test_option_chain_websocket_streams_snapshot_and_updates():
         ],
         "row": None,
         "message": "Streaming 1 strike(s) for TSLA 2026-06-19.",
+        "warning": None,
     }
     assert update["type"] == "update"
     assert update["ticker"] == "TSLA"

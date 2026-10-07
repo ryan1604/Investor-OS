@@ -67,3 +67,15 @@ class OptionsScreenerService(
     Protocol,
 ):
     pass
+
+
+def line_limit_warning(ticker: str, count: int) -> OptionsScreenerTickerWarning:
+    return OptionsScreenerTickerWarning(
+        ticker=ticker,
+        category="line_limit",
+        message=(
+            "IB rejected contracts at the market-data line limit, so they "
+            "were not quoted."
+        ),
+        count=count,
+    )

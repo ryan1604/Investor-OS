@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, date, datetime
+import logging
 import math
 import threading
+from time import perf_counter
 from typing import Protocol
 from zoneinfo import ZoneInfo
 
@@ -21,6 +23,7 @@ from app.options_screeners.domain import (
 from app.options_screeners.service import (
     OptionsScreenerServiceUnavailable,
     OptionsScreenerTickerResult,
+    line_limit_warning,
 )
 from app.schemas import (
     CreditSpreadScreenerFilters,
@@ -33,6 +36,7 @@ from app.schemas import (
 )
 
 US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
+logger = logging.getLogger(__name__)
 
 
 class FullOptionChainClient(Protocol):
@@ -101,6 +105,7 @@ class SingleLegOptionsScreenerScanService:
             )
 
         current_date = self.current_date_provider()
+        started_at = perf_counter()
         snapshot = self.client.get_full_option_chain(
             ticker,
             right="P" if screener == "csp" else "C",
@@ -173,6 +178,10 @@ class SingleLegOptionsScreenerScanService:
                     count=excluded_contracts,
                 )
             )
+        if snapshot.line_limited_contracts:
+            warnings.append(
+                line_limit_warning(snapshot.ticker, snapshot.line_limited_contracts)
+            )
         if not candidates:
             warnings.append(
                 OptionsScreenerTickerWarning(
@@ -181,6 +190,15 @@ class SingleLegOptionsScreenerScanService:
                     message="No contracts matched the saved filters.",
                 )
             )
+        logger.info(
+            "Options screener ticker scanned screener=%s ticker=%s "
+            "candidates=%s excluded_contracts=%s elapsed_ms=%.1f",
+            screener,
+            snapshot.ticker,
+            len(candidates),
+            excluded_contracts,
+            (perf_counter() - started_at) * 1_000,
+        )
         return OptionsScreenerTickerResult(
             candidates=sort_candidates(candidates),
             excluded_contracts=excluded_contracts,

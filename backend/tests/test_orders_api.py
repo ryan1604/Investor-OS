@@ -1368,7 +1368,12 @@ def test_external_bound_combo_order_with_resolved_leg_details_is_editable():
             order=order,
             order_state=type("OrderState", (), {"status": "Submitted"})(),
         )
-        wait_until(lambda: api.state.order_service.snapshot()[0].editable)
+        # A raw BAG LMT order is editable at once with a partial preview; wait for
+        # the background leg resolution instead.
+        wait_until(
+            lambda: api.state.order_service.snapshot()[0].preview.request.order_kind
+            == "option_strategy",
+        )
         snapshot = client.get("/orders")
         response = client.patch(
             "/orders/780",
@@ -1472,7 +1477,12 @@ def test_external_bound_combo_order_uses_resolved_leg_local_symbols():
             order=order,
             order_state=type("OrderState", (), {"status": "Submitted"})(),
         )
-        wait_until(lambda: api.state.order_service.snapshot()[0].editable)
+        # A raw BAG LMT order is editable at once with a partial preview; wait for
+        # the background leg resolution instead.
+        wait_until(
+            lambda: api.state.order_service.snapshot()[0].preview.request.order_kind
+            == "option_strategy",
+        )
         snapshot = client.get("/orders")
 
     request = snapshot.json()[0]["preview"]["request"]

@@ -22,7 +22,9 @@ export function ScreenerWarnings({
   const [open, setOpen] = useState(false)
   const noMatches = warnings.filter((warning) => warning.category === 'no_matches')
   const excluded = warnings.filter(
-    (warning) => warning.category === 'excluded_contracts',
+    (warning) =>
+      warning.category === 'excluded_contracts' ||
+      warning.category === 'line_limit',
   )
   if (!errors.length && !warnings.length) {
     return null
@@ -76,7 +78,7 @@ export function ScreenerWarnings({
               title="Excluded data"
               items={excluded.map(
                 (warning) =>
-                  `${warning.ticker}: ${warning.count} contract${warning.count === 1 ? '' : 's'}`,
+                  `${warning.ticker}: ${warning.count} contract${warning.count === 1 ? '' : 's'}${warning.category === 'line_limit' ? ' (line limit)' : ''}`,
               )}
             />
           </div>

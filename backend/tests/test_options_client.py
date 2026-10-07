@@ -7,19 +7,28 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from app.ib.app import IbPortfolioApp
+from app.ib.market_data_lines import MarketDataLineBudget
+from app.ib.pacing import OutstandingRequestLimiter
 from app.ib.contracts import us_equity_contract, us_option_contract
 from app.ib.options import (
+    EXACT_CONTRACT_LOOKUP_CONCURRENCY,
     IbHistoricalDailyBarStreamProvider,
     IbOptionChainSnapshotProvider,
     IbOptionChainStreamProvider,
     IbHistoricalDailyBarProvider,
     IbOptionMetadataProvider,
     IbOptionScannerProvider,
+    fetch_exact_contract_lookups,
+    send_contract_details_request,
+    wait_for_quote_fields,
 )
 from app.options.client import (
     AnalysisUnderlyingPriceCache,
     CachedOptionMetadataProvider,
+    ContractLookupPriority,
     OptionChainContractHydration,
+    OptionChainRotation,
+    OptionChainStreamNotice,
     OptionsClient,
     OptionsDataUnavailable,
     ScannerOptionContract,
@@ -192,6 +201,9 @@ class FakeChainProvider:
         expiration: str,
         strikes: list[float],
         stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
     ) -> OptionChainContractHydration:
         return OptionChainContractHydration(
             contracts=self.fetch_chain_contracts(ticker, expiration, strikes),
@@ -221,6 +233,9 @@ class RecoveringPartialChainProvider(FakeChainProvider):
         expiration: str,
         strikes: list[float],
         stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
     ) -> OptionChainContractHydration:
         self.requests.append((ticker, expiration, strikes))
         timed_out_strikes = (
@@ -252,6 +267,9 @@ class BlockingHydrationChainProvider(FakeChainProvider):
         expiration: str,
         strikes: list[float],
         stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
     ) -> OptionChainContractHydration:
         self.requests.append((ticker, expiration, strikes))
         self.received_stop_event = stop_event
@@ -351,6 +369,28 @@ def test_option_metadata_cache_refreshes_expired_entries():
     assert provider.requests == ["MSFT", "MSFT"]
 
 
+def test_option_metadata_cache_does_not_hold_other_tickers_behind_a_slow_fetch():
+    release_slow = threading.Event()
+
+    class SlowForAaplProvider(FakeMetadataProvider):
+        def fetch_option_metadata(self, ticker):
+            if ticker == "AAPL":
+                release_slow.wait(timeout=2)
+            return super().fetch_option_metadata(ticker)
+
+    cache = CachedOptionMetadataProvider(SlowForAaplProvider(strikes=[100]))
+    slow = threading.Thread(target=cache.fetch_option_metadata, args=("AAPL",))
+    slow.start()
+    wait_until(lambda: slow.is_alive())
+
+    try:
+        assert cache.fetch_option_metadata("MSFT").strikes == [100]
+        assert slow.is_alive()
+    finally:
+        release_slow.set()
+        slow.join()
+
+
 def test_option_metadata_cache_isolates_tickers():
     provider = FakeMetadataProvider(strikes=[100])
     cache = CachedOptionMetadataProvider(provider)
@@ -388,7 +428,8 @@ class FakeChainStreamProvider:
         self.batches = batches or []
         self.requests: list[tuple[str, str, list[float]]] = []
 
-    def stream_chain_quotes(self, contracts, stop_event):
+    def stream_chain_quotes(self, contracts, stop_event, rotation=None):
+        self.rotation = rotation
         first_contract = contracts[0] if contracts else None
         ticker = first_contract.ticker if first_contract else ""
         expiration = first_contract.expiration if first_contract else ""
@@ -857,24 +898,94 @@ def test_get_expirations_prefetches_selected_and_nearby_contracts(tmp_path):
     assert chain_provider.quote_requests == []
 
 
-def test_get_expirations_skips_prefetch_without_analysis_price(tmp_path):
-    provider = FakeHistoricalProvider()
+def test_get_expirations_prefetches_once_concurrent_analysis_caches_the_price(
+    tmp_path,
+):
+    strikes = list(range(50, 151))
     metadata_provider = FakeMetadataProvider(
         expirations=["2026-06-19"],
-        strikes=[100],
+        strikes=strikes,
     )
-    chain_provider = FakeChainProvider()
+    chain_provider = FallbackRecordingChainProvider(contract_strikes=strikes)
     client, _store = make_client(
         tmp_path,
-        provider,
+        FakeHistoricalProvider(),
         metadata_provider,
         chain_provider,
     )
 
     response = client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+    assert chain_provider.requests == []
+    client.analysis_underlying_price_cache.set("AAPL", 99.6)
+
+    wait_until(lambda: len(chain_provider.requests) == 1)
+    client.shutdown()
 
     assert response.selected_expiration == "2026-06-19"
-    assert chain_provider.requests == []
+    assert len(chain_provider.fallback_strikes[0]) == client.chain_fallback_strike_count
+
+
+def test_get_expirations_prefetch_without_a_price_skips_exact_fallback(tmp_path):
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19"],
+        strikes=[90, 100, 110],
+    )
+    chain_provider = FallbackRecordingChainProvider(contract_strikes=[90, 100, 110])
+    client, _store = make_client(
+        tmp_path,
+        FakeHistoricalProvider(),
+        metadata_provider,
+        chain_provider,
+    )
+    client.chain_prefetch_price_wait_seconds = 0.05
+
+    client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+
+    wait_until(lambda: len(chain_provider.requests) == 1)
+    client.shutdown()
+
+    assert chain_provider.fallback_strikes == [[]]
+
+
+def test_prefetch_lookups_yield_until_someone_opens_that_chain(tmp_path):
+    metadata_provider = FakeMetadataProvider(
+        expirations=["2026-06-19"],
+        strikes=[90, 100, 110],
+    )
+    chain_provider = PriorityRecordingChainProvider(contract_strikes=[90, 100, 110])
+    client, _store = make_client(
+        tmp_path,
+        FakeHistoricalProvider(),
+        metadata_provider,
+        chain_provider,
+    )
+    client.chain_prefetch_price_wait_seconds = 0.05
+
+    client.get_expirations("AAPL", current_date=date(2026, 5, 30))
+    wait_until(lambda: len(chain_provider.priorities) == 1)
+    prefetch_priority = chain_provider.priorities[0]
+    assert prefetch_priority.is_background()
+
+    opener = threading.Thread(
+        target=client.chain_contracts,
+        args=("AAPL", "2026-06-19", [90, 100, 110]),
+        kwargs={"cacheable": True},
+    )
+    opener.start()
+    wait_until(lambda: not prefetch_priority.is_background())
+    chain_provider.release.set()
+    opener.join()
+    client.shutdown()
+
+    assert len(chain_provider.priorities) == 1
+
+
+def test_analysis_price_cache_wait_returns_when_the_price_is_set():
+    cache = AnalysisUnderlyingPriceCache()
+    threading.Timer(0.02, cache.set, args=("AAPL", 101.5)).start()
+
+    assert cache.wait("aapl", 1) == 101.5
+    assert AnalysisUnderlyingPriceCache().wait("AAPL", 0.01) is None
 
 
 def test_visible_chain_request_does_not_wait_for_unrelated_prefetch(tmp_path):
@@ -1198,8 +1309,7 @@ def test_get_chain_retries_only_timed_out_strikes_and_keeps_resolved_contracts(
         ("AAPL", "2026-06-19", [90, 95, 100]),
         ("AAPL", "2026-06-19", [95]),
     ]
-    assert client.partial_contract_cache == {}
-    assert len(client.contract_cache) == 1
+    assert client.contract_cache_in_flight == {}
 
 
 def test_get_chain_omits_metadata_strikes_without_selected_expiration_contracts(
@@ -1800,7 +1910,7 @@ def test_stream_chain_snapshots_every_delta_bound_change(tmp_path):
     assert messages[6].row.call.bid == 4
 
 
-def test_stream_chain_caps_streamed_strikes(tmp_path):
+def test_stream_chain_streams_nearest_strikes_and_rotates_the_rest(tmp_path):
     provider = FakeHistoricalProvider()
     metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100, 105, 110])
     chain_stream_provider = FakeChainStreamProvider(
@@ -1820,6 +1930,7 @@ def test_stream_chain_caps_streamed_strikes(tmp_path):
         metadata_provider,
         chain_stream_provider=chain_stream_provider,
     )
+    client.max_chain_strikes = 4
     client.max_chain_stream_strikes = 2
 
     messages = list(
@@ -1831,11 +1942,66 @@ def test_stream_chain_caps_streamed_strikes(tmp_path):
         )
     )
 
-    assert messages[0].message == "Streaming 2 strike(s) for MSFT 2026-06-19."
+    assert messages[0].message == "Streaming 4 strike(s) for MSFT 2026-06-19."
     assert messages[0].rows == []
     assert chain_stream_provider.requests == [
         ("MSFT", "2026-06-19", [95, 100]),
     ]
+    rotation = chain_stream_provider.rotation
+    assert rotation.display_strikes == [90, 95, 100, 105]
+    assert {contract.strike for contract in rotation.next_batch(10)} == {90, 105}
+
+
+def test_stream_chain_streams_nearest_contracts_first_and_forwards_warnings(
+    tmp_path,
+):
+    provider = FakeHistoricalProvider()
+    metadata_provider = FakeMetadataProvider(strikes=[90, 95, 100, 105, 110])
+    chain_stream_provider = NoticeChainStreamProvider(
+        [
+            OptionChainStreamNotice(warning="Waiting for free IB lines."),
+            [((100, "C"), OptionQuote(delta=0.5, bid=1))],
+            OptionChainStreamNotice(warning=None),
+        ]
+    )
+    client, _store = make_client(
+        tmp_path,
+        provider,
+        metadata_provider,
+        chain_stream_provider=chain_stream_provider,
+    )
+
+    messages = list(
+        client.stream_chain(
+            "msft",
+            "2026-06-19",
+            stop_event=threading.Event(),
+            current_date=date(2026, 5, 30),
+        )
+    )
+
+    assert [contract.strike for contract in chain_stream_provider.contracts][:4] == [
+        100,
+        100,
+        95,
+        95,
+    ]
+    assert [(message.type, message.warning) for message in messages] == [
+        ("snapshot", None),
+        ("snapshot", "Waiting for free IB lines."),
+        ("snapshot", "Waiting for free IB lines."),
+        ("snapshot", None),
+    ]
+
+
+class NoticeChainStreamProvider:
+    def __init__(self, items) -> None:
+        self.items = items
+        self.contracts = []
+
+    def stream_chain_quotes(self, contracts, stop_event, rotation=None):
+        self.contracts = contracts
+        yield from self.items
 
 
 def test_stream_chain_caps_strikes_around_underlying_price():
@@ -2415,7 +2581,7 @@ class FakeOptionChainIbApp:
         self.request_errors_by_req_id: dict[int, tuple[int, str]] = {}
         self.option_market_req_to_key = {}
         self.option_market_data = {}
-        self.option_market_data_ready = threading.Event()
+        self.option_market_ready_by_req_id: dict[int, threading.Event] = {}
         self.contract_detail_requests = []
         self.market_data_requests = []
         self.cancelled_market_data = []
@@ -2428,12 +2594,14 @@ class FakeOptionChainIbApp:
         self.contract_detail_requests.append((req_id, contract))
         self.contract_details[req_id] = [
             type("ContractDetails", (), {"contract": option_contract})()
+            for right in requested_rights(contract)
             for index, strike in enumerate(self.contract_strikes)
             for option_contract in [
                 fake_option_contract(
                     contract,
                     strike,
                     con_id=req_id + index + int(strike * 100),
+                    right=right,
                 )
             ]
         ]
@@ -2470,12 +2638,22 @@ class FakeOptionChainIbApp:
             "theta": -0.02,
             "implied_volatility_percent": 30,
         }
-        self.option_market_data_ready.set()
+        self.signal_option_market_data(req_id)
+
+    def signal_option_market_data(self, req_id) -> None:
+        ready = self.option_market_ready_by_req_id.get(req_id)
+        if ready is not None:
+            ready.set()
 
     def cancelMktData(self, req_id) -> None:
         if self.lock.locked():
             self.ib_calls_inside_lock.append("cancelMktData")
         self.cancelled_market_data.append(req_id)
+
+
+def requested_rights(requested_contract) -> list[str]:
+    """IB answers a request without a right with both calls and puts."""
+    return [requested_contract.right] if requested_contract.right else ["C", "P"]
 
 
 def fake_option_contract(
@@ -2484,7 +2662,9 @@ def fake_option_contract(
     *,
     con_id: int,
     trading_class: str | None = None,
+    right: str | None = None,
 ):
+    right = right or requested_contract.right
     contract = us_option_contract(
         requested_contract.symbol,
         expiration=(
@@ -2493,11 +2673,11 @@ def fake_option_contract(
             f"{requested_contract.lastTradeDateOrContractMonth[6:8]}"
         ),
         strike=strike,
-        right=requested_contract.right,
+        right=right,
     )
     contract.conId = con_id
     contract.tradingClass = trading_class or requested_contract.symbol
-    contract.localSymbol = f"{requested_contract.symbol}{con_id}{requested_contract.right}"
+    contract.localSymbol = f"{requested_contract.symbol}{con_id}{right}"
     return contract
 
 
@@ -2522,12 +2702,12 @@ class SlowOptionChainIbApp(FakeOptionChainIbApp):
             )
         )
         self.option_market_data[req_id] = {"open_interest": 100}
-        self.option_market_data_ready.set()
+        self.signal_option_market_data(req_id)
 
         def add_prices() -> None:
             with self.lock:
                 self.option_market_data[req_id].update({"bid": 1, "ask": 1.4})
-                self.option_market_data_ready.set()
+                self.signal_option_market_data(req_id)
 
         threading.Timer(0.02, add_prices).start()
 
@@ -2546,9 +2726,11 @@ class SlowContractDetailsOptionChainIbApp(FakeOptionChainIbApp):
                             contract,
                             100,
                             con_id=req_id + 10_000,
+                            right=right,
                         )
                     },
                 )()
+                for right in requested_rights(contract)
             ]
             self.contract_details_ready_by_req_id[req_id].set()
 
@@ -2579,6 +2761,46 @@ class TimeoutBroadOptionChainIbApp(FakeOptionChainIbApp):
             )()
         ]
         self.contract_details_ready_by_req_id[req_id].set()
+
+
+class DelayedExactOptionChainIbApp(TimeoutBroadOptionChainIbApp):
+    def __init__(self, contract_strikes: list[float]) -> None:
+        super().__init__(contract_strikes=contract_strikes)
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def reqContractDetails(self, req_id, contract) -> None:
+        with self.lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+
+        def respond() -> None:
+            with self.lock:
+                self.in_flight -= 1
+            TimeoutBroadOptionChainIbApp.reqContractDetails(self, req_id, contract)
+
+        threading.Timer(0.02, respond).start()
+
+
+class SharedSlotExactOptionChainIbApp(TimeoutBroadOptionChainIbApp):
+    def __init__(self, contract_strikes: list[float], slots: int) -> None:
+        super().__init__(contract_strikes=contract_strikes)
+        self.contract_details_slots = OutstandingRequestLimiter(slots)
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    def reqContractDetails(self, req_id, contract) -> None:
+        with self.lock:
+            self.in_flight += 1
+            self.max_in_flight = max(self.max_in_flight, self.in_flight)
+
+        def respond() -> None:
+            with self.lock:
+                self.in_flight -= 1
+            self.contract_details_slots.release(req_id)
+            TimeoutBroadOptionChainIbApp.reqContractDetails(self, req_id, contract)
+
+        threading.Timer(0.01, respond).start()
 
 
 class AllContractDetailsTimeoutOptionChainIbApp(FakeOptionChainIbApp):
@@ -2644,6 +2866,7 @@ class EtfOptionChainIbApp(FakeOptionChainIbApp):
         self.contract_detail_requests.append((req_id, contract))
         self.contract_details[req_id] = [
             type("ContractDetails", (), {"contract": option_contract})()
+            for right in requested_rights(contract)
             for index, strike in enumerate(self.contract_strikes)
             for option_contract in [
                 fake_option_contract(
@@ -2651,6 +2874,7 @@ class EtfOptionChainIbApp(FakeOptionChainIbApp):
                     strike,
                     con_id=req_id + index + int(strike * 100),
                     trading_class=f"{contract.symbol}1",
+                    right=right,
                 )
             ]
         ]
@@ -2669,7 +2893,7 @@ def test_ib_chain_provider_quotes_only_requested_expiration_and_strikes():
     quotes = provider.fetch_chain_quotes(contracts)
 
     requested_contracts = [request[1] for request in app.market_data_requests]
-    assert len(app.contract_detail_requests) == 2
+    assert len(app.contract_detail_requests) == 1
     assert len(requested_contracts) == 4
     assert {contract.conId for contract in requested_contracts}
     assert {contract.lastTradeDateOrContractMonth for contract in requested_contracts} == {
@@ -2764,7 +2988,11 @@ def test_ib_chain_provider_bounds_aggregate_contract_hydration_time():
     assert elapsed < 0.5
     assert hydration.contracts == []
     assert hydration.timed_out_strikes == frozenset(strikes)
-    assert len(app.contract_detail_requests) <= 5
+    # Each right sends one broad request, then at most four rounds of
+    # concurrent exact lookups fit before the shared deadline.
+    assert len(app.contract_detail_requests) <= 2 * (
+        1 + EXACT_CONTRACT_LOOKUP_CONCURRENCY * 4
+    )
 
 
 def test_ib_chain_provider_honors_cancellation_during_contract_wait():
@@ -2784,6 +3012,7 @@ def test_ib_chain_provider_honors_cancellation_during_contract_wait():
             [95, 100],
             stop_event,
         )
+        # One broad request covers calls and puts.
         wait_until(lambda: len(app.contract_detail_requests) == 1)
         stop_event.set()
         hydration = hydration_future.result(timeout=0.5)
@@ -2825,8 +3054,7 @@ def test_ib_scanner_provider_resolves_exact_contracts_without_broad_request():
 
     selection = provider.fetch_option_contracts(
         "hims",
-        ["2026-07-31"],
-        [95, 100, 105],
+        [("2026-07-31", 95), ("2026-07-31", 100), ("2026-07-31", 105)],
         "P",
         threading.Event(),
     )
@@ -2834,6 +3062,401 @@ def test_ib_scanner_provider_resolves_exact_contracts_without_broad_request():
     assert {contract.strike for contract in selection.contracts} == {95, 100}
     assert all(request[1].strike > 0 for request in app.contract_detail_requests)
     assert selection.excluded_contracts == 1
+    assert selection.invalid_lookups == frozenset({("2026-07-31", 105)})
+    assert selection.timed_out_lookups == frozenset()
+
+
+def test_ib_scanner_resolves_exact_contracts_concurrently_in_strike_order():
+    app = DelayedExactOptionChainIbApp(
+        contract_strikes=[strike for strike in range(90, 110) if strike % 3]
+    )
+    provider = IbOptionScannerProvider(app, contract_timeout_seconds=1)
+    expirations = ["2026-07-24", "2026-07-31"]
+    strikes = list(range(90, 110))
+
+    selection = provider.fetch_option_contracts(
+        "hims",
+        [(expiration, strike) for expiration in expirations for strike in strikes],
+        "P",
+        threading.Event(),
+    )
+
+    assert [
+        (contract.expiration, contract.strike) for contract in selection.contracts
+    ] == [
+        (expiration, strike)
+        for expiration in expirations
+        for strike in strikes
+        if strike % 3
+    ]
+    assert selection.excluded_contracts == 2 * len(
+        [strike for strike in strikes if not strike % 3]
+    )
+    assert 1 < app.max_in_flight <= EXACT_CONTRACT_LOOKUP_CONCURRENCY
+
+
+def test_exact_lookups_from_concurrent_callers_share_one_outstanding_cap():
+    strikes = list(range(90, 120))
+    app = SharedSlotExactOptionChainIbApp(contract_strikes=strikes, slots=4)
+    lookups = [("2026-07-31", strike) for strike in strikes]
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda right: fetch_exact_contract_lookups(
+                    app,
+                    "SPY",
+                    lookups,
+                    right,
+                    timeout_seconds=2,
+                ),
+                ["C", "P"],
+            )
+        )
+
+    assert all(
+        len(contracts) == 1 for result in results for contracts in result.values()
+    )
+    assert app.max_in_flight == 4
+
+
+def test_background_exact_lookups_stay_within_their_share_of_slots():
+    strikes = list(range(90, 100))
+    app = SharedSlotExactOptionChainIbApp(contract_strikes=strikes, slots=4)
+    app.contract_details_slots.background_capacity = 1
+
+    result = fetch_exact_contract_lookups(
+        app,
+        "SPY",
+        [("2026-07-31", strike) for strike in strikes],
+        "C",
+        timeout_seconds=2,
+        priority=ContractLookupPriority(background=True),
+    )
+
+    assert all(len(contracts) == 1 for contracts in result.values())
+    assert app.max_in_flight == 1
+
+
+def test_abandoned_contract_lookup_keeps_its_slot_until_ib_answers():
+    app = SharedSlotExactOptionChainIbApp(contract_strikes=[], slots=1)
+    app.reqContractDetails = lambda req_id, contract: app.contract_detail_requests.append(
+        req_id
+    )
+    contract = us_option_contract("SPY", expiration="2026-07-31", strike=500, right="C")
+
+    assert send_contract_details_request(app, 1, contract, timeout_seconds=0.05) > 0
+    assert send_contract_details_request(app, 2, contract, timeout_seconds=0.05) == 0
+    app.contract_details_slots.release(1)
+    assert send_contract_details_request(app, 3, contract, timeout_seconds=0.05) > 0
+
+    assert app.contract_detail_requests == [1, 3]
+
+
+def test_slot_wait_with_its_own_limit_leaves_ib_the_full_timeout():
+    app = SharedSlotExactOptionChainIbApp(contract_strikes=[], slots=1)
+    app.reqContractDetails = lambda req_id, contract: app.contract_detail_requests.append(
+        req_id
+    )
+    contract = us_option_contract("SPY", expiration="2026-07-31", strike=500, right="C")
+    app.contract_details_slots.acquire(1, timeout=0)
+    threading.Timer(0.1, app.contract_details_slots.release, args=(1,)).start()
+
+    remaining = send_contract_details_request(
+        app, 2, contract, timeout_seconds=0.05, slot_timeout_seconds=2
+    )
+
+    assert remaining == 0.05
+    assert app.contract_detail_requests == [2]
+
+
+def test_ib_scanner_lookups_queued_for_shared_slots_are_not_timed_out():
+    # One slot answered in 10 ms serializes 20 lookups for about 200 ms, far
+    # past the 50 ms IB timeout; queued time must not drop strikes.
+    strikes = list(range(90, 110))
+    app = SharedSlotExactOptionChainIbApp(contract_strikes=strikes, slots=1)
+    provider = IbOptionScannerProvider(app, contract_timeout_seconds=0.05)
+
+    selection = provider.fetch_option_contracts(
+        "hims",
+        [("2026-07-31", strike) for strike in strikes],
+        "P",
+        threading.Event(),
+    )
+
+    assert [contract.strike for contract in selection.contracts] == strikes
+    assert selection.timed_out_lookups == frozenset()
+
+
+def test_ib_scanner_cancellation_stops_outstanding_contract_lookups():
+    app = AllContractDetailsTimeoutOptionChainIbApp()
+    provider = IbOptionScannerProvider(app, contract_timeout_seconds=5)
+    cancel_event = threading.Event()
+    threading.Timer(0.05, cancel_event.set).start()
+    strikes = list(range(1, 51))
+
+    started_at = perf_counter()
+    selection = provider.fetch_option_contracts(
+        "hims",
+        [("2026-07-31", strike) for strike in strikes],
+        "P",
+        cancel_event,
+    )
+    elapsed = perf_counter() - started_at
+
+    assert elapsed < 1
+    assert selection.contracts == []
+    assert selection.excluded_contracts == len(strikes)
+    assert len(selection.timed_out_lookups) == len(strikes)
+    assert len(app.contract_detail_requests) <= EXACT_CONTRACT_LOOKUP_CONCURRENCY
+
+
+def test_ib_chain_fallback_resolves_nearest_strikes_for_both_rights():
+    app = TimeoutBroadOptionChainIbApp(contract_strikes=list(range(80, 121)))
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        contract_timeout_seconds=0.05,
+    )
+
+    hydration = provider.fetch_chain_contract_hydration(
+        "hims",
+        "2026-07-31",
+        list(range(80, 121)),
+        None,
+        [99, 100, 101, 102],
+    )
+
+    assert {
+        (contract.strike, contract.right) for contract in hydration.contracts
+    } == {
+        (strike, right) for strike in (99, 100, 101, 102) for right in ("C", "P")
+    }
+    assert {
+        request[1].strike
+        for request in app.contract_detail_requests
+        if request[1].strike > 0
+    } == {99, 100, 101, 102}
+    assert hydration.timed_out_strikes == frozenset()
+    assert hydration.invalid_strikes == frozenset()
+    assert hydration.skipped_strikes == frozenset(range(80, 121)) - {
+        99,
+        100,
+        101,
+        102,
+    }
+
+
+def test_ib_chain_provider_skips_broad_requests_that_timed_out_today():
+    app = TimeoutBroadOptionChainIbApp(contract_strikes=[95, 100, 105])
+    market_dates = [date(2026, 7, 1)]
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        contract_timeout_seconds=0.05,
+        current_date_provider=lambda: market_dates[-1],
+    )
+
+    def broad_request_count() -> int:
+        return sum(
+            1 for _req_id, contract in app.contract_detail_requests if contract.strike == 0
+        )
+
+    provider.fetch_chain_contract_hydration("hims", "2026-07-31", [95, 100])
+    assert broad_request_count() == 1
+
+    hydration = provider.fetch_chain_contract_hydration("hims", "2026-07-31", [105])
+    assert broad_request_count() == 1
+    assert {contract.strike for contract in hydration.contracts} == {105}
+
+    market_dates.append(date(2026, 7, 2))
+    provider.fetch_chain_contract_hydration("hims", "2026-07-31", [105])
+    assert broad_request_count() == 2
+
+
+def test_ib_chain_provider_skips_rights_already_resolved():
+    app = FakeOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionChainSnapshotProvider(app)
+
+    hydration = provider.fetch_chain_contract_hydration(
+        "aapl",
+        "2026-06-19",
+        [95, 100],
+        None,
+        None,
+        frozenset({(95, "P"), (100, "P")}),
+    )
+
+    assert [contract.right for _req_id, contract in app.contract_detail_requests] == [
+        "C"
+    ]
+    assert {(contract.strike, contract.right) for contract in hydration.contracts} == {
+        (95, "C"),
+        (100, "C"),
+    }
+
+
+def test_ib_chain_provider_splits_one_broad_answer_by_right():
+    app = FakeOptionChainIbApp(contract_strikes=[95, 100])
+    provider = IbOptionChainSnapshotProvider(app)
+
+    hydration = provider.fetch_chain_contract_hydration(
+        "aapl",
+        "2026-06-19",
+        [95, 100],
+        None,
+        None,
+        frozenset({(95, "P")}),
+    )
+
+    assert [contract.right for _req_id, contract in app.contract_detail_requests] == [
+        ""
+    ]
+    assert {(contract.strike, contract.right) for contract in hydration.contracts} == {
+        (95, "C"),
+        (100, "C"),
+        (100, "P"),
+    }
+    assert hydration.invalid_strikes == frozenset()
+
+
+def test_ib_chain_provider_requests_calls_and_puts_in_one_broad_request():
+    app = AllContractDetailsTimeoutOptionChainIbApp()
+    provider = IbOptionChainSnapshotProvider(
+        app,
+        contract_timeout_seconds=0.2,
+        hydration_timeout_seconds=0.2,
+    )
+
+    started_at = perf_counter()
+    hydration = provider.fetch_chain_contract_hydration(
+        "hims",
+        "2026-07-31",
+        [95, 100],
+    )
+    elapsed = perf_counter() - started_at
+
+    broad_rights = [
+        request[1].right
+        for request in app.contract_detail_requests
+        if request[1].strike == 0
+    ]
+    assert broad_rights == [""]
+    assert elapsed < 0.35
+    assert hydration.timed_out_strikes == frozenset({95, 100})
+
+
+def test_chain_contracts_limit_fallback_to_strikes_nearest_the_price(tmp_path):
+    strikes = list(range(50, 151))
+    chain_provider = FallbackRecordingChainProvider(contract_strikes=strikes)
+    client, _store = make_client(
+        tmp_path,
+        FakeHistoricalProvider(),
+        FakeMetadataProvider(strikes=strikes),
+        chain_provider,
+    )
+    client.analysis_underlying_price_cache.set("AAPL", 99.6)
+
+    client.get_chain("AAPL", "2026-06-19", current_date=date(2026, 5, 30))
+
+    nearest = sorted(strikes, key=lambda strike: (abs(strike - 99.6), strike))
+    assert chain_provider.fallback_strikes == [
+        sorted(nearest[: client.chain_fallback_strike_count])
+    ]
+    assert client.chain_fallback_strike_count < len(strikes)
+
+
+def test_chain_skips_fallback_skipped_strikes_until_they_near_the_price(tmp_path):
+    chain_provider = SkippingChainProvider(contract_strikes=[90, 95, 100, 105])
+    client, _store = make_client(
+        tmp_path,
+        FakeHistoricalProvider(),
+        FakeMetadataProvider(strikes=[90, 95, 100, 105]),
+        chain_provider,
+    )
+    client.chain_fallback_strike_count = 2
+    client.analysis_underlying_price_cache.set("AAPL", 97)
+
+    first = client.chain_context("AAPL", "2026-06-19")
+    second = client.chain_context("AAPL", "2026-06-19")
+    client.analysis_underlying_price_cache.set("AAPL", 104)
+    third = client.chain_context("AAPL", "2026-06-19")
+
+    assert first.strikes == [95, 100]
+    assert second.strikes == [95, 100]
+    assert third.strikes == [95, 100, 105]
+    assert chain_provider.hydration_requests == [
+        ("AAPL", "2026-06-19", [90, 95, 100, 105]),
+        ("AAPL", "2026-06-19", [105]),
+    ]
+
+
+class FallbackRecordingChainProvider(FakeChainProvider):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.fallback_strikes: list[list[float] | None] = []
+
+    def fetch_chain_contract_hydration(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+        stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
+    ) -> OptionChainContractHydration:
+        self.fallback_strikes.append(fallback_strikes)
+        return super().fetch_chain_contract_hydration(
+            ticker,
+            expiration,
+            strikes,
+            stop_event,
+            fallback_strikes,
+            resolved_keys,
+        )
+
+
+class PriorityRecordingChainProvider(FakeChainProvider):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.priorities: list[ContractLookupPriority | None] = []
+        self.release = threading.Event()
+
+    def fetch_chain_contract_hydration(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+        stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
+    ) -> OptionChainContractHydration:
+        self.priorities.append(priority)
+        self.release.wait(timeout=2)
+        return super().fetch_chain_contract_hydration(ticker, expiration, strikes)
+
+
+class SkippingChainProvider(FakeChainProvider):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.hydration_requests: list[tuple[str, str, list[float]]] = []
+
+    def fetch_chain_contract_hydration(
+        self,
+        ticker: str,
+        expiration: str,
+        strikes: list[float],
+        stop_event: threading.Event | None = None,
+        fallback_strikes: list[float] | None = None,
+        resolved_keys: frozenset[tuple[float, str]] = frozenset(),
+        priority=None,
+    ) -> OptionChainContractHydration:
+        self.hydration_requests.append((ticker, expiration, strikes))
+        resolved = [strike for strike in strikes if strike in (fallback_strikes or [])]
+        return OptionChainContractHydration(
+            contracts=self.fetch_chain_contracts(ticker, expiration, resolved),
+            skipped_strikes=frozenset(strikes) - frozenset(resolved),
+        )
 
 
 def test_ib_chain_provider_skips_invalid_exact_option_contracts():
@@ -2937,6 +3560,76 @@ def test_ib_chain_stream_provider_cancels_subscriptions_on_close():
     assert app.option_market_data == {}
 
 
+def test_ib_chain_stream_grows_into_released_lines_and_releases_on_close():
+    app = FakeOptionChainIbApp()
+    app.market_data_lines = MarketDataLineBudget(4)
+    app.market_data_lines.try_acquire("screener", 2)
+    provider = IbOptionChainStreamProvider(app, wait_seconds=0.01)
+    contracts = IbOptionChainSnapshotProvider(app).fetch_chain_contracts(
+        "aapl",
+        "2026-06-19",
+        [95, 100],
+    )
+    stream = provider.stream_chain_quotes(contracts, threading.Event())
+
+    waiting = next(stream)
+    assert isinstance(waiting, OptionChainStreamNotice)
+    assert waiting.warning == (
+        "Waiting for free IB market-data lines: streaming 2 of 4 contract(s)."
+    )
+    assert len(app.market_data_requests) == 2
+    assert app.market_data_lines.try_acquire("screener", 1) == 0
+
+    first_batch = next(stream)
+    assert {key for key, _quote in first_batch} == {(95, "C"), (95, "P")}
+
+    app.market_data_lines.release("screener", 2)
+    assert next(stream) == OptionChainStreamNotice(warning=None)
+    assert len(app.market_data_requests) == 4
+
+    stream.close()
+
+    assert app.market_data_lines.used() == 0
+    assert app.market_data_lines.pending_by_owner == {}
+    assert len(app.cancelled_market_data) == 4
+
+
+def test_ib_chain_stream_warns_when_ib_rejects_lines():
+    app = FakeOptionChainIbApp()
+    app.limit_errors_by_req_id = {90_001: 101}
+    provider = IbOptionChainStreamProvider(app, wait_seconds=0.01)
+    contracts = IbOptionChainSnapshotProvider(app).fetch_chain_contracts(
+        "aapl",
+        "2026-06-19",
+        [100],
+    )
+    stream = provider.stream_chain_quotes(contracts, threading.Event())
+
+    notice = next(stream)
+    stream.close()
+
+    assert notice.warning == (
+        "IB rejected 1 contract(s) at the market-data line limit; their quotes "
+        "stay blank."
+    )
+    assert app.limit_errors_by_req_id == {}
+
+
+def test_ib_chart_stream_holds_one_budget_line_until_closed():
+    app = FakeHistoricalStreamIbApp()
+    app.market_data_lines = MarketDataLineBudget(1)
+    stop_event = threading.Event()
+    provider = IbHistoricalDailyBarStreamProvider(app, wait_seconds=0.01)
+    stream = provider.stream_daily_bar_updates("aapl", stop_event)
+
+    next(stream)
+    assert app.market_data_lines.usage_by_group() == {"chart": 1}
+    stop_event.set()
+    stream.close()
+
+    assert app.market_data_lines.used() == 0
+
+
 def test_ib_chain_stream_provider_isolates_overlapping_stream_state():
     app = FakeOptionChainIbApp()
     provider = IbOptionChainStreamProvider(app, wait_seconds=0.01)
@@ -2983,3 +3676,420 @@ def test_ib_chain_stream_provider_isolates_overlapping_stream_state():
     assert app.cancelled_market_data == [90_000, 90_001, 90_002, 90_003]
     assert app.option_market_req_to_key == {}
     assert app.option_market_data == {}
+
+
+FULL_QUOTE = {"bid": 1, "ask": 1.2, "delta": 0.4}
+
+
+def quote_timing_app(req_ids):
+    app = FakeOptionChainIbApp()
+    ready = threading.Event()
+    for req_id in req_ids:
+        app.option_market_data[req_id] = {}
+        app.option_market_ready_by_req_id[req_id] = ready
+    return app, ready
+
+
+def deliver_ticks_later(app, delay, updates):
+    def deliver() -> None:
+        with app.lock:
+            for req_id, values in updates.items():
+                app.option_market_data[req_id].update(values)
+                app.signal_option_market_data(req_id)
+
+    threading.Timer(delay, deliver).start()
+
+
+def test_quote_wait_completes_once_every_quote_has_bid_ask_and_delta():
+    app, ready = quote_timing_app([1, 2])
+    deliver_ticks_later(app, 0.02, {1: FULL_QUOTE, 2: FULL_QUOTE})
+    started_at = perf_counter()
+
+    timing = wait_for_quote_fields(
+        app,
+        [1, 2],
+        ready,
+        max_wait_seconds=4,
+        settle_seconds=2,
+        started_at=started_at,
+    )
+
+    assert perf_counter() - started_at < 1
+    assert timing[1] is not None
+
+
+def test_quote_wait_settles_when_new_fields_stop_arriving():
+    app, ready = quote_timing_app([1, 2])
+    deliver_ticks_later(app, 0.02, {1: FULL_QUOTE, 2: {"ask": 1.2, "delta": 0.3}})
+    started_at = perf_counter()
+
+    timing = wait_for_quote_fields(
+        app,
+        [1, 2],
+        ready,
+        max_wait_seconds=4,
+        settle_seconds=0.1,
+        started_at=started_at,
+    )
+
+    elapsed = perf_counter() - started_at
+    assert 0.08 <= elapsed < 1
+    assert timing[0] is not None
+    assert timing[1] is None
+
+
+def test_quote_wait_does_not_settle_before_a_quoted_contract_has_its_delta():
+    app, ready = quote_timing_app([1, 2])
+    deliver_ticks_later(app, 0.02, {1: FULL_QUOTE, 2: {"bid": 1, "ask": 1.2}})
+    deliver_ticks_later(app, 0.3, {2: {"delta": 0.3}})
+    started_at = perf_counter()
+
+    timing = wait_for_quote_fields(
+        app,
+        [1, 2],
+        ready,
+        max_wait_seconds=4,
+        settle_seconds=0.1,
+        started_at=started_at,
+    )
+
+    assert 0.28 <= perf_counter() - started_at < 1
+    assert timing[1] is not None
+
+
+def test_quote_wait_does_not_settle_while_a_contract_has_no_data():
+    app, ready = quote_timing_app([1, 2])
+    deliver_ticks_later(app, 0.02, {1: FULL_QUOTE})
+    started_at = perf_counter()
+
+    wait_for_quote_fields(
+        app,
+        [1, 2],
+        ready,
+        max_wait_seconds=0.4,
+        settle_seconds=0.05,
+        started_at=started_at,
+    )
+
+    assert 0.38 <= perf_counter() - started_at < 1
+
+
+def test_quote_wait_for_contracts_that_never_quote_ends_at_the_maximum():
+    app, ready = quote_timing_app([1])
+    started_at = perf_counter()
+
+    timing = wait_for_quote_fields(
+        app,
+        [1],
+        ready,
+        max_wait_seconds=0.2,
+        started_at=started_at,
+    )
+
+    assert 0.18 <= perf_counter() - started_at < 0.6
+    assert timing == (None, None, None)
+
+
+def test_quote_wait_ignores_line_limited_contracts():
+    app, ready = quote_timing_app([1, 2])
+    app.limit_errors_by_req_id = {2: 101}
+    deliver_ticks_later(app, 0.02, {1: FULL_QUOTE})
+    started_at = perf_counter()
+
+    timing = wait_for_quote_fields(
+        app,
+        [1, 2],
+        ready,
+        max_wait_seconds=4,
+        settle_seconds=2,
+        started_at=started_at,
+    )
+
+    assert perf_counter() - started_at < 1
+    assert timing[1] is not None
+
+
+def test_quote_wait_stops_when_cancelled():
+    app, ready = quote_timing_app([1])
+    cancel_event = threading.Event()
+    threading.Timer(0.02, cancel_event.set).start()
+    started_at = perf_counter()
+
+    wait_for_quote_fields(
+        app,
+        [1],
+        ready,
+        max_wait_seconds=4,
+        cancel_event=cancel_event,
+        started_at=started_at,
+    )
+
+    assert perf_counter() - started_at < 1
+
+
+def test_scanner_quote_batch_returns_before_the_maximum_wait():
+    app = FakeOptionChainIbApp()
+    app.reqMarketDataType = lambda _market_data_type: None
+    provider = IbOptionScannerProvider(app, quote_wait_seconds=4)
+    contract = ScannerOptionContract(
+        con_id=1,
+        ticker="AAPL",
+        expiration="2026-06-19",
+        strike=100,
+        right="P",
+        exchange="SMART",
+        currency="USD",
+        multiplier="100",
+        trading_class="AAPL",
+        local_symbol="AAPL1P",
+    )
+    started_at = perf_counter()
+
+    quotes = provider.fetch_quotes([contract], threading.Event())
+
+    assert perf_counter() - started_at < 1
+    assert [(quote.bid, quote.ask, quote.delta) for quote in quotes] == [
+        (1, 1.4, 0.5)
+    ]
+    assert app.option_market_ready_by_req_id == {}
+
+
+def test_ib_option_tick_signals_only_its_subscription_group():
+    app = IbPortfolioApp()
+    first_ready = threading.Event()
+    second_ready = threading.Event()
+    app.option_market_req_to_key.update({90_000: (100, "C"), 90_001: (100, "P")})
+    app.option_market_ready_by_req_id.update({90_000: first_ready, 90_001: second_ready})
+
+    app.tickPrice(90_001, 1, 1.2, None)
+
+    assert not first_ready.is_set()
+    assert second_ready.is_set()
+
+
+def test_concurrent_chain_streams_receive_updates_without_waiting_out_the_timeout():
+    app = FakeOptionChainIbApp(contract_strikes=[100])
+    provider = IbOptionChainStreamProvider(app, wait_seconds=5)
+    snapshot_provider = IbOptionChainSnapshotProvider(app)
+    streams = [
+        provider.stream_chain_quotes(
+            snapshot_provider.fetch_chain_contracts(ticker, "2026-06-19", [100]),
+            threading.Event(),
+        )
+        for ticker in ("aapl", "msft")
+    ]
+    for stream in streams:
+        next(stream)
+    first_req_id, second_req_id = (
+        app.market_data_requests[0][0],
+        app.market_data_requests[-1][0],
+    )
+
+    deliver_ticks_later(app, 0.03, {first_req_id: {"bid": 2}})
+    deliver_ticks_later(app, 0.05, {second_req_id: {"bid": 3}})
+    started_at = perf_counter()
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        updates = list(executor.map(next, streams))
+
+    assert perf_counter() - started_at < 1
+    assert [[quote.bid for _key, quote in update] for update in updates] == [
+        [2],
+        [3],
+    ]
+    for stream in streams:
+        stream.close()
+
+
+def rotation_contracts(strikes):
+    return [
+        ScannerOptionContract(
+            con_id=int(strike * 10) + (1 if right == "C" else 2),
+            ticker="AAPL",
+            expiration="2026-06-19",
+            strike=strike,
+            right=right,
+            exchange="SMART",
+            currency="USD",
+            multiplier="100",
+            trading_class="AAPL",
+            local_symbol=f"AAPL{strike}{right}",
+        )
+        for strike in strikes
+        for right in ("C", "P")
+    ]
+
+
+ROTATION_STRIKES = [80, 85, 90, 95, 100, 105, 110, 115, 120]
+
+
+def make_rotation():
+    return OptionChainRotation(
+        "AAPL",
+        "2026-06-19",
+        ROTATION_STRIKES,
+        rotation_contracts(ROTATION_STRIKES),
+        [95, 100, 105],
+        101,
+    )
+
+
+def batch_strikes(batch):
+    return sorted({contract.strike for contract in batch})
+
+
+def rotation_pass(rotation):
+    strikes = batch_strikes(rotation.next_batch(4))
+    while rotation.pending_strikes:
+        strikes += batch_strikes(rotation.next_batch(4))
+    return sorted(strikes)
+
+
+def test_chain_rotation_first_pass_goes_outward_in_whole_strikes():
+    rotation = make_rotation()
+
+    batches = [rotation.next_batch(4) for _ in range(3)]
+
+    assert [[contract.strike for contract in batch] for batch in batches] == [
+        [110, 110, 90, 90],
+        [115, 115, 85, 85],
+        [120, 120, 80, 80],
+    ]
+    assert rotation.pending_strikes == []
+
+
+def test_chain_rotation_later_passes_follow_and_widen_with_delta_bounds():
+    rotation = make_rotation()
+    assert rotation_pass(rotation) == [80, 85, 90, 110, 115, 120]
+
+    rotation.observe({}, (90, 110))
+    assert rotation_pass(rotation) == [85, 90, 110, 115]
+
+    rotation.observe({}, (85, 115))
+    assert rotation_pass(rotation) == [80, 85, 90, 110, 115, 120]
+
+
+def test_chain_rotation_recenters_only_after_a_large_move():
+    rotation = make_rotation()
+
+    rotation.observe({(110, "C"): OptionQuote(delta=0.5)}, (None, None))
+    assert rotation.live_strikes == [95, 100, 105]
+
+    rotation.observe({(115, "C"): OptionQuote(delta=0.52)}, (None, None))
+    assert rotation.live_strikes == [110, 115, 120]
+    assert {contract.strike for contract in rotation.live_contracts()} == {
+        110,
+        115,
+        120,
+    }
+    assert rotation_pass(rotation) == [80, 85, 90, 95, 100, 105]
+
+
+class LineCountingOptionChainIbApp(FakeOptionChainIbApp):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.active_req_ids: set[int] = set()
+        self.max_active_req_ids = 0
+        self.req_id_strikes: dict[int, float] = {}
+
+    def reqMktData(self, req_id, contract, *args) -> None:
+        super().reqMktData(req_id, contract, *args)
+        with self.lock:
+            self.req_id_strikes[req_id] = contract.strike
+            self.active_req_ids.add(req_id)
+            self.max_active_req_ids = max(
+                self.max_active_req_ids,
+                len(self.active_req_ids),
+            )
+
+    def cancelMktData(self, req_id) -> None:
+        super().cancelMktData(req_id)
+        with self.lock:
+            self.active_req_ids.discard(req_id)
+
+    def active_strikes(self) -> set[float]:
+        with self.lock:
+            return {self.req_id_strikes[req_id] for req_id in self.active_req_ids}
+
+
+def start_rotating_stream(app, rotation, stop_event):
+    provider = IbOptionChainStreamProvider(
+        app,
+        wait_seconds=0.05,
+        rotation_lines=4,
+        rotation_wait_seconds=0.2,
+        rotation_idle_seconds=0.02,
+    )
+    return provider.stream_chain_quotes(
+        rotation.live_contracts(),
+        stop_event,
+        rotation,
+    )
+
+
+def rotating_app():
+    app = LineCountingOptionChainIbApp(contract_strikes=ROTATION_STRIKES)
+    # Live window 3 strikes (6 lines) plus 4 rotation lines.
+    app.market_data_lines = MarketDataLineBudget(10)
+    return app
+
+
+def test_chain_stream_quotes_every_displayed_strike_within_its_allocation():
+    app = rotating_app()
+    stop_event = threading.Event()
+    stream = start_rotating_stream(app, make_rotation(), stop_event)
+    expected = {(strike, right) for strike in ROTATION_STRIKES for right in "CP"}
+
+    quoted: set[tuple[float, str]] = set()
+    deadline = perf_counter() + 3
+    while quoted != expected and perf_counter() < deadline:
+        quoted.update(key for key, _quote in next(stream))
+    stream.close()
+
+    assert quoted == expected
+    assert app.max_active_req_ids <= 10
+    assert app.active_req_ids == set()
+    assert app.market_data_lines.used() == 0
+
+
+def test_chain_stream_stops_rotation_promptly_and_releases_every_line():
+    app = rotating_app()
+    stop_event = threading.Event()
+    stream = start_rotating_stream(app, make_rotation(), stop_event)
+    next(stream)
+
+    stop_event.set()
+    started_at = perf_counter()
+    list(stream)
+
+    assert perf_counter() - started_at < 1
+    assert not any(
+        thread.name == "option-chain-rotation" for thread in threading.enumerate()
+    )
+    assert app.active_req_ids == set()
+    assert app.market_data_lines.used() == 0
+
+
+def test_chain_stream_moves_live_subscriptions_when_the_window_recenters():
+    app = rotating_app()
+    rotation = make_rotation()
+    stream = start_rotating_stream(app, rotation, threading.Event())
+    next(stream)
+    old_live_req_ids = {
+        req_id
+        for req_id, strike in app.req_id_strikes.items()
+        if strike in {95, 100, 105}
+    }
+    assert len(old_live_req_ids) == 6
+
+    rotation.observe({(115, "C"): OptionQuote(delta=0.5)}, (None, None))
+    deadline = perf_counter() + 2
+    while perf_counter() < deadline and not (
+        {110, 115, 120} <= app.active_strikes()
+        and old_live_req_ids <= set(app.cancelled_market_data)
+    ):
+        next(stream)
+    stream.close()
+
+    assert old_live_req_ids <= set(app.cancelled_market_data)
+    assert app.max_active_req_ids <= 10
+    assert app.market_data_lines.used() == 0
