@@ -24,6 +24,7 @@ from app.schemas import (
     PortfolioAccountSummary,
     PortfolioPosition,
 )
+from app.timing import elapsed_ms
 
 logger = logging.getLogger(__name__)
 
@@ -638,9 +639,3 @@ def underlying_stock_contract(symbol: str) -> Contract:
     contract.exchange = "SMART"
     contract.currency = "USD"
     return contract
-
-
-def elapsed_ms(started_at: float) -> float:
-    return (perf_counter() - started_at) * 1_000
-
-

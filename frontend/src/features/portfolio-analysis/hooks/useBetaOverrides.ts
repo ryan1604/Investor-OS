@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 
-import { errorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import {
   deleteBetaOverride,
   fetchBetaOverrides,

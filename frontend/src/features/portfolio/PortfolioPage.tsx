@@ -1,8 +1,8 @@
 import { useCallback, useMemo, useState } from 'react'
 
 import { AccountSummaryCard } from '@/features/portfolio/components/AccountSummaryCard'
-import { DailyNavChart } from './components/DailyNavChart'
-import { useNavAccounts } from './hooks/useNavHistory'
+import { DailyNavChart } from '@/features/portfolio/components/DailyNavChart'
+import { useNavAccounts } from '@/features/portfolio/hooks/useNavHistory'
 import { PortfolioChartSection } from '@/features/portfolio/components/PortfolioChartSection'
 import { PortfolioHeader } from '@/features/portfolio/components/PortfolioHeader'
 import { PositionsTable } from '@/features/portfolio/components/PositionsTable'

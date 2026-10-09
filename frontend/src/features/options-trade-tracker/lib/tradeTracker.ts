@@ -1,3 +1,4 @@
+import { draftNumberText } from '@/lib/drafts'
 import {
   type OptionsTradeMonth,
   type OptionsTradeRowRequest,
@@ -539,10 +540,6 @@ function validExitCurrency(value: string) {
 function normalizeNullableStrategy(value: string) {
   const normalizedValue = normalizeStrategyOption(value)
   return normalizedValue || null
-}
-
-function draftNumberText(value: number | null) {
-  return value === null ? '' : String(value)
 }
 
 function isOptionsTradeMonth(value: string): value is OptionsTradeMonth {

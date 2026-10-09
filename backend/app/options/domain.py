@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from typing import TYPE_CHECKING
 
 from app.options.indicators import DailyClose
 from app.options.store import CompletedDailyBar, StoredDailyBar
 from app.schemas import OptionChainRow, OptionDailyBar, OptionQuote
+from app.sessions import US_MARKET_TIME_ZONE
+
+if TYPE_CHECKING:
+    from app.options.types import HistoricalDailyBarProvider
 
 MIN_OPTION_CHAIN_DELTA = 0.095
 
@@ -236,3 +242,57 @@ def int_or_none(value: object) -> int | None:
 
 def string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def current_us_market_date() -> date:
+    return datetime.now(US_MARKET_TIME_ZONE).date()
+
+
+def fetch_chunked_daily_bars(
+    provider: HistoricalDailyBarProvider,
+    ticker: str,
+    ranges: Iterable[tuple[date, date]],
+) -> Iterable[CompletedDailyBar]:
+    for start_date, end_date in ranges:
+        for chunk_start, chunk_end in chunk_date_range(start_date, end_date):
+            yield from provider.fetch_daily_bars(ticker, chunk_start, chunk_end)
+
+
+def cache_hit_ratio(
+    cached_bar_count: int,
+    *,
+    start_date: date,
+    latest_completed_date: date,
+) -> float:
+    expected_days = max(1, (latest_completed_date - start_date).days + 1)
+    return min(1, cached_bar_count / expected_days)
+
+
+def completed_bar_payload_bytes(bars: list[CompletedDailyBar]) -> int:
+    return len(
+        json.dumps(
+            [
+                {
+                    "ticker": bar.ticker,
+                    "trading_date": bar.trading_date,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                }
+                for bar in bars
+            ],
+            separators=(",", ":"),
+        )
+    )
+
+
+def append_completed_bar(
+    bars: list[StoredDailyBar],
+    bar: CompletedDailyBar,
+) -> list[CompletedDailyBar]:
+    return [
+        *[current_bar for current_bar in bars if current_bar.trading_date != bar.trading_date],
+        bar,
+    ]

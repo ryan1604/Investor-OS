@@ -3,21 +3,22 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 import logging
-import math
 import threading
 from time import perf_counter
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
-from app.options.client import (
+from app.options.types import (
     FullOptionChainSnapshot,
     OptionsDataUnavailable,
     ScannerOptionQuote,
 )
+from app.options.rotation import option_contract_preference
 from app.options_screeners.domain import (
     build_cc_candidate,
     build_csp_candidate,
+    finite_values,
     matches_filters,
+    positive_finite,
     sort_candidates,
 )
 from app.options_screeners.service import (
@@ -34,8 +35,8 @@ from app.schemas import (
     OptionsScreenerQuoteRefreshResponse,
     OptionsScreenerTickerWarning,
 )
+from app.sessions import US_MARKET_TIME_ZONE
 
-US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 logger = logging.getLogger(__name__)
 
 
@@ -206,9 +207,7 @@ class SingleLegOptionsScreenerScanService:
         )
 
     def cancel(self) -> None:
-        cancel_scanner = getattr(self.client, "cancel_scanner", None)
-        if cancel_scanner is not None:
-            cancel_scanner()
+        self.client.cancel_scanner()
 
     def refresh_quote(
         self,
@@ -284,8 +283,9 @@ def valid_single_leg_quote(
         and is_otm
         and dte is not None
         and dte > 0
-        and all(value is not None and math.isfinite(value) for value in values)
-        and quote.bid > 0
+        and all(value is not None for value in values)
+        and finite_values(*values)
+        and positive_finite(quote.bid)
         and quote.ask >= quote.bid
         and ((quote.bid + quote.ask) / 2) > 0
     )
@@ -304,25 +304,18 @@ def deduplicate_quotes(
             contract.multiplier,
         )
         current = selected.get(key)
-        if current is None or quote_preference(quote) < quote_preference(current):
+        if current is None or option_contract_preference(
+            quote.contract
+        ) < option_contract_preference(current.contract):
             selected[key] = quote
     return list(selected.values())
 
 
-def quote_preference(quote: ScannerOptionQuote) -> tuple[int, int]:
-    return (
-        0 if quote.contract.exchange == "SMART" else 1,
-        quote.contract.con_id,
-    )
-
-
 def refreshed_midpoint(quote: ScannerOptionQuote) -> float | None:
     if (
-        quote.bid is None
+        not positive_finite(quote.bid)
         or quote.ask is None
-        or not math.isfinite(quote.bid)
-        or not math.isfinite(quote.ask)
-        or quote.bid <= 0
+        or not finite_values(quote.ask)
         or quote.ask < quote.bid
     ):
         return None

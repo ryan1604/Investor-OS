@@ -114,6 +114,7 @@ describe('orders api', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       'http://127.0.0.1:8000/orders',
+      undefined,
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,

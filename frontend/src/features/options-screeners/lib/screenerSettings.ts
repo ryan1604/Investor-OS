@@ -5,7 +5,7 @@ import type {
   OptionsScreenerFilters,
 } from '@/api/optionsScreeners'
 
-export const defaultCspFilters: OptionsScreenerFilters = {
+export const defaultSingleLegFilters: OptionsScreenerFilters = {
   version: 1,
   minimum_dte: 7,
   maximum_dte: 45,
@@ -34,7 +34,7 @@ export const creditSpreadWidths: {
 ]
 
 export const defaultCsFilters: CreditSpreadScreenerFilters = {
-  ...defaultCspFilters,
+  ...defaultSingleLegFilters,
   strategy_types: ['put_credit_spread', 'call_credit_spread'],
   spread_widths: [5],
 }
@@ -158,7 +158,7 @@ export function validateCreditSpreadFilterDraft(
   }
 }
 
-export function parseTickerInput(value: string) {
+export function parseUncheckedScreenerTickers(value: string) {
   const seen = new Set<string>()
   return value
     .split(/[\s,]+/)

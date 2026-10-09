@@ -273,7 +273,7 @@ function overlayPriceLineOptions(overlay: ChartOverlay) {
     lineWidth: optionOverlayLineWidth(overlay.sources),
     lineStyle: LineStyle.Dashed,
     axisLabelVisible: true,
-    title: `${overlay.label} ${overlaySourceLabel(overlay.sources)}`,
+    title: `${overlay.label} ${overlay.sources.join('/')}`,
   }
 }
 
@@ -285,12 +285,4 @@ function optionOverlayLineWidth(sources: ChartOptionOverlaySource[]) {
     return 2 as const
   }
   return 1 as const
-}
-
-function overlaySourceLabel(sources: ChartOptionOverlaySource[]) {
-  return sources
-    .map((source) =>
-      source === 'draft' ? 'draft' : source === 'working' ? 'working' : 'held',
-    )
-    .join('/')
 }

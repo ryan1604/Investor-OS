@@ -6,6 +6,7 @@ import {
   fetchOptionsScreenerSettings,
   getOptionsScreenerScansWsUrl,
   refreshOptionsScreenerQuote,
+  refreshOptionsScreenerSpreadQuote,
   replaceOptionsScreenerTickerList,
   saveOptionsScreenerFilters,
   startOptionsScreenerScan,
@@ -157,4 +158,61 @@ describe('options screeners api', () => {
       'Scan active-id for csp is already active.',
     )
   })
+
+  it.each<{ label: string; request: () => Promise<unknown> }>([
+    {
+      label: 'Options screener settings',
+      request: () => fetchOptionsScreenerSettings(),
+    },
+    {
+      label: 'Options screener ticker list',
+      request: () => replaceOptionsScreenerTickerList('csp_cc', ['AAPL']),
+    },
+    {
+      label: 'Options screener filters',
+      request: () => saveOptionsScreenerFilters('csp', filters),
+    },
+    {
+      label: 'Options screener scan state',
+      request: () => fetchOptionsScreenerScanState(),
+    },
+    {
+      label: 'Options screener scan',
+      request: () => startOptionsScreenerScan('csp'),
+    },
+    {
+      label: 'Options screener scan cancellation',
+      request: () => cancelOptionsScreenerScan('job-1'),
+    },
+    {
+      label: 'Options screener quote refresh',
+      request: () => refreshOptionsScreenerQuote({
+        ticker: 'AAPL',
+        expiration: '2026-07-17',
+        strike: 100,
+        right: 'PUT',
+        contract: { con_id: 123, local_symbol: 'AAPL PUT' },
+      }),
+    },
+    {
+      label: 'Options screener spread quote refresh',
+      request: () => refreshOptionsScreenerSpreadQuote({
+        strategy: 'put_credit_spread',
+        ticker: 'AAPL',
+        expiration: '2026-07-17',
+        short_strike: 100,
+        long_strike: 95,
+        short_contract: { con_id: 123, local_symbol: 'AAPL PUT 100' },
+        long_contract: { con_id: 456, local_symbol: 'AAPL PUT 95' },
+      }),
+    },
+  ])('identifies $label when the server returns no error detail', async ({ label, request }) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('Unavailable', { status: 503 })),
+    )
+
+    await expect(request()).rejects.toThrow(`${label} request failed: 503`)
+  })
+
 })

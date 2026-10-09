@@ -12,12 +12,41 @@ vi.mock('@/api/optionsScreeners', async (importOriginal) => {
   return { ...actual, refreshOptionsScreenerQuote: vi.fn() }
 })
 
-vi.mock('@/features/options-screeners/OptionsScreenersProvider', async (importOriginal) => {
+vi.mock('@/features/options-screeners/hooks/useOptionsScreeners', async (importOriginal) => {
   const actual =
     await importOriginal<
-      typeof import('@/features/options-screeners/OptionsScreenersProvider')
+      typeof import('@/features/options-screeners/hooks/useOptionsScreeners')
     >()
-  return { ...actual, useOptionsScreeners: () => state }
+  return {
+    ...actual,
+    useOptionsScreeners: () => ({
+      ...state,
+      screeners: {
+        cc: {
+          filterDraft: state.ccFilterDraft,
+          filters: state.ccFilters,
+          filterError: state.ccFilterError,
+          filterSaveStatus: state.ccFilterSaveStatus,
+          snapshot: state.ccSnapshot,
+          sort: state.ccSort,
+          updateFilterDraft: state.updateCcFilterDraft,
+          resetFilters: state.resetCcFilters,
+          startScan: state.startCcScan,
+          setSort: state.setCcSort,
+          tickers: state.cspTickers,
+          addTickers: state.addCspTickers,
+          removeTicker: state.removeCspTicker,
+          clearTickers: state.clearCspTickers,
+        },
+        csp: {
+          tickers: state.cspTickers,
+          addTickers: state.addCspTickers,
+          removeTicker: state.removeCspTicker,
+          clearTickers: state.clearCspTickers,
+        },
+      },
+    }),
+  }
 })
 
 vi.mock('@tanstack/react-virtual', () => ({

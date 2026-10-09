@@ -15,7 +15,7 @@ from app.earnings_watch.provider import (
 from app.earnings_watch.routes import router as earnings_watch_router
 from app.earnings_watch.service import EarningsWatchService
 from app.earnings_watch.store import EarningsWatchStore
-from app.ib.options import IbHistoricalDailyBarProvider
+from app.ib.daily_bars import IbHistoricalDailyBarProvider
 from app.ib.portfolio import IbPortfolioClient, PortfolioClient
 from app.ib.routes import router as ib_router
 from app.options.factory import OptionsAnalysisClient, create_options_client
@@ -33,11 +33,8 @@ from app.options_screeners.store import OptionsScreenerSettingsStore
 from app.options_trade_tracker.routes import router as options_trade_tracker_router
 from app.options_trade_tracker.store import OptionsTradeTrackerStore
 from app.orders.routes import router as orders_router
-from app.orders.service import (
-    OrderService,
-    OrderServiceUnavailable,
-    OrderServiceValidationError,
-)
+from app.orders.errors import OrderServiceUnavailable, OrderServiceValidationError
+from app.orders.service import IbOrderApp, OrderService
 from app.orders.store import OrderStore
 from app.portfolio.chart_values_store import PortfolioChartValuesStore
 from app.portfolio.nav_store import DailyNavStore
@@ -116,7 +113,7 @@ def create_app(
         setup_order_service(
             app,
             app_settings,
-            client,
+            ib_app,
         )
         client.start()
         setup_portfolio_refresh(app, client)
@@ -133,13 +130,12 @@ def create_app(
             yield
         finally:
             await app.state.portfolio_nav_sync.stop()
-        await app.state.portfolio_refresh_service.stop()
-        app.state.options_screener_scan_manager.shutdown()
-        if hasattr(app.state.options_client, "shutdown"):
+            await app.state.portfolio_refresh_service.stop()
+            app.state.options_screener_scan_manager.shutdown()
             app.state.options_client.shutdown()
-        await app.state.earnings_watch_service.stop()
-        await app.state.earnings_calendar_provider.aclose()
-        client.stop()
+            await app.state.earnings_watch_service.stop()
+            await app.state.earnings_calendar_provider.aclose()
+            client.stop()
 
     api = FastAPI(title="Investor OS API", lifespan=lifespan)
     api.add_exception_handler(RequestValidationError, json_safe_validation_exception_handler)
@@ -261,15 +257,14 @@ def setup_request_limiters(app: FastAPI, settings: Settings) -> None:
 def setup_order_service(
     app: FastAPI,
     settings: Settings,
-    client: PortfolioClient,
+    ib_app: IbOrderApp | None,
 ) -> None:
     order_store = OrderStore(settings.orders_database_path)
     app.state.order_service = OrderService(
-        getattr(client, "app", None),
+        ib_app,
         store=order_store,
         subscriber_queue_size=settings.order_subscriber_queue_size,
     )
-    ib_app = getattr(client, "app", None)
     if ib_app is not None:
         ib_app.add_order_status_listener(
             app.state.order_service.handle_ib_order_status,

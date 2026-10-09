@@ -1,7 +1,6 @@
 import {
   DERIVED_ROW_DEFINITIONS,
   EDITABLE_ROW_DEFINITIONS,
-  VALUATION_TABLE_ROW_DEFINITIONS,
   isFirstYearOnlyRow,
   type DerivedRowKey,
   type EditableRowKey,
@@ -9,14 +8,13 @@ import {
   type ValuationRowKey,
 } from '@/features/stock-analysis/lib/valuationRows'
 
-export const YEAR_COUNT = 5
 export const YEAR_INDEXES = [0, 1, 2, 3, 4] as const
 
 export const SCENARIO_KEYS = ['bull', 'base', 'bear'] as const
 
 export type ScenarioKey = (typeof SCENARIO_KEYS)[number]
 export type YearIndex = (typeof YEAR_INDEXES)[number]
-export type ValuationCellKind = 'editable' | 'derived'
+type ValuationCellKind = 'editable' | 'derived'
 export type ValuationYearValues = [
   number | null,
   number | null,
@@ -26,7 +24,7 @@ export type ValuationYearValues = [
 ]
 
 export type ScenarioEditableInputs = Record<EditableRowKey, ValuationYearValues>
-export type ScenarioDerivedValues = Record<DerivedRowKey, ValuationYearValues> &
+type ScenarioDerivedValues = Record<DerivedRowKey, ValuationYearValues> &
   Pick<
     ScenarioEditableInputs,
     | 'amountOfShares'
@@ -43,7 +41,7 @@ export type StockAnalysisValuationModel = {
   scenarios: Record<ScenarioKey, ScenarioEditableInputs>
 }
 
-export type StockAnalysisPayloadInput = {
+type StockAnalysisPayloadInput = {
   firstForecastYear?: unknown
   bull?: unknown
   base?: unknown
@@ -62,16 +60,6 @@ export type CalculatedStockAnalysisModel = {
   scenarios: Record<ScenarioKey, CalculatedScenario>
 }
 
-export {
-  DERIVED_ROW_DEFINITIONS,
-  EDITABLE_ROW_DEFINITIONS,
-  VALUATION_TABLE_ROW_DEFINITIONS,
-  type DerivedRowKey,
-  type EditableRowKey,
-  type SharePriceRowKey,
-  type ValuationRowKey,
-}
-
 export function createEmptyValuationModel(): StockAnalysisValuationModel {
   return {
     firstForecastYear: null,
@@ -82,7 +70,7 @@ export function createEmptyValuationModel(): StockAnalysisValuationModel {
   }
 }
 
-export function createEmptyScenarioInputs(): ScenarioEditableInputs {
+function createEmptyScenarioInputs(): ScenarioEditableInputs {
   return Object.fromEntries(
     EDITABLE_ROW_DEFINITIONS.map((row) => [row.key, emptyYearValues()]),
   ) as ScenarioEditableInputs
@@ -233,7 +221,7 @@ export function calculateScenario(
   }
 }
 
-export function buildYearHeaders(firstForecastYear: number | null) {
+function buildYearHeaders(firstForecastYear: number | null) {
   if (firstForecastYear === null) {
     return YEAR_INDEXES.map((yearIndex) => `Year ${yearIndex + 1}`)
   }

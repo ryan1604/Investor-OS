@@ -15,6 +15,8 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from app.config import Settings
+from app.ib.market_data_lines import MarketDataLineBudget
+from app.ib.pacing import OutstandingRequestLimiter
 from app.main import AppOverrides, create_app
 from app.schemas import (
     BollingerBandPoint,
@@ -31,8 +33,8 @@ from app.schemas import (
     PortfolioAccountSummary,
     PortfolioPosition,
     RsiPoint,
-    StockOrderRequest,
 )
+from app.timing import elapsed_ms
 
 
 DEFAULT_ITERATIONS = 10
@@ -123,6 +125,12 @@ class BaselineOptionsClient:
         self.chain_rows = make_option_chain_rows(chain_rows)
         self.chart_points = make_chart_points(260)
 
+    def cancel_scanner(self) -> None:
+        pass
+
+    def shutdown(self) -> None:
+        pass
+
     def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
         def build_analysis() -> OptionsAnalysisResponse:
             return OptionsAnalysisResponse(
@@ -201,6 +209,10 @@ class BaselineOptionsClient:
 class BaselineIbOrderApp:
     def __init__(self) -> None:
         self.lock = threading.Lock()
+        self.request_errors_by_req_id = {}
+        self.limit_errors_by_req_id = {}
+        self.market_data_lines = MarketDataLineBudget(1_000_000)
+        self.contract_details_slots = OutstandingRequestLimiter(None)
         self.connected = True
         self.next_order_id = 700
         self.next_execution_req_id = 90_000
@@ -208,11 +220,25 @@ class BaselineIbOrderApp:
         self.contract_details = {}
         self.contract_details_ready_by_req_id = {}
         self.open_order_requests = 0
+        self.auto_open_order_requests = []
+        self.completed_order_requests = []
         self.execution_requests = []
         self.placed_orders = []
         self.cancelled_orders = []
         self.registered_order_ids = []
         self.listeners = []
+
+    def market_data_line_usage(self) -> tuple[int, int]:
+        return self.market_data_lines.used(), self.market_data_lines.capacity
+
+    def limit_error_count(self, req_ids) -> dict[int, int]:
+        counts = {}
+        with self.lock:
+            for req_id in req_ids:
+                code = self.limit_errors_by_req_id.get(req_id)
+                if code is not None:
+                    counts[code] = counts.get(code, 0) + 1
+        return counts
 
     def isConnected(self) -> bool:
         return self.connected
@@ -244,6 +270,12 @@ class BaselineIbOrderApp:
     def register_submitted_order(self, order_id: int) -> None:
         self.registered_order_ids.append(order_id)
 
+    def reqAutoOpenOrders(self, auto_bind: bool) -> None:
+        self.auto_open_order_requests.append(auto_bind)
+
+    def reqCompletedOrders(self, api_only: bool) -> None:
+        self.completed_order_requests.append(api_only)
+
     def reqOpenOrders(self) -> None:
         self.open_order_requests += 1
 
@@ -255,6 +287,7 @@ class BaselineIbOrderApp:
         self.contract_details[req_id] = [
             type("ContractDetails", (), {"contract": contract})(),
         ]
+        self.contract_details_slots.release(req_id)
         self.contract_details_ready_by_req_id[req_id].set()
 
 
@@ -298,25 +331,11 @@ def run_baseline(
     ) as directory:
         data_path = Path(directory)
         api = create_app(
-            Settings(
-                options_database_path=str(data_path / "options.sqlite3"),
-                options_screeners_database_path=str(
-                    data_path / "options_screeners.sqlite3",
-                ),
-                options_trade_trackers_database_path=str(
-                    data_path / "options_trade_trackers.sqlite3",
-                ),
-                orders_database_path=str(data_path / "orders.sqlite3"),
-                stock_analysis_database_path=str(
-                    data_path / "stock-analysis.sqlite3",
-                ),
-                portfolio_chart_values_database_path=str(
-                    data_path / "portfolio_chart_values.sqlite3",
-                ),
-                earnings_watch_database_path=str(
-                    data_path / "earnings_watch.sqlite3",
-                ),
-            ),
+            Settings(**{
+                name: str(data_path / f"{name.removesuffix('_database_path')}.sqlite3")
+                for name in Settings.model_fields
+                if name.endswith("_database_path")
+            }),
             AppOverrides(
                 client=portfolio_client,
                 options_client=options_client,
@@ -699,10 +718,6 @@ def summarize_samples(samples: list[float] | list[int]) -> dict[str, float]:
 def percentile(sorted_samples: list[float], fraction: float) -> float:
     index = min(len(sorted_samples) - 1, max(0, int(len(sorted_samples) * fraction)))
     return sorted_samples[index]
-
-
-def elapsed_ms(started_at: float) -> float:
-    return (time.perf_counter() - started_at) * 1_000
 
 
 if __name__ == "__main__":

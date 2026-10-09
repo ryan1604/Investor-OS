@@ -180,12 +180,36 @@ describe('OptionsTradeTrackerPage', () => {
     expect(screen.queryByText('2 global strategies loaded')).toBeNull()
   })
 
+  it('loads the tracker name before its tabs and notes are ready', async () => {
+    const detailLoad = deferred<
+      Awaited<ReturnType<typeof fetchOptionsTradeTracker>>
+    >()
+    vi.mocked(fetchOptionsTradeTracker).mockReturnValueOnce(detailLoad.promise)
+
+    render(<OptionsTradeTrackerPage />)
+
+    expect(await screen.findByText('Income')).toBeTruthy()
+    expect(screen.getByText('Loading selected tracker...')).toBeTruthy()
+    expect(screen.queryByRole('tab', { name: 'Stats' })).toBeNull()
+    expect(screen.queryByLabelText('Tracker notes')).toBeNull()
+
+    await act(async () => {
+      detailLoad.resolve(trackerDetail(incomeTracker, 'Income notes', 'AAPL'))
+      await detailLoad.promise
+    })
+
+    expect(await screen.findByRole('tab', { name: 'Stats' })).toBeTruthy()
+    expect(await screen.findByLabelText('Tracker notes')).toBeTruthy()
+    expect(screen.getByDisplayValue('Income notes')).toBeTruthy()
+    expect(screen.queryByText('Loading selected tracker...')).toBeNull()
+  })
+
   it('keeps the selected tracker stable while switching tabs', async () => {
     render(<OptionsTradeTrackerPage />)
 
     expect(await screen.findByText('Income')).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('tab', { name: 'Stats' }))
+    fireEvent.click(await screen.findByRole('tab', { name: 'Stats' }))
     await waitFor(() => {
       expect(screen.getByText('Summary')).toBeTruthy()
     })
@@ -558,7 +582,7 @@ describe('OptionsTradeTrackerPage', () => {
     render(<OptionsTradeTrackerPage />)
 
     await screen.findByText('Income')
-    fireEvent.change(screen.getByLabelText('Tracker notes'), {
+    fireEvent.change(await screen.findByLabelText('Tracker notes'), {
       target: { value: 'Plan the exit before earnings.' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Save notes' }))

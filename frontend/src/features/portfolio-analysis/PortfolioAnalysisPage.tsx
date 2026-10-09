@@ -2,7 +2,7 @@ import { CircleDot } from 'lucide-react'
 
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
-import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
+import { AccountSelector } from '@/components/AccountSelector'
 import { AnalysisSummaryCards } from '@/features/portfolio-analysis/components/AnalysisSummaryCards'
 import { BetaOverrideEditor } from '@/features/portfolio-analysis/components/BetaOverrideEditor'
 import { CoverageBanner } from '@/features/portfolio-analysis/components/CoverageBanner'

@@ -5,10 +5,8 @@ import {
   fetchPortfolio,
   type PortfolioResponse,
 } from '@/api/portfolio'
-import { errorMessage } from '@/api/client'
-
-const INITIAL_RECONNECT_DELAY_MS = 1_000
-const MAX_RECONNECT_DELAY_MS = 10_000
+import { errorMessage } from '@/lib/errors'
+import { connectWithBackoff } from '@/lib/connectWithBackoff'
 
 function portfolioErrorMessage(error: unknown) {
   return errorMessage(error, 'Portfolio request failed')
@@ -40,62 +38,28 @@ export function usePortfolio() {
   }, [])
 
   useEffect(() => {
-    let ignore = false
-    let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let socket: WebSocket | null = null
     let hasSnapshot = false
 
-    const connect = () => {
-      socket = new WebSocket(PORTFOLIO_WS_URL)
-
-      socket.onopen = () => {
-        reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-      }
-
-      socket.onmessage = (event) => {
-        if (ignore) {
-          return
-        }
-
+    return connectWithBackoff(PORTFOLIO_WS_URL, {
+      onMessage: (event) => {
         hasSnapshot = true
         setPortfolio(JSON.parse(event.data) as PortfolioResponse)
         setError(null)
         setIsLoading(false)
-      }
-
-      socket.onerror = () => {
-        if (!ignore) {
-          setError('Portfolio stream disconnected.')
-          if (!hasSnapshot) {
-            setIsLoading(false)
-          }
-        }
-      }
-
-      socket.onclose = () => {
-        if (ignore) {
-          return
-        }
-
+      },
+      onError: () => {
         setError('Portfolio stream disconnected.')
         if (!hasSnapshot) {
           setIsLoading(false)
         }
-        reconnectTimer = setTimeout(connect, reconnectDelay)
-        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
-      }
-    }
-
-    connect()
-
-    return () => {
-      ignore = true
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer)
-      }
-      socket?.close()
-    }
+      },
+      onClose: () => {
+        setError('Portfolio stream disconnected.')
+        if (!hasSnapshot) {
+          setIsLoading(false)
+        }
+      },
+    })
   }, [])
 
   return {

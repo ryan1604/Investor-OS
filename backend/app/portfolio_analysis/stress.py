@@ -63,11 +63,6 @@ class StressLeg:
         volatility = shocked_volatility(self.volatility, self.right, self.beta, iv_shock)
         return black_scholes(self.right, spot, self.strike, self.years, volatility, rate).price
 
-    def pnl(self, spy_move: float, iv_shock: float, rate: float) -> float:
-        multiplier = 1.0 if self.right is None else STANDARD_OPTION_MULTIPLIER
-        change = self.value(spy_move, iv_shock, rate) - self.base_value
-        return change * multiplier * self.quantity * self.fx_rate
-
 
 def shocked_spot(spot: float, beta: float, spy_move: float) -> float:
     return spot * (1.0 + max(beta * spy_move, UNDERLYING_MOVE_FLOOR))
@@ -160,28 +155,12 @@ def stress_groups(
     return groups
 
 
-def stress_legs(
-    underlyings: list[AnalysisUnderlying],
-    *,
-    now: datetime,
-    risk_free_rate: float,
-) -> tuple[list[StressLeg], int]:
-    """Return the legs of complete groups and how many legs were left out."""
-    groups = stress_groups(underlyings, now=now, risk_free_rate=risk_free_rate)
-    legs = stressed_legs(groups)
-    return legs, leg_count(underlyings) - len(legs)
-
-
 def stressed_legs(groups: list[StressGroup]) -> list[StressLeg]:
     return [leg for group in groups if group.complete for leg in group.legs]
 
 
 def leg_count(underlyings: list[AnalysisUnderlying]) -> int:
     return sum(len(group.legs) for underlying in underlyings for group in underlying.groups)
-
-
-def scenario_pnl(legs: list[StressLeg], spy_move: float, iv_shock: float, rate: float) -> float:
-    return sum(leg.pnl(spy_move, iv_shock, rate) for leg in legs)
 
 
 def scenario(

@@ -1,4 +1,4 @@
-export type OptionSide = 'call' | 'put'
+type OptionSide = 'call' | 'put'
 
 export function optionReturnPercent(
   side: OptionSide,

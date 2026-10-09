@@ -1,10 +1,10 @@
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from app.portfolio.flex import FlexClient, FlexError
-from app.portfolio.nav_store import DailyNavStore, SYNC_ERRORS
+from app.portfolio.nav_store import DailyNavResponse, DailyNavStore, SYNC_ERRORS
+from app.sessions import US_MARKET_TIME_ZONE, weekday_on_or_before
 
 
 class NavSyncService:
@@ -13,10 +13,24 @@ class NavSyncService:
         self.store = store
         self.client = client
         self.interval_seconds = interval_seconds
-        self.clock = clock or (lambda: datetime.now(ZoneInfo("America/New_York")).date())
+        self.clock = clock or (lambda: datetime.now(US_MARKET_TIME_ZONE).date())
         self.task: asyncio.Task | None = None
         self.syncing = False
         self.error: str | None = None
+
+    def update_status(self, result: DailyNavResponse) -> DailyNavResponse:
+        if result.sync.configured:
+            result.sync.error = self.error or result.sync.error
+            target = weekday_on_or_before(
+                self.clock() - timedelta(days=1)
+            )
+            result.sync.state = (
+                "syncing" if self.syncing else
+                "failed" if result.sync.error else
+                "pending" if not result.latest_report_date else
+                "current" if result.latest_report_date >= target.isoformat() else "stale"
+            )
+        return result
 
     def start(self):
         if self.client is not None and (self.task is None or self.task.done()):
@@ -49,9 +63,9 @@ class NavSyncService:
                 oldest_latest = min(datetime.fromisoformat(h.latest_report_date).date() for h in histories)
                 # Re-fetch a recent overlap for corrections; advance long gaps in bounded chunks.
                 start = oldest_latest - timedelta(days=7)
-                end = min(start + timedelta(days=30), self.clock() - timedelta(days=1))
-                while end.weekday() > 4:
-                    end -= timedelta(days=1)
+                end = weekday_on_or_before(
+                    min(start + timedelta(days=30), self.clock() - timedelta(days=1))
+                )
                 if start > end:
                     return
             values = await self.client.fetch(start, end)

@@ -1,16 +1,13 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 
-import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import {
   fetchOptionExpirations,
   fetchOptionsAnalysis,
   type OptionExpiration,
   type OptionsAnalysisResponse,
 } from '@/api/options'
-
-export function errorMessage(error: unknown) {
-  return requestErrorMessage(error, 'Options request failed.')
-}
 
 export function hasAnalysisPriceData(analysis: OptionsAnalysisResponse) {
   return analysis.candles.length > 0 && analysis.underlying_price !== null
@@ -87,7 +84,7 @@ export function useOptionsAnalysis() {
       }
 
       setAnalysis(null)
-      setError(errorMessage(nextError))
+      setError(errorMessage(nextError, 'Options request failed.'))
       setIsExpirationsLoading(false)
       return
     } finally {
@@ -118,7 +115,7 @@ export function useOptionsAnalysis() {
       }
 
       if (analysisRequestIdRef.current === requestId) {
-        setExpirationsError(errorMessage(nextError))
+        setExpirationsError(errorMessage(nextError, 'Options request failed.'))
       }
     } finally {
       if (analysisRequestIdRef.current === requestId) {

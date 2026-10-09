@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Request
 
-from app.options.client import OptionsDataUnavailable
+from app.http import required_ticker, service_errors_as_http
+from app.options.types import OptionsDataUnavailable
 from app.request_limits import RequestCapacityExceeded, request_limit_slot
 from app.schemas import (
     StockAnalysisCurrentPriceResponse,
@@ -11,7 +12,6 @@ from app.schemas import (
     empty_stock_analysis_payload,
 )
 from app.stock_analysis.store import StockAnalysisModel
-from app.tickers import require_ticker
 
 router = APIRouter()
 
@@ -68,13 +68,11 @@ def stock_analysis_current_price(
 ) -> StockAnalysisCurrentPriceResponse:
     normalized_ticker = required_ticker(ticker)
 
-    try:
+    with service_errors_as_http():
         with request_limit_slot(request, "options_analysis"):
             current_price = request.app.state.options_client.get_underlying_price(
                 normalized_ticker
             )
-    except OptionsDataUnavailable as error:
-        raise HTTPException(status_code=404, detail=str(error)) from error
 
     with request_limit_slot(request, "stock_analysis_write"):
         request.app.state.stock_analysis_store.update_current_price(
@@ -125,17 +123,6 @@ def refresh_stock_analysis_current_price(
             current_price = request.app.state.options_client.get_underlying_price(
                 model.ticker
             )
-    except OptionsDataUnavailable as error:
-        return unavailable_price_refresh_result(model, str(error))
-    except RequestCapacityExceeded as error:
-        return StockAnalysisPriceRefreshResult(
-            ticker=model.ticker,
-            status="failed",
-            current_price=model.current_price,
-            message=str(error),
-        )
-
-    try:
         with request.app.state.request_limiters["stock_analysis_write"].slot(
             timeout_seconds=request.app.state.settings.ib_request_queue_timeout_seconds,
         ):
@@ -143,6 +130,8 @@ def refresh_stock_analysis_current_price(
                 model.ticker,
                 current_price,
             )
+    except OptionsDataUnavailable as error:
+        return unavailable_price_refresh_result(model, str(error))
     except RequestCapacityExceeded as error:
         return StockAnalysisPriceRefreshResult(
             ticker=model.ticker,
@@ -168,13 +157,6 @@ def unavailable_price_refresh_result(
         current_price=model.current_price,
         message=message,
     )
-
-
-def required_ticker(ticker: str) -> str:
-    try:
-        return require_ticker(ticker)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail="Ticker is required.") from error
 
 
 def stock_analysis_response(

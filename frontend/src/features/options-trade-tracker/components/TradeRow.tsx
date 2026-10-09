@@ -1,6 +1,8 @@
-import { memo, useState, type DragEvent } from 'react'
+import { memo, type DragEvent } from 'react'
 import { GripVertical, Trash2 } from 'lucide-react'
 
+import { FieldIssue, NumberCell } from '@/components/EditableTableCells'
+import { daysToExpiration, isoDate } from '@/lib/dates'
 import type {
   OptionsTradeMonth,
   OptionsTradeStatus,
@@ -21,7 +23,6 @@ import {
   PopoverTrigger,
 } from '@/components/ui/popover'
 import { TableCell, TableRow } from '@/components/ui/table'
-import { daysToExpiration } from '@/features/options-screeners/lib/expiration'
 import { StrategySelectCell } from '@/features/options-trade-tracker/components/StrategyComboboxCell'
 import {
   formatCurrencyInput,
@@ -51,12 +52,6 @@ type TradeRowProps = {
   onOpenStrategyDialog: () => void
   onMenuOpenChange: (localId: string, open: boolean) => void
   onUpdateRow: (localId: string, field: TradeDraftField, value: string) => void
-}
-
-function isoDate(date: Date) {
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${date.getFullYear()}-${month}-${day}`
 }
 
 const statuses: OptionsTradeStatus[] = ['In Progress', 'Completed']
@@ -181,7 +176,7 @@ export const TradeRow = memo(function TradeRow({
           label={`Strike price row ${row.localId}`}
           value={row.strikePrice}
           onChange={(value) => onUpdateRow(row.localId, 'strikePrice', value)}
-          format="currency"
+          formatValue={formatCurrencyDraft}
         />
         <FieldIssue issues={issues} localId={row.localId} field="strikePrice" />
       </TableCell>
@@ -190,7 +185,7 @@ export const TradeRow = memo(function TradeRow({
           label={`Credit debit row ${row.localId}`}
           value={row.creditDebit}
           onChange={(value) => onUpdateRow(row.localId, 'creditDebit', value)}
-          format="currency"
+          formatValue={formatCurrencyDraft}
         />
         <FieldIssue issues={issues} localId={row.localId} field="creditDebit" />
       </TableCell>
@@ -199,7 +194,7 @@ export const TradeRow = memo(function TradeRow({
           label={`Exit row ${row.localId}`}
           value={row.exit}
           onChange={(value) => onUpdateRow(row.localId, 'exit', value)}
-          format="currency"
+          formatValue={formatCurrencyDraft}
         />
         <FieldIssue issues={issues} localId={row.localId} field="exit" />
       </TableCell>
@@ -268,34 +263,6 @@ function handleDragOver(event: DragEvent<HTMLTableRowElement>) {
   event.dataTransfer.dropEffect = 'move'
 }
 
-function NumberCell({
-  label,
-  value,
-  format = 'number',
-  onChange,
-}: {
-  label: string
-  value: string
-  format?: 'currency' | 'number'
-  onChange: (value: string) => void
-}) {
-  const [isFocused, setIsFocused] = useState(false)
-  const displayValue =
-    format === 'currency' && !isFocused ? formatCurrencyDraft(value) : value
-
-  return (
-    <Input
-      aria-label={label}
-      className="w-full text-right tabular-nums"
-      inputMode="decimal"
-      value={displayValue}
-      onFocus={() => setIsFocused(true)}
-      onBlur={() => setIsFocused(false)}
-      onChange={(event) => onChange(event.target.value)}
-    />
-  )
-}
-
 function formatCurrencyDraft(value: string) {
   const parsedValue = parseCurrencyInput(value, {
     allowBlank: true,
@@ -305,24 +272,4 @@ function formatCurrencyDraft(value: string) {
   return typeof parsedValue === 'number'
     ? formatCurrencyInput(parsedValue)
     : value
-}
-
-function FieldIssue({
-  issues,
-  localId,
-  field,
-}: {
-  issues: TradeDraftValidationIssue[]
-  localId: string
-  field: TradeDraftField
-}) {
-  const issue = issues.find(
-    (candidate) => candidate.localId === localId && candidate.field === field,
-  )
-
-  return issue ? (
-    <div className="mt-1 max-w-44 whitespace-normal text-xs text-destructive">
-      {issue.message}
-    </div>
-  ) : null
 }

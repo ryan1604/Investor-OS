@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ScreenerFilterControls } from '@/features/options-screeners/components/ScreenerFilterControls'
 import {
-  defaultCspFilters,
+  defaultSingleLegFilters,
   filterDraftFromSettings,
 } from '@/features/options-screeners/lib/screenerSettings'
 
@@ -18,7 +18,7 @@ describe('ScreenerFilterControls', () => {
     render(
       <ScreenerFilterControls
         action={<button type="button">Scan tickers</button>}
-        draft={filterDraftFromSettings(defaultCspFilters)}
+        draft={filterDraftFromSettings(defaultSingleLegFilters)}
         error={null}
         saveStatus="saved"
         onChange={onChange}

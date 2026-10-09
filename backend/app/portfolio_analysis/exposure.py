@@ -22,7 +22,7 @@ from app.portfolio_analysis.pairing import (
     pair_strategies,
 )
 from app.portfolio_analysis.pricing import black_scholes, implied_volatility
-from app.portfolio_analysis.sessions import US_MARKET_TIME_ZONE
+from app.sessions import US_MARKET_TIME_ZONE
 from app.schemas import (
     AnalysisCoverage,
     AnalysisExposure,

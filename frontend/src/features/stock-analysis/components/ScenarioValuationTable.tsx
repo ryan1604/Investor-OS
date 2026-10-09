@@ -1,5 +1,6 @@
 import { Fragment } from 'react'
 
+import type { EditingCell } from '@/features/stock-analysis/lib/editingCell'
 import { Input } from '@/components/ui/input'
 import {
   Table,
@@ -16,30 +17,25 @@ import {
   formatMultiplierValue,
 } from '@/features/stock-analysis/lib/valuationFormatting'
 import {
-  VALUATION_TABLE_ROW_DEFINITIONS,
   YEAR_INDEXES,
   getValuationCellKind,
   type CalculatedScenario,
-  type EditableRowKey,
   type ScenarioKey,
-  type ValuationRowKey,
   type YearIndex,
 } from '@/features/stock-analysis/lib/valuationModel'
 import {
+  VALUATION_TABLE_ROW_DEFINITIONS,
   isSharePriceRow,
   hasSpacerAfter,
   valuationRowMetadata,
+  type EditableRowKey,
+  type ValuationRowKey,
 } from '@/features/stock-analysis/lib/valuationRows'
 
 const SCENARIO_LABELS: Record<ScenarioKey, string> = {
   bull: 'Bull case',
   base: 'Base case',
   bear: 'Bear case',
-}
-
-export type EditingCell = {
-  id: string
-  draftValue: string
 }
 
 export function ScenarioValuationTable({

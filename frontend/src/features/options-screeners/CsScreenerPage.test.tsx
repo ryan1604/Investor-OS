@@ -12,12 +12,37 @@ vi.mock('@/api/optionsScreeners', async (importOriginal) => {
   return { ...actual, refreshOptionsScreenerSpreadQuote: vi.fn() }
 })
 
-vi.mock('@/features/options-screeners/OptionsScreenersProvider', async (importOriginal) => {
+vi.mock('@/features/options-screeners/hooks/useOptionsScreeners', async (importOriginal) => {
   const actual =
     await importOriginal<
-      typeof import('@/features/options-screeners/OptionsScreenersProvider')
+      typeof import('@/features/options-screeners/hooks/useOptionsScreeners')
     >()
-  return { ...actual, useOptionsScreeners: () => state }
+  return {
+    ...actual,
+    useOptionsScreeners: () => ({
+      ...state,
+      screeners: {
+        cs: {
+          tickers: state.csTickers,
+          filterDraft: state.csFilterDraft,
+          filters: state.csFilters,
+          filterError: state.csFilterError,
+          filterSaveStatus: state.csFilterSaveStatus,
+          snapshot: state.csSnapshot,
+          sort: state.csSort,
+          addTickers: state.addCsTickers,
+          removeTicker: state.removeCsTicker,
+          clearTickers: state.clearCsTickers,
+          updateFilterDraft: state.updateCsFilterDraft,
+          resetFilters: state.resetCsFilters,
+          startScan: state.startCsScan,
+          setSort: state.setCsSort,
+          toggleStrategyType: state.toggleCsStrategyType,
+          toggleSpreadWidth: state.toggleCsSpreadWidth,
+        },
+      },
+    }),
+  }
 })
 
 vi.mock('@tanstack/react-virtual', () => ({

@@ -4,17 +4,18 @@ from collections import defaultdict
 from collections.abc import Callable
 from datetime import date, datetime
 import logging
-import math
 import threading
 from time import perf_counter
 
-from app.options.client import (
+from app.options.types import (
     FullOptionChainSnapshot,
     OptionsDataUnavailable,
     ScannerOptionQuote,
 )
+from app.options.rotation import option_contract_preference
 from app.options_screeners.domain import (
     build_credit_spread_candidate,
+    finite_values,
     matches_filters,
     sort_candidates,
     spread_pricing,
@@ -28,7 +29,6 @@ from app.options_screeners.single_leg import (
     FullOptionChainClient,
     US_MARKET_TIME_ZONE,
     contract_dte,
-    quote_preference,
 )
 from app.schemas import (
     CreditSpreadScreenerFilters,
@@ -156,9 +156,7 @@ class CreditSpreadOptionsScreenerScanService:
         )
 
     def cancel(self) -> None:
-        cancel_scanner = getattr(self.client, "cancel_scanner", None)
-        if cancel_scanner is not None:
-            cancel_scanner()
+        self.client.cancel_scanner()
 
     def refresh_spread_quote(
         self,
@@ -276,7 +274,9 @@ def scan_spread_snapshot(
 
     candidates = []
     emitted_keys: set[tuple[str, str, float, float]] = set()
-    for quote in sorted(valid_quotes, key=quote_preference):
+    for quote in sorted(
+        valid_quotes, key=lambda quote: option_contract_preference(quote.contract)
+    ):
         if cancel_event.is_set():
             break
         short_dte = contract_dte(quote.contract.expiration, current_date)
@@ -375,7 +375,8 @@ def valid_spread_leg_quote(
         and contract.multiplier == "100"
         and dte is not None
         and dte > 0
-        and all(value is not None and math.isfinite(value) for value in values)
+        and all(value is not None for value in values)
+        and finite_values(*values)
         and quote.bid >= 0
         and quote.ask >= quote.bid
     )
@@ -461,5 +462,6 @@ def compatible_refreshed_spread(
         and long_contract.multiplier == "100"
         and short_contract.trading_class == long_contract.trading_class
         and expected_order
-        and all(value is not None and math.isfinite(value) for value in values)
+        and all(value is not None for value in values)
+        and finite_values(*values)
     )

@@ -72,8 +72,9 @@ class StockAnalysisStore(RowDatabase):
                 "DELETE FROM stock_analysis_models WHERE ticker = ?",
                 (normalize_ticker(ticker),),
             )
+            row_count = cursor.rowcount
 
-        return cursor.rowcount > 0
+        return row_count > 0
 
     def upsert_model(
         self,

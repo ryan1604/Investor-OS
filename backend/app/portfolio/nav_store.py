@@ -1,5 +1,4 @@
 from datetime import UTC, date, datetime
-from contextlib import closing, contextmanager
 from decimal import Decimal
 from pathlib import Path
 from typing import Literal
@@ -68,12 +67,6 @@ class DailyNavResponse(BaseModel):
 
 
 class DailyNavStore(RowDatabase):
-    @contextmanager
-    def _connect(self):
-        with closing(super()._connect()) as connection:
-            with connection:
-                yield connection
-
     def __init__(self, database_path: str | Path) -> None:
         super().__init__(database_path)
         with self._connect() as connection:

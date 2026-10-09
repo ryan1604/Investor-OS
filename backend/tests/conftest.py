@@ -1,21 +1,59 @@
-import threading
 import tempfile
+import threading
+from datetime import date, datetime
 from pathlib import Path
+from time import monotonic
 
 from fastapi import FastAPI
 
 from app.config import Settings
 from app.ib.market_data_lines import MarketDataLineBudget
+from app.ib.pacing import OutstandingRequestLimiter
 from app.ib.portfolio import AnalysisMarketData
 from app.main import AppOverrides, create_app
-from app.options.client import OptionsDataUnavailable
+from app.options.store import CompletedDailyBar
+from app.options.types import OptionsDataUnavailable
 from app.options_screeners.service import OptionsScreenerService
 from app.schemas import (
+    BollingerBandPoint,
+    OptionChainLiveMessage,
+    OptionChainResponse,
+    OptionChainRow,
+    OptionDailyBar,
+    OptionExpiration,
+    OptionExpirationsResponse,
+    OptionQuote,
+    OptionsAnalysisResponse,
+    OptionsChartLiveMessage,
+    RsiPoint,
     IbStatus,
     MarketDataLineUsage,
     PortfolioAccountSummary,
     PortfolioPosition,
 )
+
+
+class FakeIbAppBase:
+    """Shared IB state required by production providers; tests opt into finite limits."""
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self.request_errors_by_req_id = {}
+        self.limit_errors_by_req_id = {}
+        self.market_data_lines = MarketDataLineBudget(1_000_000)
+        self.contract_details_slots = OutstandingRequestLimiter(None)
+
+    def market_data_line_usage(self) -> tuple[int, int]:
+        return self.market_data_lines.used(), self.market_data_lines.capacity
+
+    def limit_error_count(self, req_ids) -> dict[int, int]:
+        counts = {}
+        with self.lock:
+            for req_id in req_ids:
+                code = self.limit_errors_by_req_id.get(req_id)
+                if code is not None:
+                    counts[code] = counts.get(code, 0) + 1
+        return counts
 
 
 class FakePortfolioClient:
@@ -128,8 +166,9 @@ class FakePortfolioClient:
         return self.analysis_market_data
 
 
-class FakeIbOrderApp:
+class FakeIbOrderApp(FakeIbAppBase):
     def __init__(self, connected: bool = True) -> None:
+        super().__init__()
         self.lock = threading.Lock()
         self.connected = connected
         self.next_order_id = 700
@@ -240,7 +279,160 @@ class FakeIbOrderApp:
         self.completed_order_requests.append(api_only)
 
 
-class FakeUnavailableOptionsClient:
+class FakeOptionsClientBase:
+    def __init__(self) -> None:
+        self.stopped = False
+        self.cancel_calls = 0
+
+    def shutdown(self) -> None:
+        self.stopped = True
+
+    def cancel_scanner(self) -> None:
+        self.cancel_calls += 1
+
+
+class FakeOptionsAnalysisClient(FakeOptionsClientBase):
+    def __init__(
+        self,
+        price: float | None | dict[str, float | None] = 42.5,
+        *,
+        allow_analysis: bool = True,
+    ) -> None:
+        super().__init__()
+        self.price = price
+        self.allow_analysis = allow_analysis
+        self.analysis_requests: list[str] = []
+        self.price_requests: list[str] = []
+        self.stream_stop_events: list[threading.Event] = []
+        self.chart_stream_stop_events: list[threading.Event] = []
+
+    def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
+        self.analysis_requests.append(ticker)
+        if not self.allow_analysis:
+            raise AssertionError("Price refresh must not invoke full options analysis.")
+        if ticker == "missing":
+            raise OptionsDataUnavailable("No options analysis data is available.")
+
+        return OptionsAnalysisResponse(
+            ticker=ticker.upper(),
+            underlying_price=102,
+            candles=[
+                OptionDailyBar(
+                    date="2026-05-29",
+                    open=100,
+                    high=103,
+                    low=99,
+                    close=102,
+                    volume=1_000,
+                )
+            ],
+            bollinger_bands=[
+                BollingerBandPoint(
+                    date="2026-05-29",
+                    upper=None,
+                    middle=None,
+                    lower=None,
+                )
+            ],
+            rsi=[RsiPoint(date="2026-05-29", value=None)],
+            message="Loaded analysis data for AAPL.",
+        )
+
+    def get_expirations(self, ticker: str) -> OptionExpirationsResponse:
+        return OptionExpirationsResponse(
+            ticker=ticker.upper(),
+            expirations=[OptionExpiration(date="2026-06-19", days_to_expiration=20)],
+            selected_expiration="2026-06-19",
+            message=f"Loaded expirations for {ticker.upper()}.",
+        )
+
+    def get_chain(self, ticker: str, expiration: str) -> OptionChainResponse:
+        return OptionChainResponse(
+            ticker=ticker.upper(),
+            expiration=expiration,
+            underlying_price=100,
+            rows=[
+                OptionChainRow(
+                    strike=100,
+                    call=OptionQuote(bid=1, ask=1.2, mid=1.1, breakeven=101.2),
+                    put=OptionQuote(bid=0.8, ask=1, mid=0.9, breakeven=99),
+                )
+            ],
+            message=f"Loaded 1 strike(s) for {ticker.upper()} {expiration}.",
+        )
+
+    def stream_chain(
+        self,
+        ticker: str,
+        expiration: str,
+        *,
+        stop_event: threading.Event,
+    ):
+        self.stream_stop_events.append(stop_event)
+        yield OptionChainLiveMessage(
+            type="snapshot",
+            ticker=ticker.upper(),
+            expiration=expiration,
+            rows=[
+                OptionChainRow(
+                    strike=100,
+                    call=OptionQuote(bid=1, ask=1.2, mid=1.1, breakeven=101.2),
+                )
+            ],
+            message=f"Streaming 1 strike(s) for {ticker.upper()} {expiration}.",
+        )
+        yield OptionChainLiveMessage(
+            type="update",
+            ticker=ticker.upper(),
+            expiration=expiration,
+            row=OptionChainRow(
+                strike=100,
+                call=OptionQuote(bid=1.1, ask=1.3, mid=1.2, breakeven=101.3),
+            ),
+        )
+
+    def stream_chart(
+        self,
+        ticker: str,
+        *,
+        stop_event: threading.Event,
+    ):
+        self.chart_stream_stop_events.append(stop_event)
+        yield OptionsChartLiveMessage(
+            type="update",
+            ticker=ticker.upper(),
+            candle=OptionDailyBar(
+                date="2026-05-30",
+                open=102,
+                high=104,
+                low=101,
+                close=103,
+                volume=2_000,
+            ),
+            bollinger_band=BollingerBandPoint(
+                date="2026-05-30",
+                upper=105,
+                middle=102,
+                lower=99,
+            ),
+            rsi=RsiPoint(date="2026-05-30", value=61),
+        )
+
+    def get_underlying_price(self, ticker: str) -> float:
+        normalized_ticker = ticker.upper()
+        self.price_requests.append(normalized_ticker)
+        price = (
+            self.price.get(normalized_ticker)
+            if isinstance(self.price, dict)
+            else self.price
+        )
+        if price is None:
+            raise OptionsDataUnavailable(f"No daily price data is available for {ticker}.")
+
+        return price
+
+
+class FakeUnavailableOptionsClient(FakeOptionsClientBase):
     def get_analysis(self, ticker: str):
         raise OptionsDataUnavailable(
             "Options historical data provider is not configured."
@@ -345,3 +537,47 @@ def make_test_settings(
             earnings_watch_database_path or data_path / "earnings_watch.sqlite3",
         ),
     )
+
+
+def wait_until(predicate, *, timeout_seconds: float = 1):
+    deadline = monotonic() + timeout_seconds
+    while monotonic() < deadline:
+        result = predicate()
+        if result:
+            return result
+        threading.Event().wait(0.01)
+    result = predicate()
+    assert result, "Timed out waiting for condition."
+    return result
+
+
+class Clock:
+    def __init__(self, now: datetime) -> None:
+        self.now = now
+        self.seconds = 0.0
+
+    def __call__(self) -> datetime:
+        return self.now
+
+
+def bars_from_closes(
+    closes: list[float] | dict[date, float],
+    *,
+    ticker: str = "TEST",
+) -> list[CompletedDailyBar]:
+    values = (
+        ((day.isoformat(), close) for day, close in closes.items())
+        if isinstance(closes, dict)
+        else ((f"2026-05-{index + 1:02d}", close) for index, close in enumerate(closes))
+    )
+    return [
+        CompletedDailyBar(
+            ticker=ticker,
+            trading_date=day,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+        )
+        for day, close in values
+    ]

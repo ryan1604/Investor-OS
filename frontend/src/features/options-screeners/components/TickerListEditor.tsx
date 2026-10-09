@@ -15,7 +15,7 @@ import {
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
-import { parseTickerInput } from '@/features/options-screeners/lib/screenerSettings'
+import { parseUncheckedScreenerTickers } from '@/features/options-screeners/lib/screenerSettings'
 
 export function TickerListEditor({
   clearActionLabel = 'Clear shared list',
@@ -46,7 +46,7 @@ export function TickerListEditor({
   const [input, setInput] = useState('')
 
   async function submit() {
-    const parsed = parseTickerInput(input)
+    const parsed = parseUncheckedScreenerTickers(input)
     if (!parsed.length) {
       return
     }
@@ -110,7 +110,7 @@ export function TickerListEditor({
         />
         <Button
           className="h-10 shrink-0 cursor-pointer disabled:cursor-not-allowed"
-          disabled={!parseTickerInput(input).length || isPending}
+          disabled={!parseUncheckedScreenerTickers(input).length || isPending}
           onClick={() => void submit()}
         >
           <Plus />

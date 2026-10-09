@@ -1,4 +1,3 @@
-import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -74,49 +73,6 @@ class EarningsWatchStore(RowDatabase):
                 )
                 """
             )
-
-    def add_ticker(
-        self,
-        ticker: str,
-        *,
-        now: datetime | None = None,
-    ) -> EarningsWatchRow:
-        normalized_ticker = require_ticker(ticker)
-        timestamp = utc_timestamp(now)
-        with self._connect() as connection:
-            cache_row = connection.execute(
-                """
-                SELECT earnings_date, provider_refresh_date
-                FROM earnings_calendar_cache
-                WHERE ticker = ?
-                """,
-                (normalized_ticker,),
-            ).fetchone()
-            connection.execute(
-                """
-                INSERT INTO earnings_watchlist (
-                    ticker,
-                    reviewed,
-                    earnings_date,
-                    provider_refresh_date,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, 0, ?, ?, ?, ?)
-                ON CONFLICT(ticker) DO NOTHING
-                """,
-                (
-                    normalized_ticker,
-                    cache_row["earnings_date"] if cache_row else None,
-                    cache_row["provider_refresh_date"] if cache_row else None,
-                    timestamp,
-                    timestamp,
-                ),
-            )
-        row = self.get_ticker(normalized_ticker)
-        if row is None:
-            raise RuntimeError("Earnings Watch ticker insert did not persist.")
-        return row
 
     def add_tickers(
         self,
@@ -410,17 +366,6 @@ class EarningsWatchStore(RowDatabase):
             outcome=row["outcome"],
             error_category=row["error_category"],
             next_eligible_retry_at=row["next_eligible_retry_at"],
-        )
-
-    def export_snapshot_json(self) -> str:
-        return json.dumps(
-            {
-                "watchlist": [row.__dict__ for row in self.list_watchlist()],
-                "calendar_cache": self.get_calendar_cache(),
-                "refresh_metadata": self.get_refresh_metadata().__dict__,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
         )
 
 def utc_timestamp(value: datetime | None) -> str:

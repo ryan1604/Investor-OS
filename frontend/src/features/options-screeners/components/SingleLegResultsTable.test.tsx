@@ -7,10 +7,9 @@ import {
   SingleLegResultsTable,
   type SingleLegColumn,
 } from '@/features/options-screeners/components/SingleLegResultsTable'
+import type { CashSecuredPutCandidate, CoveredCallCandidate } from '@/api/optionsScreeners'
 import {
   formatScreenerPercentage,
-  type CashSecuredPutCandidate,
-  type CoveredCallCandidate,
 } from '@/features/options-screeners/lib/screenerResults'
 
 const virtualCount = vi.hoisted(() => vi.fn())

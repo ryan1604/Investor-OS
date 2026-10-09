@@ -4,13 +4,12 @@ import {
   VirtualizedResultsTable,
   type ResultsTableColumn,
 } from '@/features/options-screeners/components/VirtualizedResultsTable'
+import type { CreditSpreadCandidate } from '@/api/optionsScreeners'
 import {
-  formatScreenerDelta,
   formatScreenerPercentage,
   formatScreenerPrice,
-  type CreditSpreadCandidate,
 } from '@/features/options-screeners/lib/screenerResults'
-import type { CsSortKey } from '@/features/options-screeners/OptionsScreenersProvider'
+import type { CsSortKey } from '@/features/options-screeners/hooks/useOptionsScreeners'
 
 type Column = ResultsTableColumn<CreditSpreadCandidate, CsSortKey>
 
@@ -50,7 +49,7 @@ const columns: Column[] = [
   {
     key: 'short_delta',
     label: 'Delta',
-    render: (row) => formatScreenerDelta(row.short_delta),
+    render: (row) => formatScreenerPrice(row.short_delta),
   },
   {
     key: 'net_bid',

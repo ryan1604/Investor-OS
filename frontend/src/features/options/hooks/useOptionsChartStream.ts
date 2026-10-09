@@ -43,7 +43,7 @@ export function useOptionsChartStream(
       setError(null)
     }
 
-    socket.onerror = () => {
+    const handleDisconnect = () => {
       if (isCleaningUp) {
         return
       }
@@ -54,16 +54,8 @@ export function useOptionsChartStream(
       })
     }
 
-    socket.onclose = () => {
-      if (isCleaningUp) {
-        return
-      }
-
-      setError({
-        ticker: activeTicker,
-        message: 'Options chart stream disconnected.',
-      })
-    }
+    socket.onerror = handleDisconnect
+    socket.onclose = handleDisconnect
 
     return () => {
       isCleaningUp = true
@@ -92,32 +84,4 @@ function isOlderThanLatestCandle(
 ) {
   const latestCandle = analysis.candles.at(-1)
   return latestCandle ? update.candle.date < latestCandle.date : false
-}
-
-export function mergeOptionsChartUpdate(
-  analysis: OptionsAnalysisResponse,
-  update: OptionsChartLiveMessage,
-): OptionsAnalysisResponse {
-  return {
-    ...analysis,
-    underlying_price: update.candle.close,
-    candles: replaceDatedPoint(analysis.candles, update.candle),
-    bollinger_bands: replaceDatedPoint(
-      analysis.bollinger_bands,
-      update.bollinger_band,
-    ),
-    rsi: replaceDatedPoint(analysis.rsi, update.rsi),
-  }
-}
-
-function replaceDatedPoint<T extends { date: string }>(
-  points: T[],
-  update: T,
-) {
-  const existingIndex = points.findIndex((point) => point.date === update.date)
-  if (existingIndex === -1) {
-    return [...points, update]
-  }
-
-  return points.map((point, index) => (index === existingIndex ? update : point))
 }

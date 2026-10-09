@@ -13,10 +13,10 @@ import type { PortfolioResponse } from '@/api/portfolio'
 import { Alert } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
-import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
+import { AccountSelector } from '@/components/AccountSelector'
 import { ExpirationTabs } from '@/features/options/components/ExpirationTabs'
 import { OptionChainTable } from '@/features/options/components/OptionChainTable'
-import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
+import { OptionStrategyTicket } from '@/features/orders/components/OptionStrategyTicket'
 import { OptionsChart } from '@/features/options/components/OptionsChart'
 import { RsiChart } from '@/features/options/components/RsiChart'
 import { StockTradeTicket } from '@/features/options/components/StockTradeTicket'
@@ -213,18 +213,18 @@ export function OptionsPage({
         </Alert>
       ) : null}
 
-      {analysis ? (
+      {analysis && initialAnalysis ? (
         <div className="flex min-w-0 flex-col gap-4">
           {hasAnalysisPriceData(analysis) ? (
             <>
               <OptionsChart
-                analysis={initialAnalysis ?? analysis}
+                analysis={initialAnalysis}
                 latestUpdate={latestChartUpdate}
                 overlays={overlays}
                 onChartReady={handlePriceChartReady}
               />
               <RsiChart
-                analysis={initialAnalysis ?? analysis}
+                analysis={initialAnalysis}
                 latestUpdate={latestChartUpdate}
                 onChartReady={handleRsiChartReady}
               />

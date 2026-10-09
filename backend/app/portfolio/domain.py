@@ -14,14 +14,6 @@ def percent(numerator: float | None, denominator: float | None) -> float | None:
     return numerator / abs(denominator) * 100
 
 
-def first_number(*values: float | None) -> float | None:
-    for value in values:
-        if value is not None:
-            return value
-
-    return None
-
-
 def merge_portfolio_rows(
     positions: list[PortfolioPosition],
     market_data: MarketData,

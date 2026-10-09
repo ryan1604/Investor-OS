@@ -1,5 +1,4 @@
 import asyncio
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -22,9 +21,8 @@ from app.schemas import (
     EarningsWatchRowStatus,
     EarningsWatchStateResponse,
 )
+from app.tickers import parse_ticker_tokens
 
-TOKEN_SEPARATOR = re.compile(r"[,\s]+")
-TICKER_PATTERN = re.compile(r"^[A-Z0-9.-]+$")
 REFRESH_COOLDOWN = timedelta(hours=1)
 
 
@@ -157,19 +155,7 @@ class EarningsWatchService:
 
 
 def parse_ticker_batch(raw_text: str) -> ParsedTickerBatch:
-    tickers: list[str] = []
-    seen: set[str] = set()
-    rejected: list[str] = []
-    for token in TOKEN_SEPARATOR.split(raw_text.strip()):
-        if not token:
-            continue
-        ticker = token.upper()
-        if not TICKER_PATTERN.fullmatch(ticker):
-            rejected.append(token)
-            continue
-        if ticker not in seen:
-            seen.add(ticker)
-            tickers.append(ticker)
+    tickers, rejected = parse_ticker_tokens(raw_text)
     return ParsedTickerBatch(tickers=tickers, rejected=rejected)
 
 

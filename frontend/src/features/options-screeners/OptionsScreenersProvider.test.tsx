@@ -4,10 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  OptionsScreenersProvider,
-  useOptionsScreeners,
-} from '@/features/options-screeners/OptionsScreenersProvider'
+import { OptionsScreenersProvider } from '@/features/options-screeners/OptionsScreenersProvider'
+import { useOptionsScreeners } from '@/features/options-screeners/hooks/useOptionsScreeners'
 
 const api = vi.hoisted(() => ({
   cancelOptionsScreenerScan: vi.fn(),
@@ -426,36 +424,36 @@ function Harness() {
   }
   return (
     <div>
-      <span>{state.cspTickers.join(',')}</span>
-      <span data-testid="cc-tickers">CC:{state.cspTickers.join(',')}</span>
-      <span data-testid="cs-tickers">CS:{state.csTickers.join(',')}</span>
+      <span>{state.screeners.csp.tickers.join(',')}</span>
+      <span data-testid="cc-tickers">CC:{state.screeners.cc.tickers.join(',')}</span>
+      <span data-testid="cs-tickers">CS:{state.screeners.cs.tickers.join(',')}</span>
       <span>{state.tickerSaveError}</span>
       <span>{state.activeJob?.progress_message}</span>
       <span>
-        {state.cspSnapshot?.candidates.map((item) => item.ticker).join(',')}
+        {state.screeners.csp.snapshot?.candidates.map((item) => item.ticker).join(',')}
       </span>
       <span>{state.activeJob?.candidates.map((item) => item.ticker).join(',')}</span>
-      <span>{state.cspFilterError}</span>
-      <span>CSP minimum:{state.cspFilters.minimum_dte}</span>
-      <span>{state.ccFilterError}</span>
-      <span>{state.csFilterError}</span>
+      <span>{state.screeners.csp.filterError}</span>
+      <span>CSP minimum:{state.screeners.csp.filters.minimum_dte}</span>
+      <span>{state.screeners.cc.filterError}</span>
+      <span>{state.screeners.cs.filterError}</span>
       <span>
         CC snapshot:
-        {state.ccSnapshot?.candidates.map((item) => item.ticker).join(',')}
+        {state.screeners.cc.snapshot?.candidates.map((item) => item.ticker).join(',')}
       </span>
-      <span>CC sort:{state.ccSort.key}:{state.ccSort.direction}</span>
+      <span>CC sort:{state.screeners.cc.sort.key}:{state.screeners.cc.sort.direction}</span>
       <span>
         CS snapshot:
-        {state.csSnapshot?.candidates.map((item) => item.ticker).join(',')}
+        {state.screeners.cs.snapshot?.candidates.map((item) => item.ticker).join(',')}
       </span>
-      <span>CS sort:{state.csSort.key}:{state.csSort.direction}</span>
+      <span>CS sort:{state.screeners.cs.sort.key}:{state.screeners.cs.sort.direction}</span>
       <label>
         minimum dte
         <input
           aria-label="minimum dte"
-          value={state.cspFilterDraft.minimum_dte}
+          value={state.screeners.csp.filterDraft.minimum_dte}
           onChange={(event) =>
-            state.updateCspFilterDraft('minimum_dte', event.target.value)
+            state.screeners.csp.updateFilterDraft('minimum_dte', event.target.value)
           }
         />
       </label>
@@ -463,9 +461,9 @@ function Harness() {
         cc minimum dte
         <input
           aria-label="cc minimum dte"
-          value={state.ccFilterDraft.minimum_dte}
+          value={state.screeners.cc.filterDraft.minimum_dte}
           onChange={(event) =>
-            state.updateCcFilterDraft('minimum_dte', event.target.value)
+            state.screeners.cc.updateFilterDraft('minimum_dte', event.target.value)
           }
         />
       </label>
@@ -473,31 +471,31 @@ function Harness() {
         cs minimum dte
         <input
           aria-label="cs minimum dte"
-          value={state.csFilterDraft.minimum_dte}
+          value={state.screeners.cs.filterDraft.minimum_dte}
           onChange={(event) =>
-            state.updateCsFilterDraft('minimum_dte', event.target.value)
+            state.screeners.cs.updateFilterDraft('minimum_dte', event.target.value)
           }
         />
       </label>
-      <button type="button" onClick={() => void state.addCspTickers(['MSFT'])}>
+      <button type="button" onClick={() => void state.screeners.csp.addTickers(['MSFT'])}>
         add ticker
       </button>
-      <button type="button" onClick={() => void state.addCsTickers(['TSLA'])}>
+      <button type="button" onClick={() => void state.screeners.cs.addTickers(['TSLA'])}>
         add cs ticker
       </button>
-      <button type="button" onClick={() => void state.startCspScan()}>
+      <button type="button" onClick={() => void state.screeners.csp.startScan()}>
         start scan
       </button>
       <button
         type="button"
-        onClick={() => state.toggleCsStrategyType('put_credit_spread')}
+        onClick={() => state.screeners.cs.toggleStrategyType('put_credit_spread')}
       >
         toggle put cs
       </button>
-      <button type="button" onClick={() => state.setCcSort('gain_percentage')}>
+      <button type="button" onClick={() => state.screeners.cc.setSort('gain_percentage')}>
         sort cc gain
       </button>
-      <button type="button" onClick={() => state.setCsSort('strategy')}>
+      <button type="button" onClick={() => state.screeners.cs.setSort('strategy')}>
         sort cs strategy
       </button>
       <button type="button" onClick={() => void state.cancelActiveScan()}>

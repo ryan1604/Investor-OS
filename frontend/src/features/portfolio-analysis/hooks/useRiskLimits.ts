@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-import { errorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import {
   fetchRiskLimits,
   saveRiskLimits,

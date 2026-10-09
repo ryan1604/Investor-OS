@@ -4,7 +4,6 @@ import logging
 import threading
 from collections.abc import Callable, Iterable
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from ibapi.client import EClient
 from ibapi.contract import Contract, ContractDetails
@@ -15,7 +14,6 @@ from app.ib.contracts import (
     clean_ib_int,
     clean_ib_price,
     format_ib_expiration,
-    market_data_contract,
     parse_ib_bar_date,
 )
 from app.ib.market_data_lines import MarketDataLineBudget
@@ -24,6 +22,7 @@ from app.options.domain import OptionMetadata
 from app.options.store import CompletedDailyBar
 from app.portfolio.domain import percent
 from app.schemas import PortfolioPosition
+from app.sessions import US_MARKET_TIME_ZONE
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +58,6 @@ ACCOUNT_VALUE_KEYS = {
 }
 ACCOUNT_SUMMARY_TAGS = ",".join(sorted(ACCOUNT_VALUE_KEYS))
 LEDGER_TOTAL_CASH_BALANCE_TAG = "TotalCashBalance"
-US_MARKET_TIME_ZONE = ZoneInfo("America/New_York")
 
 
 def completed_daily_bar(ticker: str, bar) -> CompletedDailyBar | None:

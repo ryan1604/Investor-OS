@@ -153,12 +153,5 @@ class OutstandingRequestLimiter:
 
 
 def contract_details_limiter(app) -> OutstandingRequestLimiter:
-    """Return the app's shared limiter, or an unlimited one for apps without it."""
-    limiter = getattr(app, "contract_details_slots", None)
-    if limiter is None:
-        limiter = OutstandingRequestLimiter(None)
-        try:
-            app.contract_details_slots = limiter
-        except AttributeError:
-            pass
-    return limiter
+    """Return the app's shared outstanding-request limiter."""
+    return app.contract_details_slots

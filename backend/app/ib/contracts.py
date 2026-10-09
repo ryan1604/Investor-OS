@@ -98,22 +98,13 @@ def us_option_universe_contract(
     expiration: str,
     right: str,
 ) -> Contract:
-    contract = us_option_contract(
+    return us_option_contract(
         ticker,
         expiration=expiration,
         strike=0,
         right=right,
     )
-    return contract
 
 
-def us_put_option_universe_contract(
-    ticker: str,
-    *,
-    expiration: str,
-) -> Contract:
-    return us_option_universe_contract(
-        ticker,
-        expiration=expiration,
-        right="P",
-    )
+def option_right_code(right: str) -> str:
+    return {"CALL": "C", "PUT": "P"}.get(right, right)

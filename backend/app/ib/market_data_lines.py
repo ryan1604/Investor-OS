@@ -138,16 +138,6 @@ class MarketDataLineBudget:
             self.condition.notify_all()
 
 
-UNLIMITED_MARKET_DATA_LINES = 1_000_000
-
-
 def market_data_line_budget(app) -> MarketDataLineBudget:
-    """Return the app's shared budget, or an unlimited one for apps without it."""
-    budget = getattr(app, "market_data_lines", None)
-    if budget is None:
-        budget = MarketDataLineBudget(UNLIMITED_MARKET_DATA_LINES)
-        try:
-            app.market_data_lines = budget
-        except AttributeError:
-            pass
-    return budget
+    """Return the app's shared market-data budget."""
+    return app.market_data_lines

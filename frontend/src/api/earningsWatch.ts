@@ -1,8 +1,8 @@
 import { jsonRequest, requestJson, tickerPathSegment } from '@/api/client'
 
-export type EarningsWatchRowStatus = 'upcoming' | 'last_known' | 'no_date'
+type EarningsWatchRowStatus = 'upcoming' | 'last_known' | 'no_date'
 
-export type EarningsWatchRefreshStatus =
+type EarningsWatchRefreshStatus =
   | 'never_attempted'
   | 'refreshing'
   | 'succeeded'
@@ -32,11 +32,11 @@ export type EarningsWatchResponse = {
   refresh: EarningsWatchRefreshState
 }
 
-export type EarningsWatchStateResponse = {
+type EarningsWatchStateResponse = {
   rows: EarningsWatchRow[]
 }
 
-export type EarningsWatchAddTickersResponse = EarningsWatchStateResponse & {
+type EarningsWatchAddTickersResponse = EarningsWatchStateResponse & {
   added: string[]
   existing: string[]
   rejected: string[]

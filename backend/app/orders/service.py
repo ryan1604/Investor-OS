@@ -8,30 +8,23 @@ from threading import Event
 from typing import Protocol
 from uuid import uuid4
 
-from ibapi.contract import ComboLeg, Contract
+from ibapi.contract import Contract
 from ibapi.execution import ExecutionFilter
 from ibapi.order import Order
 
-from app.ib.contracts import us_equity_contract, us_option_contract
+from app.orders.errors import OrderServiceUnavailable, OrderServiceValidationError
 from app.orders.planning import (
-    PlannedOrder,
+    amend_order_request,
+    amended_ib_orders,
+    build_ib_order_plan,
     estimated_order_type,
-    ib_option_right,
-    limit_order,
-    modeled_order_quantity,
-    opposite_action,
-    option_strategy_exit_orders,
-    option_strategy_exit_quantity,
     order_summary,
-    stock_order,
-    stop_order,
+    validate_amendment_quantity,
 )
 from app.orders.reconciliation import (
     ACTIVE_ORDER_STATUSES,
     STALE_OPEN_ORDER_REASON,
     can_amend_raw_open_order,
-    combo_leg_descriptions,
-    combo_limit_price,
     completed_filled_quantity,
     completed_order_preview,
     completed_order_read_only_reason,
@@ -44,28 +37,20 @@ from app.orders.reconciliation import (
     normalize_completed_status,
     normalize_execution_time,
     normalize_ib_status,
-    normalized_action,
     normalized_execution_action,
-    normalized_option_right,
     normalized_reconciliation_status,
-    normalized_tif,
-    option_leg_details,
-    option_leg_from_contract,
     partial_ib_order_preview,
     pending_if_active,
-    positive_price,
     preview_with_account,
     read_only_reason,
     reconciled_execution_preview,
     reconstruct_execution_request,
+    reconstruct_open_order_request,
     status_only_preview,
-    whole_number,
 )
 from app.orders.store import OrderStore
 from app.schemas import (
     OrderAmendmentRequest,
-    OptionStrategyLegRequest,
-    OptionStrategyOrderRequest,
     OrderCancellationRequest,
     OrderPreviewResponse,
     OrderPreviewableRequest,
@@ -73,17 +58,8 @@ from app.schemas import (
     OrderStatus,
     OrderStatusUpdate,
     OrderSubmissionResponse,
-    StockOrderRequest,
     TERMINAL_ORDER_STATUSES,
 )
-
-
-class OrderServiceUnavailable(RuntimeError):
-    pass
-
-
-class OrderServiceValidationError(ValueError):
-    pass
 
 
 class IbOrderApp(Protocol):
@@ -142,13 +118,13 @@ class OrderService:
         self,
         app: IbOrderApp | None,
         *,
-        store: OrderStore | None = None,
+        store: OrderStore,
         subscriber_queue_size: int = 32,
     ) -> None:
         self.app = app
         self.store = store
         self.lock = threading.Lock()
-        loaded_orders = store.list_orders() if store else []
+        loaded_orders = store.list_orders()
         self.orders: dict[int, OrderRecord] = {
             record.order_id: pending_if_active(record) for record in loaded_orders
         }
@@ -171,18 +147,14 @@ class OrderService:
                 for record in self.orders.values()
                 if record.status in ACTIVE_ORDER_STATUSES
             ]
-            for record in pending_records:
-                self.orders[record.order_id] = record
-            self._persist_orders(pending_records)
-        if hasattr(app, "reqAutoOpenOrders"):
-            app.reqAutoOpenOrders(True)
+            self._save_orders(pending_records)
+        app.reqAutoOpenOrders(True)
         app.reqOpenOrders()
         with app.lock:
             req_id = app.next_execution_req_id
             app.next_execution_req_id += 1
         app.reqExecutions(req_id, ExecutionFilter())
-        if hasattr(app, "reqCompletedOrders"):
-            app.reqCompletedOrders(False)
+        app.reqCompletedOrders(False)
         for record in pending_records:
             self.broadcast(record)
 
@@ -244,9 +216,7 @@ class OrderService:
             ) from error
 
         with self.lock:
-            for record in records:
-                self.orders[record.order_id] = record
-            self._persist_orders(records)
+            self._save_orders(records)
 
         for record in records:
             self.broadcast(record)
@@ -347,9 +317,7 @@ class OrderService:
             if group_record.order_id == record.order_id
         )
         with self.lock:
-            for group_record in updated_records:
-                self.orders[group_record.order_id] = group_record
-            self._persist_orders(updated_records)
+            self._save_orders(updated_records)
         for group_record in updated_records:
             self.broadcast(group_record)
         return updated_record
@@ -431,8 +399,7 @@ class OrderService:
                     "updated_at": now,
                 }
             )
-            self.orders[order_id] = next_record
-            self._persist_order(next_record)
+            self._save_order(next_record)
 
         self.broadcast(next_record)
         return next_record
@@ -569,10 +536,7 @@ class OrderService:
                     "updated_at": utc_now(),
                 },
             )
-            with self.lock:
-                self.orders[order_id] = record
-                self._persist_order(record)
-            self.broadcast(record)
+            self._save_and_broadcast(record)
         if reconstructed is not None and is_reconciled_preview(record):
             preview = self.preview(reconstructed)
             record = record.model_copy(
@@ -588,10 +552,7 @@ class OrderService:
                     "updated_at": utc_now(),
                 },
             )
-            with self.lock:
-                self.orders[order_id] = record
-                self._persist_order(record)
-            self.broadcast(record)
+            self._save_and_broadcast(record)
         elif reconstructed is None and is_reconciled_preview(record):
             preview = partial_ib_order_preview(
                 order_id,
@@ -606,10 +567,7 @@ class OrderService:
                     "updated_at": utc_now(),
                 },
             )
-            with self.lock:
-                self.orders[order_id] = record
-                self._persist_order(record)
-            self.broadcast(record)
+            self._save_and_broadcast(record)
         if reconstructed is None:
             self._schedule_open_order_reconstruction(
                 order_id,
@@ -641,9 +599,7 @@ class OrderService:
                 if record.status in ACTIVE_ORDER_STATUSES
                 and record.order_id not in seen_order_ids
             ]
-            for record in stale_records:
-                self.orders[record.order_id] = record
-            self._persist_orders(stale_records)
+            self._save_orders(stale_records)
         for record in stale_records:
             self.broadcast(record)
 
@@ -672,9 +628,7 @@ class OrderService:
         action = normalized_execution_action(side)
         executed_at = normalize_execution_time(execution_time) or utc_now()
         with self.lock:
-            current = self._order_by_perm_id(perm_id) if perm_id is not None else None
-            if current is None and order_id:
-                current = self.orders.get(order_id)
+            current = self._order_by_perm_or_order_id(perm_id, order_id)
 
             if current is None:
                 record = self._execution_record(
@@ -724,8 +678,7 @@ class OrderService:
                         "updated_at": executed_at,
                     },
                 )
-                self.orders[record.order_id] = record
-                self._persist_order(record)
+                self._save_order(record)
 
         self.broadcast(record)
         return record
@@ -742,9 +695,7 @@ class OrderService:
         order_state,
     ) -> OrderRecord | None:
         status = normalize_completed_status(
-            getattr(order_state, "completedStatus", None)
-            or getattr(order_state, "status", None)
-            or "",
+            completed_order_status(order_state) or "",
         )
         if status is None:
             return None
@@ -759,9 +710,7 @@ class OrderService:
         )
         reconstructed = reconstruct_open_order_request(contract, order, self.app)
         with self.lock:
-            current = self._order_by_perm_id(perm_id) if perm_id is not None else None
-            if current is None and order_id:
-                current = self.orders.get(order_id)
+            current = self._order_by_perm_or_order_id(perm_id, order_id)
 
             if current is None:
                 record_order_id = execution_record_order_id(
@@ -787,8 +736,7 @@ class OrderService:
                     filled=completed_filled_quantity(status, order),
                     remaining=0,
                     completed_time=completed_at,
-                    completed_status=getattr(order_state, "completedStatus", None)
-                    or getattr(order_state, "status", None),
+                    completed_status=completed_order_status(order_state),
                     submitted_at=completed_at,
                     updated_at=completed_at,
                     preview=preview,
@@ -821,14 +769,12 @@ class OrderService:
                         ),
                         "account": account or current.account,
                         "completed_time": completed_at,
-                        "completed_status": getattr(order_state, "completedStatus", None)
-                        or getattr(order_state, "status", None),
+                        "completed_status": completed_order_status(order_state),
                         "updated_at": completed_at,
                         "preview": preview,
                     },
                 )
-            self.orders[record.order_id] = record
-            self._persist_order(record)
+            self._save_order(record)
 
         self.broadcast(record)
         return record
@@ -922,8 +868,7 @@ class OrderService:
             updated_at=now,
             preview=preview,
         )
-        self.orders[order_id] = record
-        self._persist_order(record)
+        self._save_order(record)
         return record
 
     def _order_by_perm_id(self, perm_id: int) -> OrderRecord | None:
@@ -931,6 +876,14 @@ class OrderService:
             if record.perm_id == perm_id:
                 return record
         return None
+
+    def _order_by_perm_or_order_id(
+        self, perm_id: int | None, order_id: int,
+    ) -> OrderRecord | None:
+        current = self._order_by_perm_id(perm_id) if perm_id is not None else None
+        if current is None and order_id:
+            current = self.orders.get(order_id)
+        return current
 
     def _order_by_execution_id(self, execution_id: str) -> OrderRecord | None:
         for record in self.orders.values():
@@ -996,8 +949,7 @@ class OrderService:
                         "updated_at": utc_now(),
                     },
                 )
-                self.orders[updated.order_id] = updated
-                self._persist_order(updated)
+                self._save_order(updated)
             self.broadcast(updated)
         finally:
             with self.lock:
@@ -1062,8 +1014,7 @@ class OrderService:
             updated_at=executed_at,
             preview=preview,
         )
-        self.orders[record.order_id] = record
-        self._persist_order(record)
+        self._save_order(record)
         return record
 
     def _move_order_record(self, record: OrderRecord, order_id: int) -> OrderRecord:
@@ -1075,9 +1026,8 @@ class OrderService:
         self.orders[order_id] = moved
         if snapshot is not None:
             self.open_order_snapshots[order_id] = snapshot
-        if self.store:
-            self.store.delete_order(record.order_id)
-            self.store.upsert_order(moved)
+        self.store.delete_order(record.order_id)
+        self.store.upsert_order(moved)
         return moved
 
     def _amend_reconciled_open_order(
@@ -1120,8 +1070,7 @@ class OrderService:
         )
         with self.lock:
             self.open_order_snapshots[record.order_id] = (contract, order)
-            self.orders[record.order_id] = updated_record
-            self._persist_order(updated_record)
+            self._save_order(updated_record)
         return updated_record
 
     def _amendment_group(self, record: OrderRecord) -> list[OrderRecord]:
@@ -1139,183 +1088,34 @@ class OrderService:
             )
         return [record, *children]
 
+    def _save_and_broadcast(self, record: OrderRecord) -> None:
+        with self.lock:
+            self._save_order(record)
+        self.broadcast(record)
+
+    def _save_order(self, record: OrderRecord) -> None:
+        """Update memory and persistence while the caller holds self.lock."""
+        self.orders[record.order_id] = record
+        self._persist_order(record)
+
+    def _save_orders(self, records: list[OrderRecord]) -> None:
+        """Save a whole batch while the caller holds self.lock."""
+        for record in records:
+            self.orders[record.order_id] = record
+        self._persist_orders(records)
+
     def _persist_order(self, record: OrderRecord) -> None:
-        if self.store is not None:
-            self.store.upsert_order(record)
+        self.store.upsert_order(record)
 
     def _persist_orders(self, records: list[OrderRecord]) -> None:
-        if self.store is not None:
-            self.store.upsert_orders(records)
+        self.store.upsert_orders(records)
 
 
-def build_ib_order(
-    request: StockOrderRequest | OptionStrategyOrderRequest,
-    app: IbOrderApp | None = None,
-) -> tuple[Contract, Order]:
-    planned_order = build_ib_order_plan(request, app)[0]
-    return planned_order.contract, planned_order.order
-
-
-def reconstruct_open_order_request(
-    contract: Contract,
-    order: Order,
-    app: IbOrderApp | None = None,
-) -> StockOrderRequest | OptionStrategyOrderRequest | None:
-    account = getattr(order, "account", "") or ""
-    action = normalized_action(getattr(order, "action", ""))
-    quantity = whole_number(getattr(order, "totalQuantity", None))
-    tif = normalized_tif(getattr(order, "tif", "DAY") or "DAY")
-    order_type = (getattr(order, "orderType", "") or "").upper()
-    sec_type = (getattr(contract, "secType", "") or "").upper()
-    symbol = (getattr(contract, "symbol", "") or "").upper()
-    if not account or action is None or quantity is None or tif is None or not symbol:
-        return None
-
-    if sec_type == "STK" and order_type in {"MKT", "LMT"}:
-        request = {
-            "account": account,
-            "ticker": symbol,
-            "action": action,
-            "quantity": quantity,
-            "order_type": "MARKET" if order_type == "MKT" else "LIMIT",
-            "time_in_force": tif,
-        }
-        if order_type == "LMT":
-            limit_price = positive_price(getattr(order, "lmtPrice", None))
-            if limit_price is None:
-                return None
-            request["limit_price"] = limit_price
-        return StockOrderRequest.model_validate(request)
-
-    if sec_type == "OPT" and order_type == "LMT":
-        limit_price = positive_price(getattr(order, "lmtPrice", None))
-        leg = option_leg_from_contract(contract, action, quantity)
-        if limit_price is None or leg is None:
-            return None
-        return OptionStrategyOrderRequest.model_validate(
-            {
-                "account": account,
-                "legs": [leg],
-                "limit_price": limit_price if action == "BUY" else -limit_price,
-                "time_in_force": tif,
-            },
-        )
-
-    if sec_type == "BAG" and order_type == "LMT":
-        limit_price = combo_limit_price(getattr(order, "lmtPrice", None))
-        legs = combo_legs_from_contract(contract, app)
-        if limit_price is None or not legs:
-            return None
-        signed_limit = (
-            limit_price if limit_price < 0 or action == "BUY" else -limit_price
-        )
-        return OptionStrategyOrderRequest.model_validate(
-            {
-                "account": account,
-                "legs": legs,
-                "strategy_quantity": quantity,
-                "limit_price": signed_limit,
-                "time_in_force": tif,
-            },
-        )
-
-    return None
-
-
-def combo_legs_from_contract(
-    contract: Contract,
-    app: IbOrderApp | None = None,
-) -> list[dict] | None:
-    legs = []
-    symbol = (getattr(contract, "symbol", "") or "").upper()
-    descriptions = combo_leg_descriptions(contract)
-    for index, combo_leg in enumerate(getattr(contract, "comboLegs", None) or []):
-        action = normalized_action(getattr(combo_leg, "action", ""))
-        ratio = whole_number(getattr(combo_leg, "ratio", None))
-        leg_contract = combo_leg_contract(contract, combo_leg, app)
-        details = option_leg_details(
-            leg_contract,
-            fallback_symbol=symbol,
-            fallback_description=(
-                descriptions[index] if index < len(descriptions) else None
-            ),
-        )
-        if (
-            action is None
-            or ratio is None
-            or details is None
-        ):
-            return None
-        legs.append(
-            {
-                "con_id": getattr(combo_leg, "conId", 0) or None,
-                "ticker": details["symbol"],
-                "expiration": details["expiration"],
-                "right": details["right"],
-                "strike": details["strike"],
-                "action": action,
-                "quantity": ratio,
-            },
-        )
-    return legs or None
-
-
-def combo_leg_contract(
-    combo_contract: Contract,
-    combo_leg: ComboLeg,
-    app: IbOrderApp | None,
-) -> Contract | ComboLeg:
-    has_details = (
-        normalized_option_right(getattr(combo_leg, "right", "")) is not None
-        and bool(
-            getattr(combo_leg, "expiration", "")
-            or getattr(combo_leg, "lastTradeDateOrContractMonth", "")
-        )
-        and positive_price(getattr(combo_leg, "strike", None)) is not None
-        and bool(getattr(combo_leg, "symbol", "") or getattr(combo_contract, "symbol", ""))
+def completed_order_status(order_state) -> str | None:
+    return (
+        getattr(order_state, "completedStatus", None)
+        or getattr(order_state, "status", None)
     )
-    con_id = getattr(combo_leg, "conId", 0) or 0
-    if has_details or app is None or not con_id:
-        return combo_leg
-    return resolve_contract_by_con_id(
-        app,
-        con_id,
-        exchange=getattr(combo_leg, "exchange", "") or "",
-        symbol=(getattr(combo_contract, "symbol", "") or "").upper(),
-    ) or combo_leg
-
-
-def resolve_contract_by_con_id(
-    app: IbOrderApp,
-    con_id: int,
-    *,
-    exchange: str,
-    symbol: str,
-) -> Contract | None:
-    with app.lock:
-        req_id = app.next_contract_details_req_id
-        app.next_contract_details_req_id += 1
-        app.contract_details[req_id] = []
-        ready = Event()
-        app.contract_details_ready_by_req_id[req_id] = ready
-
-    contract = Contract()
-    contract.conId = con_id
-    contract.secType = "OPT"
-    contract.exchange = exchange or "SMART"
-    contract.currency = "USD"
-    if symbol:
-        contract.symbol = symbol
-    app.reqContractDetails(req_id, contract)
-    completed = ready.wait(timeout=8)
-
-    with app.lock:
-        contract_details = app.contract_details.pop(req_id, [])
-        app.contract_details_ready_by_req_id.pop(req_id, None)
-
-    if not completed or not contract_details:
-        return None
-    return contract_details[0].contract
 
 
 def reserve_order_ids(app: IbOrderApp, count: int) -> int:
@@ -1327,216 +1127,6 @@ def reserve_order_ids(app: IbOrderApp, count: int) -> int:
             )
         app.next_order_id = first_order_id + count
     return first_order_id
-
-
-def amend_order_request(
-    current: StockOrderRequest | OptionStrategyOrderRequest,
-    amendment: OrderAmendmentRequest,
-) -> StockOrderRequest | OptionStrategyOrderRequest:
-    updates = {}
-    if amendment.time_in_force is not None:
-        updates["time_in_force"] = amendment.time_in_force
-
-    if current.order_kind == "stock":
-        if amendment.take_profit_price is not None or amendment.stop_loss_price is not None:
-            raise OrderServiceValidationError(
-                "Stock orders only support quantity, limit price, and time in force edits.",
-            )
-        if amendment.quantity is not None:
-            updates["quantity"] = amendment.quantity
-        if amendment.limit_price is not None:
-            if current.order_type != "LIMIT":
-                raise OrderServiceValidationError(
-                    "Only stock limit orders can edit limit price.",
-                )
-            updates["limit_price"] = amendment.limit_price
-        return current.model_copy(update=updates)
-
-    if amendment.limit_price is not None:
-        updates["limit_price"] = amendment.limit_price
-    if amendment.quantity is not None:
-        if len(current.legs) == 1:
-            updates["legs"] = [
-                current.legs[0].model_copy(update={"quantity": amendment.quantity}),
-            ]
-        else:
-            updates["strategy_quantity"] = amendment.quantity
-    if amendment.take_profit_price is not None:
-        updates["take_profit_price"] = amendment.take_profit_price
-    if amendment.stop_loss_price is not None:
-        updates["stop_loss_price"] = amendment.stop_loss_price
-    return current.model_copy(update=updates)
-
-
-def amended_ib_orders(
-    records: list[OrderRecord],
-    request: StockOrderRequest | OptionStrategyOrderRequest,
-    app: IbOrderApp | None,
-    amendment: OrderAmendmentRequest,
-) -> list[tuple[OrderRecord, Contract, Order]]:
-    if len(records) > 1:
-        plan = build_ib_order_plan(request, app)
-        if len(plan) != len(records):
-            raise OrderServiceValidationError(
-                "Linked order group is incomplete and cannot be amended safely.",
-            )
-        parent_id = records[0].order_id
-        planned_orders = []
-        for record, planned_order in zip(records, plan, strict=True):
-            planned_order.order.account = record.account
-            planned_order.order.tif = amendment.time_in_force or request.time_in_force
-            if record.parent_order_id is not None:
-                planned_order.order.parentId = parent_id
-            planned_orders.append((record, planned_order.contract, planned_order.order))
-        return planned_orders
-
-    record = records[0]
-    if request.order_kind == "stock" or record.parent_order_id is None:
-        contract, order = build_ib_order(request, app)
-        order.account = record.account
-        order.tif = amendment.time_in_force or request.time_in_force
-        return [(record, contract, order)]
-
-    contract, parent_order = option_strategy_parent_order(request, app)
-    exit_action = opposite_action(parent_order.action)
-    exit_quantity = option_strategy_exit_quantity(request)
-    if amendment.stop_loss_price is not None:
-        order = stop_order(exit_action, exit_quantity, amendment.stop_loss_price)
-        order.account = record.account
-        order.tif = amendment.time_in_force or request.time_in_force
-        order.parentId = record.parent_order_id
-        return [(record, contract, order)]
-    if amendment.take_profit_price is not None:
-        order = limit_order(
-            exit_action,
-            exit_quantity,
-            amendment.take_profit_price,
-        )
-        order.account = record.account
-        order.tif = amendment.time_in_force or request.time_in_force
-        order.parentId = record.parent_order_id
-        return [(record, contract, order)]
-    parent_order.account = record.account
-    parent_order.tif = amendment.time_in_force or request.time_in_force
-    parent_order.parentId = record.parent_order_id
-    return [(record, contract, parent_order)]
-
-
-def validate_amendment_quantity(
-    records: list[OrderRecord],
-    request: StockOrderRequest | OptionStrategyOrderRequest,
-) -> None:
-    quantity = modeled_order_quantity(request)
-    min_filled = max((record.filled for record in records), default=0)
-    if quantity < min_filled:
-        raise OrderServiceValidationError(
-            "Quantity cannot be reduced below the already-filled quantity.",
-        )
-
-
-def build_ib_order_plan(
-    request: StockOrderRequest | OptionStrategyOrderRequest,
-    app: IbOrderApp | None = None,
-) -> list[PlannedOrder]:
-    if request.order_kind == "stock":
-        return [PlannedOrder(us_equity_contract(request.ticker), stock_order(request))]
-
-    contract, parent_order = option_strategy_parent_order(request, app)
-    exit_orders = option_strategy_exit_orders(request, contract, parent_order.action)
-    if exit_orders:
-        parent_order.transmit = False
-        for exit_order in exit_orders[:-1]:
-            exit_order.order.transmit = False
-        exit_orders[-1].order.transmit = True
-        return [PlannedOrder(contract, parent_order), *exit_orders]
-
-    return [PlannedOrder(contract, parent_order)]
-
-
-def option_strategy_parent_order(
-    request: OptionStrategyOrderRequest,
-    app: IbOrderApp | None = None,
-) -> tuple[Contract, Order]:
-    if len(request.legs) == 1:
-        leg = request.legs[0]
-        contract = us_option_contract(
-            leg.ticker,
-            expiration=leg.expiration,
-            strike=leg.strike,
-            right=ib_option_right(leg.right),
-        )
-        if leg.con_id:
-            contract.conId = leg.con_id
-        order = limit_order(leg.action, leg.quantity, abs(request.limit_price))
-        return contract, order
-
-    contract = Contract()
-    first_leg = request.legs[0]
-    contract.symbol = first_leg.ticker
-    contract.secType = "BAG"
-    contract.exchange = "SMART"
-    contract.currency = "USD"
-    contract.comboLegs = []
-
-    for leg in request.legs:
-        combo_leg = ComboLeg()
-        combo_leg.conId = leg.con_id or resolve_option_con_id(app, leg)
-        combo_leg.ratio = leg.quantity
-        combo_leg.action = leg.action
-        combo_leg.exchange = "SMART"
-        contract.comboLegs.append(combo_leg)
-
-    net_action = "BUY" if request.limit_price >= 0 else "SELL"
-    order = limit_order(net_action, request.strategy_quantity, abs(request.limit_price))
-    return contract, order
-
-
-def resolve_option_con_id(app: IbOrderApp | None, leg) -> int:
-    if app is None:
-        raise OrderServiceValidationError(
-            "Option combo leg contract ids are unavailable.",
-        )
-
-    with app.lock:
-        req_id = app.next_contract_details_req_id
-        app.next_contract_details_req_id += 1
-        app.contract_details[req_id] = []
-        ready = Event()
-        app.contract_details_ready_by_req_id[req_id] = ready
-
-    app.reqContractDetails(
-        req_id,
-        us_option_contract(
-            leg.ticker,
-            expiration=leg.expiration,
-            strike=leg.strike,
-            right=ib_option_right(leg.right),
-        ),
-    )
-    completed = ready.wait(timeout=8)
-
-    with app.lock:
-        contract_details = app.contract_details.pop(req_id, [])
-        app.contract_details_ready_by_req_id.pop(req_id, None)
-
-    if not completed:
-        raise OrderServiceValidationError(
-            f"Option contract lookup timed out for {leg.ticker} {leg.expiration} "
-            f"{leg.strike:g} {leg.right}.",
-        )
-    if not contract_details:
-        raise OrderServiceValidationError(
-            f"Option contract is unavailable for {leg.ticker} {leg.expiration} "
-            f"{leg.strike:g} {leg.right}.",
-        )
-
-    con_id = getattr(contract_details[0].contract, "conId", 0)
-    if not con_id:
-        raise OrderServiceValidationError(
-            f"Option contract id is unavailable for {leg.ticker} {leg.expiration} "
-            f"{leg.strike:g} {leg.right}.",
-        )
-    return con_id
 
 
 def utc_now() -> str:

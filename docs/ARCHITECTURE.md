@@ -191,7 +191,7 @@ flowchart TD
 
 #### Portfolio Analysis Services
 
-* `backend/app/portfolio_analysis/` holds pure calculations tested without IB: `pricing.py` (Black-Scholes and IV solver), `pairing.py` (strategy groups), `exposure.py` (hybrid Greeks and aggregates), `stress.py` (stress grid), `margin.py` (Reg T estimate and distance to margin call), `realised.py` (NAV-based statistics), and `sessions.py` (New York session keys). IB access stays in `backend/app/ib/`.
+* `backend/app/portfolio_analysis/` holds pure calculations tested without IB: `pricing.py` (Black-Scholes and IV solver), `pairing.py` (strategy groups), `exposure.py` (hybrid Greeks and aggregates), `stress.py` (stress grid), `margin.py` (Reg T estimate and distance to margin call), and `realised.py` (NAV-based statistics). New York session keys are shared through `backend/app/sessions.py`. IB access stays in `backend/app/ib/`.
 * `service.py` builds one analysis per published portfolio snapshot in a worker thread, so the 3 s portfolio refresh is never blocked. Betas are read without IB calls; missing betas and SPY bars are fetched by one background thread, and the flagged 1.0 fallback shows until they arrive.
 * `beta.py` regresses up to 252 daily returns against SPY (at least 60) and caches each ticker's beta per US session. Overrides win over computed values.
 * `GET /portfolio/analysis?account=` returns one analysis. `WS /portfolio/analysis/ws?account=` streams it and accepts `{"account": ...}` to switch accounts; each connection registers an analysis viewer and releases it on disconnect.
@@ -202,7 +202,7 @@ flowchart TD
 
 * Options analysis orchestration lives in `backend/app/options/client.py`.
 * Options client provider construction lives in `backend/app/options/factory.py`.
-* Interactive Brokers Options providers live in `backend/app/ib/options.py`.
+* Interactive Brokers Options providers live in `backend/app/ib/`: chain metadata and chain snapshot/stream providers in `options.py`, daily bars in `daily_bars.py`, the screener provider in `option_scanner.py`, with shared contract lookups in `contract_lookup.py` and quote subscriptions in `option_quotes.py`.
 * Completed daily stock bars are cached in SQLite through `backend/app/options/store.py`.
 * Bollinger Band and RSI calculations are pure helpers in `backend/app/options/indicators.py`.
 * `/options/{ticker}/analysis` returns chart-ready daily candles, Bollinger Bands, RSI, and the latest underlying price.
@@ -253,7 +253,7 @@ flowchart TD
 
 #### Orders Services
 
-* Order preview, submission, cancellation, amendment, reconciliation, and status fan-out live in `backend/app/orders/service.py`.
+* Order preview, submission, cancellation, amendment, reconciliation, and status fan-out live in `backend/app/orders/service.py`. IB order building and amendment plans live in `planning.py`, open-order reconstruction in `reconciliation.py`, IB contract-id lookups in `ib_contracts.py`, and the service error types in `errors.py`.
 * Durable order records live in `backend/app/orders/store.py` using `data/orders.sqlite3`; the store preserves preview/request metadata, IB identifiers, editable status, fills, execution/completion metadata, and reconciliation state across backend restarts.
 * The order service depends on an explicit IB order interface: connected state, IB order IDs, placement, cancellation, open-order/execution/completed-order reconciliation, contract lookup, and submitted-order rejection callbacks.
 * `/orders/preview` returns confirmation-ready stock or option-strategy order details.

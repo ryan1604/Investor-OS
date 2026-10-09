@@ -4,15 +4,14 @@ import json
 from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 import httpx
 
+from app.sessions import US_MARKET_TIME_ZONE as NEW_YORK
 from app.tickers import require_ticker
 
 ALPHA_VANTAGE_EARNINGS_CALENDAR_URL = "https://www.alphavantage.co/query"
 ALPHA_VANTAGE_HORIZON = "3month"
-NEW_YORK = ZoneInfo("America/New_York")
 RATE_LIMIT_MARKERS = (
     "rate limit",
     "standard api rate limit",

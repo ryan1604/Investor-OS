@@ -24,14 +24,12 @@ import {
 } from '@/components/ui/dialog'
 import {
   ConfirmationPreview,
-  PreviewRow,
-  SelectField,
-} from '@/features/orders/lib/orderEntry'
-import { useOrderTicketFlow } from '@/features/orders/lib/orderTicketFlow'
-import {
   OrderTicketFooter,
+  PreviewRow,
   ReadOnlyTicketAccount,
-} from '@/features/options/components/OrderTicketParts'
+  SelectField,
+} from '@/features/orders/components/OrderEntryFormParts'
+import { useOrderTicketFlow } from '@/features/orders/hooks/useOrderTicketFlow'
 import {
   orderErrorMessage,
   parsePositiveInteger,

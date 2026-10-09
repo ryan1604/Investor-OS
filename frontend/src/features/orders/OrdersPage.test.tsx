@@ -237,6 +237,47 @@ describe('OrdersPage', () => {
     })
   })
 
+  it.each([
+    [undefined, undefined],
+    [undefined, null],
+    [null, undefined],
+    [null, null],
+  ])('allows editing an order with no exit prices (TP: %s, SL: %s)', (takeProfitPrice, stopLossPrice) => {
+    render(
+      <OrdersPage
+        {...ordersPageProps()}
+        orders={[
+          orderRecord({
+            order_id: 700,
+            status: 'working',
+            request: {
+              order_kind: 'option_strategy',
+              account: 'DU1234567',
+              limit_price: 1.25,
+              take_profit_price: takeProfitPrice,
+              stop_loss_price: stopLossPrice,
+              time_in_force: 'DAY',
+              legs: [
+                {
+                  ticker: 'AAPL',
+                  expiration: '2026-06-19',
+                  right: 'CALL',
+                  strike: 200,
+                  action: 'BUY',
+                  quantity: 1,
+                },
+              ],
+            },
+          }),
+        ]}
+      />,
+    )
+
+    expect(screen.queryByText('Linked exit orders are incomplete.')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^edit$/i }))
+    expect(screen.getByLabelText('Quantity 700')).toBeTruthy()
+  })
+
   it('does not show edit controls for non-editable reconciled orders', () => {
     render(
       <OrdersPage

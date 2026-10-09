@@ -3,10 +3,56 @@ import {
   jsonRequest,
   requestJson,
 } from '@/api/client'
-import type {
-  OptionContractIdentity,
-  ScreenerCandidate,
-} from '@/features/options-screeners/lib/screenerResults'
+
+type OptionContractIdentity = {
+  con_id: number | null
+  local_symbol: string | null
+}
+
+type SingleLegCandidate = {
+  ticker: string
+  annualized_return: number
+  stock_price: number
+  strike: number
+  expiration: string
+  dte: number
+  delta: number
+  bid: number
+  ask: number
+  contract: OptionContractIdentity
+}
+
+export type CashSecuredPutCandidate = SingleLegCandidate & {
+  strategy: 'csp'
+  discount_percentage: number
+}
+
+export type CoveredCallCandidate = SingleLegCandidate & {
+  strategy: 'cc'
+  gain_percentage: number
+}
+
+export type CreditSpreadCandidate = {
+  strategy: 'put_credit_spread' | 'call_credit_spread'
+  ticker: string
+  annualized_return: number
+  stock_price: number
+  short_strike: number
+  long_strike: number
+  expiration: string
+  dte: number
+  short_delta: number
+  net_bid: number
+  net_ask: number
+  distance_percentage: number
+  short_contract: OptionContractIdentity
+  long_contract: OptionContractIdentity
+}
+
+export type ScreenerCandidate =
+  | CashSecuredPutCandidate
+  | CoveredCallCandidate
+  | CreditSpreadCandidate
 
 export type OptionsScreenerTickerList = 'csp_cc' | 'cs'
 export type OptionsScreener = 'csp' | 'cc' | 'cs'
@@ -29,21 +75,23 @@ export type CreditSpreadScreenerFilters = OptionsScreenerFilters & {
   spread_widths: CreditSpreadWidth[]
 }
 
-export type OptionsScreenerSettingsResponse = {
-  ticker_lists: Record<OptionsScreenerTickerList, string[]>
-  filters: {
-    csp: OptionsScreenerFilters
-    cc: OptionsScreenerFilters
-    cs: CreditSpreadScreenerFilters
-  }
+export type OptionsScreenerFilterMap = {
+  csp: OptionsScreenerFilters
+  cc: OptionsScreenerFilters
+  cs: CreditSpreadScreenerFilters
 }
 
-export type OptionsScreenerTickerListResponse = {
+export type OptionsScreenerSettingsResponse = {
+  ticker_lists: Record<OptionsScreenerTickerList, string[]>
+  filters: OptionsScreenerFilterMap
+}
+
+type OptionsScreenerTickerListResponse = {
   list_name: OptionsScreenerTickerList
   tickers: string[]
 }
 
-export type OptionsScreenerJobStatus =
+type OptionsScreenerJobStatus =
   | 'active'
   | 'completed'
   | 'cancelled'
@@ -103,7 +151,7 @@ export type OptionsScreenerScanEvent = {
   job: OptionsScreenerScanJob
 }
 
-export type OptionsScreenerQuoteRefreshRequest = {
+type OptionsScreenerQuoteRefreshRequest = {
   ticker: string
   expiration: string
   strike: number
@@ -120,7 +168,7 @@ export type OptionsScreenerQuoteRefreshResponse =
     refreshed_at: string
   }
 
-export type OptionsScreenerSpreadQuoteRefreshRequest = {
+type OptionsScreenerSpreadQuoteRefreshRequest = {
   strategy: CreditSpreadStrategy
   ticker: string
   expiration: string
@@ -167,31 +215,21 @@ export async function replaceOptionsScreenerTickerList(
     `${settingsPath}/ticker-lists/${listName}`,
     'PUT',
     { tickers },
-    'Options screener settings',
+    'Options screener ticker list',
     signal,
   )
 }
 
-export async function saveOptionsScreenerFilters(
-  screener: 'csp' | 'cc',
-  filters: OptionsScreenerFilters,
-  signal?: AbortSignal,
-): Promise<OptionsScreenerFilters>
-export async function saveOptionsScreenerFilters(
-  screener: 'cs',
-  filters: CreditSpreadScreenerFilters,
-  signal?: AbortSignal,
-): Promise<CreditSpreadScreenerFilters>
-export async function saveOptionsScreenerFilters(
-  screener: OptionsScreener,
-  filters: OptionsScreenerFilters | CreditSpreadScreenerFilters,
+export async function saveOptionsScreenerFilters<Screener extends OptionsScreener>(
+  screener: Screener,
+  filters: OptionsScreenerFilterMap[Screener],
   signal?: AbortSignal,
 ) {
-  return jsonRequest<OptionsScreenerFilters | CreditSpreadScreenerFilters>(
+  return jsonRequest<OptionsScreenerFilterMap[Screener]>(
     `${settingsPath}/filters/${screener}`,
     'PUT',
     filters,
-    'Options screener settings',
+    'Options screener filters',
     signal,
   )
 }
@@ -199,7 +237,7 @@ export async function saveOptionsScreenerFilters(
 export async function fetchOptionsScreenerScanState(signal?: AbortSignal) {
   return requestJson<OptionsScreenerScanState>(
     `${screenersPath}/state`,
-    'Options screener settings',
+    'Options screener scan state',
     { signal },
   )
 }
@@ -210,7 +248,7 @@ export async function startOptionsScreenerScan(
 ) {
   return requestJson<OptionsScreenerScanJob>(
     `${screenersPath}/scans/${screener}`,
-    'Options screener settings',
+    'Options screener scan',
     { method: 'POST', signal },
   )
 }
@@ -221,7 +259,7 @@ export async function cancelOptionsScreenerScan(
 ) {
   return requestJson<OptionsScreenerScanJob>(
     `${screenersPath}/scans/${encodeURIComponent(jobId)}/cancel`,
-    'Options screener settings',
+    'Options screener scan cancellation',
     { method: 'POST', signal },
   )
 }
@@ -234,7 +272,7 @@ export async function refreshOptionsScreenerQuote(
     `${screenersPath}/quotes/refresh`,
     'POST',
     quoteRequest,
-    'Options screener settings',
+    'Options screener quote refresh',
     signal,
   )
 }
@@ -247,7 +285,7 @@ export async function refreshOptionsScreenerSpreadQuote(
     `${screenersPath}/quotes/refresh-spread`,
     'POST',
     quoteRequest,
-    'Options screener settings',
+    'Options screener spread quote refresh',
     signal,
   )
 }

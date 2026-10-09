@@ -15,12 +15,12 @@ export type DayTradingRow = {
   updated_at: string
 }
 
-export type DayTradingDay = {
+type DayTradingDay = {
   date: string
   trades: DayTradingRow[]
 }
 
-export type DayTradingMonthResponse = {
+type DayTradingMonthResponse = {
   month: string
   days: DayTradingDay[]
 }
@@ -34,23 +34,21 @@ export type DayTradingRowRequest = {
   fee?: number | null
 }
 
-export type DayTradingRowsReplaceRequest = {
+type DayTradingRowsReplaceRequest = {
   trades: DayTradingRowRequest[]
 }
 
-function dayTradingTrackerPath() {
-  return '/day-trading-tracker'
-}
+const dayTradingTrackerPath = '/day-trading-tracker'
 
 export function dayTradingMonthPath(month: string) {
-  return `${dayTradingTrackerPath()}/months/${encodePathSegment(
+  return `${dayTradingTrackerPath}/months/${encodePathSegment(
     month,
     'Month is required.',
   )}`
 }
 
 export function dayTradingDateTradesPath(date: string) {
-  return `${dayTradingTrackerPath()}/days/${encodePathSegment(
+  return `${dayTradingTrackerPath}/days/${encodePathSegment(
     date,
     'Date is required.',
   )}/trades`

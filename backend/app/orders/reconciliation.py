@@ -3,10 +3,12 @@ from __future__ import annotations
 import re
 import zlib
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
-from ibapi.contract import Contract
+from ibapi.contract import ComboLeg, Contract
 from ibapi.order import Order
 
+from app.orders.ib_contracts import resolve_contract_by_con_id
 from app.schemas import (
     OptionStrategyOrderRequest,
     OrderPreviewResponse,
@@ -14,6 +16,9 @@ from app.schemas import (
     OrderStatus,
     StockOrderRequest,
 )
+
+if TYPE_CHECKING:
+    from app.orders.service import IbOrderApp
 
 ACTIVE_ORDER_STATUSES = {"submitted", "working", "partially_filled"}
 STALE_OPEN_ORDER_REASON = "Order is not in the latest IB open-order snapshot."
@@ -580,3 +585,132 @@ def pending_if_active(record: OrderRecord) -> OrderRecord:
     if record.status not in ACTIVE_ORDER_STATUSES:
         return record
     return record.model_copy(update={"reconciliation_status": "pending"})
+
+
+def reconstruct_open_order_request(
+    contract: Contract,
+    order: Order,
+    app: IbOrderApp | None = None,
+) -> StockOrderRequest | OptionStrategyOrderRequest | None:
+    account = getattr(order, "account", "") or ""
+    action = normalized_action(getattr(order, "action", ""))
+    quantity = whole_number(getattr(order, "totalQuantity", None))
+    tif = normalized_tif(getattr(order, "tif", "DAY") or "DAY")
+    order_type = (getattr(order, "orderType", "") or "").upper()
+    sec_type = (getattr(contract, "secType", "") or "").upper()
+    symbol = (getattr(contract, "symbol", "") or "").upper()
+    if not account or action is None or quantity is None or tif is None or not symbol:
+        return None
+
+    if sec_type == "STK" and order_type in {"MKT", "LMT"}:
+        request = {
+            "account": account,
+            "ticker": symbol,
+            "action": action,
+            "quantity": quantity,
+            "order_type": "MARKET" if order_type == "MKT" else "LIMIT",
+            "time_in_force": tif,
+        }
+        if order_type == "LMT":
+            limit_price = positive_price(getattr(order, "lmtPrice", None))
+            if limit_price is None:
+                return None
+            request["limit_price"] = limit_price
+        return StockOrderRequest.model_validate(request)
+
+    if sec_type == "OPT" and order_type == "LMT":
+        limit_price = positive_price(getattr(order, "lmtPrice", None))
+        leg = option_leg_from_contract(contract, action, quantity)
+        if limit_price is None or leg is None:
+            return None
+        return OptionStrategyOrderRequest.model_validate(
+            {
+                "account": account,
+                "legs": [leg],
+                "limit_price": limit_price if action == "BUY" else -limit_price,
+                "time_in_force": tif,
+            },
+        )
+
+    if sec_type == "BAG" and order_type == "LMT":
+        limit_price = combo_limit_price(getattr(order, "lmtPrice", None))
+        legs = combo_legs_from_contract(contract, app)
+        if limit_price is None or not legs:
+            return None
+        signed_limit = (
+            limit_price if limit_price < 0 or action == "BUY" else -limit_price
+        )
+        return OptionStrategyOrderRequest.model_validate(
+            {
+                "account": account,
+                "legs": legs,
+                "strategy_quantity": quantity,
+                "limit_price": signed_limit,
+                "time_in_force": tif,
+            },
+        )
+
+    return None
+
+
+def combo_legs_from_contract(
+    contract: Contract,
+    app: IbOrderApp | None = None,
+) -> list[dict] | None:
+    legs = []
+    symbol = (getattr(contract, "symbol", "") or "").upper()
+    descriptions = combo_leg_descriptions(contract)
+    for index, combo_leg in enumerate(getattr(contract, "comboLegs", None) or []):
+        action = normalized_action(getattr(combo_leg, "action", ""))
+        ratio = whole_number(getattr(combo_leg, "ratio", None))
+        leg_contract = combo_leg_contract(contract, combo_leg, app)
+        details = option_leg_details(
+            leg_contract,
+            fallback_symbol=symbol,
+            fallback_description=(
+                descriptions[index] if index < len(descriptions) else None
+            ),
+        )
+        if (
+            action is None
+            or ratio is None
+            or details is None
+        ):
+            return None
+        legs.append(
+            {
+                "con_id": getattr(combo_leg, "conId", 0) or None,
+                "ticker": details["symbol"],
+                "expiration": details["expiration"],
+                "right": details["right"],
+                "strike": details["strike"],
+                "action": action,
+                "quantity": ratio,
+            },
+        )
+    return legs or None
+
+
+def combo_leg_contract(
+    combo_contract: Contract,
+    combo_leg: ComboLeg,
+    app: IbOrderApp | None,
+) -> Contract | ComboLeg:
+    has_details = (
+        normalized_option_right(getattr(combo_leg, "right", "")) is not None
+        and bool(
+            getattr(combo_leg, "expiration", "")
+            or getattr(combo_leg, "lastTradeDateOrContractMonth", "")
+        )
+        and positive_price(getattr(combo_leg, "strike", None)) is not None
+        and bool(getattr(combo_leg, "symbol", "") or getattr(combo_contract, "symbol", ""))
+    )
+    con_id = getattr(combo_leg, "conId", 0) or 0
+    if has_details or app is None or not con_id:
+        return combo_leg
+    return resolve_contract_by_con_id(
+        app,
+        con_id,
+        exchange=getattr(combo_leg, "exchange", "") or "",
+        symbol=(getattr(combo_contract, "symbol", "") or "").upper(),
+    ) or combo_leg

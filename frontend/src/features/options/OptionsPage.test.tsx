@@ -84,7 +84,7 @@ vi.mock('@/features/options/components/OptionChainTable', () => ({
   ),
 }))
 
-vi.mock('@/features/options/components/OptionStrategyTicket', () => ({
+vi.mock('@/features/orders/components/OptionStrategyTicket', () => ({
   OptionStrategyTicket: ({ open }: { open: boolean }) =>
     open ? <div>Option strategy drawer</div> : null,
 }))

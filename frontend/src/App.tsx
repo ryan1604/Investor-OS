@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ReactNode } from 'react'
 
 import { AppSidebar } from '@/components/AppSidebar'
 import { Toaster } from '@/components/ui/sonner'
@@ -18,20 +18,7 @@ import { usePortfolio } from '@/features/portfolio/hooks/usePortfolio'
 import { portfolioAccountIds } from '@/features/portfolio/hooks/useSelectedAccount'
 import { RankStocksPage } from '@/features/rank-stocks/RankStocksPage'
 import { StockAnalysisPage } from '@/features/stock-analysis/StockAnalysisPage'
-
-export type AppPage =
-  | 'portfolio'
-  | 'portfolio-analysis'
-  | 'options'
-  | 'csp-screener'
-  | 'cc-screener'
-  | 'cs-screener'
-  | 'options-trade-tracker'
-  | 'day-trading-tracker'
-  | 'orders'
-  | 'stock-analysis'
-  | 'earnings-watch'
-  | 'rank-stocks'
+import type { AppPage } from '@/lib/pages'
 
 function App() {
   const [activePage, setActivePage] = useState<AppPage>('portfolio')
@@ -40,6 +27,7 @@ function App() {
     string | null
   >(null)
   const portfolioState = usePortfolio()
+  const ordersState = useOrders(hasVisitedOptions || activePage === 'orders')
   const accounts = useMemo(
     () => portfolioAccountIds(portfolioState.portfolio),
     [portfolioState.portfolio],
@@ -68,6 +56,55 @@ function App() {
     setActivePage(page)
   }
 
+  const pageViews: Record<AppPage, ReactNode> = {
+    options: null,
+    portfolio: (
+      <PortfolioPage
+        portfolioState={portfolioState}
+        selectedAccount={selectedAccount}
+        onSelectedAccountChange={setSelectedAccount}
+      />
+    ),
+    'portfolio-analysis': (
+      <PortfolioAnalysisPage
+        accounts={accounts}
+        selectedAccount={tradingAccount}
+        onSelectedAccountChange={setSelectedAccount}
+      />
+    ),
+    'csp-screener': (
+      <CspScreenerPage
+        portfolio={portfolioState.portfolio}
+        selectedAccount={tradingAccount}
+      />
+    ),
+    'cc-screener': (
+      <CcScreenerPage
+        portfolio={portfolioState.portfolio}
+        selectedAccount={tradingAccount}
+      />
+    ),
+    'cs-screener': (
+      <CsScreenerPage
+        portfolio={portfolioState.portfolio}
+        selectedAccount={tradingAccount}
+      />
+    ),
+    orders: (
+      <OrdersRoute
+        accounts={accounts}
+        ordersState={ordersState}
+        selectedAccount={tradingAccount}
+        onSelectedAccountChange={setSelectedAccount}
+      />
+    ),
+    'options-trade-tracker': <OptionsTradeTrackerPage />,
+    'day-trading-tracker': <DayTradingTrackerPage />,
+    'stock-analysis': <StockAnalysisPage />,
+    'earnings-watch': <EarningsWatchPage />,
+    'rank-stocks': <RankStocksPage />,
+  }
+
   return (
     <OptionsScreenersProvider>
       <div className="flex min-h-svh w-full items-stretch">
@@ -84,56 +121,14 @@ function App() {
                 accounts={accounts}
                 isActive={activePage === 'options'}
                 portfolioState={portfolioState}
+                ordersState={ordersState}
                 selectedAccount={tradingAccount}
                 onSelectedAccountChange={setSelectedAccount}
               />
             </div>
           ) : null}
 
-          {activePage === 'options' ? null : activePage === 'portfolio' ? (
-            <PortfolioPage
-              portfolioState={portfolioState}
-              selectedAccount={selectedAccount}
-              onSelectedAccountChange={setSelectedAccount}
-            />
-          ) : activePage === 'portfolio-analysis' ? (
-            <PortfolioAnalysisPage
-              accounts={accounts}
-              selectedAccount={tradingAccount}
-              onSelectedAccountChange={setSelectedAccount}
-            />
-          ) : activePage === 'csp-screener' ? (
-            <CspScreenerPage
-              portfolio={portfolioState.portfolio}
-              selectedAccount={tradingAccount}
-            />
-          ) : activePage === 'cc-screener' ? (
-            <CcScreenerPage
-              portfolio={portfolioState.portfolio}
-              selectedAccount={tradingAccount}
-            />
-          ) : activePage === 'cs-screener' ? (
-            <CsScreenerPage
-              portfolio={portfolioState.portfolio}
-              selectedAccount={tradingAccount}
-            />
-          ) : activePage === 'orders' ? (
-            <OrdersRoute
-              accounts={accounts}
-              selectedAccount={tradingAccount}
-              onSelectedAccountChange={setSelectedAccount}
-            />
-          ) : activePage === 'options-trade-tracker' ? (
-            <OptionsTradeTrackerPage />
-          ) : activePage === 'day-trading-tracker' ? (
-            <DayTradingTrackerPage />
-          ) : activePage === 'stock-analysis' ? (
-            <StockAnalysisPage />
-          ) : activePage === 'earnings-watch' ? (
-            <EarningsWatchPage />
-          ) : (
-            <RankStocksPage />
-          )}
+          {pageViews[activePage]}
         </main>
         <Toaster />
       </div>
@@ -143,18 +138,20 @@ function App() {
 
 function OptionsRoute({
   accounts,
+  ordersState,
   isActive,
   portfolioState,
   selectedAccount,
   onSelectedAccountChange,
 }: {
   accounts: string[]
+  ordersState: ReturnType<typeof useOrders>
   isActive: boolean
   portfolioState: ReturnType<typeof usePortfolio>
   selectedAccount: string | null
   onSelectedAccountChange: (account: string) => void
 }) {
-  const { orders } = useOrders()
+  const { orders } = ordersState
 
   return (
     <OptionsPage
@@ -170,14 +167,16 @@ function OptionsRoute({
 
 function OrdersRoute({
   accounts,
+  ordersState,
   selectedAccount,
   onSelectedAccountChange,
 }: {
   accounts: string[]
+  ordersState: ReturnType<typeof useOrders>
   selectedAccount: string | null
   onSelectedAccountChange: (account: string) => void
 }) {
-  const { orders, warning } = useOrders()
+  const { orders, warning } = ordersState
 
   return (
     <OrdersPage

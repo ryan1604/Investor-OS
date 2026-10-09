@@ -3,9 +3,9 @@ import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip } from '@/components/ui/chart'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { useNavHistory } from '../hooks/useNavHistory'
-import { availableNavRanges, currencySegments, navPoints, navDate, navRangeRows, type NavRange } from '../lib/navChart'
-import { formatCompactCurrency, formatTooltipCurrency } from '../lib/chartValues'
+import { useNavHistory } from '@/features/portfolio/hooks/useNavHistory'
+import { availableNavRanges, currencySegments, navPoints, navDate, navRangeRows, type NavRange } from '@/features/portfolio/lib/navChart'
+import { formatCompactCurrency, formatOptionalCurrency } from '@/lib/format'
 
 const syncLabels = { unconfigured: 'Automatic updates not configured', pending: 'Waiting for the first report', syncing: 'Updating from IBKR…', current: 'Up to date', stale: 'Waiting for a newer closing report', failed: 'Update failed · saved history shown' }
 
@@ -44,7 +44,7 @@ export function DailyNavChart({ account }: { account: string | undefined }) {
       {segments.map(segment => {
         const currency = segment[0].currency
         const points = navPoints(segment, percentage)
-        const formatValue = (value: number) => percentage ? `${value.toFixed(2)}%` : `${formatTooltipCurrency(value, currency)} ${currency}`
+        const formatValue = (value: number) => percentage ? `${value.toFixed(2)}%` : `${formatOptionalCurrency(value, currency)} ${currency}`
         return <section key={segment[0].report_date} aria-label={`Daily NAV in ${currency}`}>
           {data?.currency_changed && <p className="mt-3 text-sm">{currency} · {navDate(segment[0].report_date)} – {navDate(segment.at(-1)!.report_date)}</p>}
           {!points.length ? <p className="py-16 text-center text-sm text-muted-foreground">Percentage change requires a positive starting NAV.</p> : <ChartContainer config={{ value: { label: 'Net account value', color: 'var(--chart-portfolio-value)' } }} className="h-80 w-full" initialDimension={{ width: 900, height: 320 }}>

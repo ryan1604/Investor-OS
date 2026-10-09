@@ -2,11 +2,12 @@ import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from 'recharts'
 import { Pencil } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
+import { formatCompactCurrency, formatOptionalCurrency } from '@/lib/format'
 import type {
   PortfolioChartValue,
   PortfolioChartValueRequest,
 } from '@/api/portfolioChartValues'
-import { errorMessage } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import {
@@ -24,8 +25,6 @@ import {
   PortfolioChartValuesEditor,
 } from '@/features/portfolio/components/PortfolioChartValuesEditor'
 import {
-  formatCompactCurrency,
-  formatTooltipCurrency,
   normalizePortfolioChartValues,
   parsePortfolioChartValueDraftRows,
   type PortfolioChartValueDraftRow,
@@ -245,7 +244,7 @@ function MetricBarChart({
             content={
               <ChartTooltipContent
                 formatter={(value) =>
-                  formatTooltipCurrency(Number(value), currency)
+                  formatOptionalCurrency(Number(value), currency)
                 }
               />
             }

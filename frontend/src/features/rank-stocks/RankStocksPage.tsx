@@ -1,13 +1,15 @@
 import { RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { formatReturnPercent } from '@/lib/format'
 import {
   fetchStockAnalysisModels,
   refreshStockAnalysisCurrentPrices,
   type StockAnalysisModel,
   type StockAnalysisPriceRefreshResult,
 } from '@/api/stockAnalysis'
-import { errorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import { Alert } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -21,24 +23,12 @@ import {
 } from '@/components/ui/table'
 import {
   SCENARIO_KEYS,
-  calculateValuationModel,
-  stockAnalysisValuationModelFromPayload,
   type ScenarioKey,
-  type SharePriceRowKey,
 } from '@/features/stock-analysis/lib/valuationModel'
 
-const REFRESH_INTERVAL_MS = 15 * 60 * 1000
+import { buildRankings, METRICS, type RankingRow } from '@/features/rank-stocks/lib/rankings'
 
-const METRICS: {
-  key: SharePriceRowKey
-  label: string
-}[] = [
-  { key: 'sharePriceBasedOnPriceToSales', label: 'P/S' },
-  { key: 'sharePriceEstimateLow', label: 'P/E' },
-  { key: 'sharePriceBasedOnPriceToEbitda', label: 'P/EBITDA' },
-  { key: 'sharePriceBasedOnPriceToOperatingCashFlow', label: 'P/OCF' },
-  { key: 'sharePriceBasedOnPriceToFreeCashFlow', label: 'P/FCF' },
-]
+const REFRESH_INTERVAL_MS = 15 * 60 * 1000
 
 const SCENARIO_LABELS: Record<ScenarioKey, string> = {
   bull: 'Bull',
@@ -47,11 +37,6 @@ const SCENARIO_LABELS: Record<ScenarioKey, string> = {
 }
 
 type RefreshStatus = 'idle' | 'refreshing' | 'complete' | 'error'
-
-type RankingRow = {
-  ticker: string
-  returnPercent: number | null
-}
 
 export function RankStocksPage() {
   const [models, setModels] = useState<StockAnalysisModel[]>([])
@@ -261,55 +246,6 @@ function RefreshBadge({ status }: { status: RefreshStatus }) {
   return null
 }
 
-function buildRankings(models: StockAnalysisModel[]) {
-  return Object.fromEntries(
-    SCENARIO_KEYS.map((scenario) => [
-      scenario,
-      Object.fromEntries(
-        METRICS.map((metric) => [
-          metric.key,
-          models
-            .map((model) => rankingRow(model, scenario, metric.key))
-            .sort(compareRankingRows),
-        ]),
-      ),
-    ]),
-  ) as Record<ScenarioKey, Record<SharePriceRowKey, RankingRow[]>>
-}
-
-function rankingRow(
-  model: StockAnalysisModel,
-  scenario: ScenarioKey,
-  metric: SharePriceRowKey,
-): RankingRow {
-  const valuationModel = stockAnalysisValuationModelFromPayload(
-    model.payload,
-    model.current_price,
-  )
-  const calculatedModel = calculateValuationModel(valuationModel)
-
-  return {
-    ticker: model.ticker,
-    returnPercent: calculatedModel.scenarios[scenario].multipliers[metric],
-  }
-}
-
-function compareRankingRows(first: RankingRow, second: RankingRow) {
-  if (first.returnPercent === null && second.returnPercent === null) {
-    return first.ticker.localeCompare(second.ticker)
-  }
-
-  if (first.returnPercent === null) {
-    return 1
-  }
-
-  if (second.returnPercent === null) {
-    return -1
-  }
-
-  return second.returnPercent - first.returnPercent
-}
-
 function mergeRefreshResults(
   models: StockAnalysisModel[],
   results: StockAnalysisPriceRefreshResult[],
@@ -328,17 +264,4 @@ function mergeRefreshResults(
         }
       : model,
   )
-}
-
-function formatReturnPercent(value: number | null) {
-  if (value === null) {
-    return '-'
-  }
-
-  return new Intl.NumberFormat('en-US', {
-    maximumFractionDigits: 2,
-    minimumFractionDigits: 2,
-    signDisplay: 'exceptZero',
-    style: 'percent',
-  }).format(value)
 }

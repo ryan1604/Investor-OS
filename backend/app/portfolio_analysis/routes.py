@@ -13,6 +13,7 @@ from fastapi import (
 )
 from fastapi.concurrency import run_in_threadpool
 
+from app.http import required_ticker
 from app.portfolio_analysis.beta_store import BetaOverride
 from app.portfolio_analysis.limits_store import RiskLimit
 from app.schemas import (
@@ -24,7 +25,6 @@ from app.schemas import (
     RiskLimitsRequest,
     RiskLimitsResponse,
 )
-from app.tickers import require_ticker
 
 router = APIRouter()
 
@@ -185,13 +185,6 @@ def requested_account(receive_task: asyncio.Task) -> str | None:
     if isinstance(message, dict) and isinstance(message.get("account"), str):
         return message["account"].strip()
     return None
-
-
-def required_ticker(ticker: str) -> str:
-    try:
-        return require_ticker(ticker)
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail="Ticker is required.") from error
 
 
 def required_account(account: str) -> str:

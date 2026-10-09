@@ -93,12 +93,10 @@ type OptionsTradeStrategyOptionsResponse = {
   strategies: string[]
 }
 
-function optionsTradeTrackersPath() {
-  return '/options-trade-trackers'
-}
+const optionsTradeTrackersPath = '/options-trade-trackers'
 
 function optionsTradeTrackerPath(trackerId: string) {
-  return `${optionsTradeTrackersPath()}/${encodeTrackerId(trackerId)}`
+  return `${optionsTradeTrackersPath}/${encodeTrackerId(trackerId)}`
 }
 
 function optionsTradeTrackerTradesPath(trackerId: string) {
@@ -110,12 +108,12 @@ function optionsTradeTrackerNotesPath(trackerId: string) {
 }
 
 function optionsTradeStrategyOptionsPath() {
-  return `${optionsTradeTrackersPath()}/strategy-options`
+  return `${optionsTradeTrackersPath}/strategy-options`
 }
 
 export async function fetchOptionsTradeTrackers(signal?: AbortSignal) {
   return requestJson<OptionsTradeTrackerListResponse>(
-    optionsTradeTrackersPath(),
+    optionsTradeTrackersPath,
     'Options trade trackers',
     { signal },
   )
@@ -126,7 +124,7 @@ export async function createOptionsTradeTracker(
   signal?: AbortSignal,
 ) {
   return jsonRequest<OptionsTradeTrackerDetailResponse>(
-    optionsTradeTrackersPath(),
+    optionsTradeTrackersPath,
     'POST',
     request,
     'Options trade tracker',

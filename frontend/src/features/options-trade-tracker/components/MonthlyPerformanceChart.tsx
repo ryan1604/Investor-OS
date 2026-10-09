@@ -24,7 +24,7 @@ import {
   strategyChartConfig,
   strategyChartKey,
 } from '@/features/options-trade-tracker/lib/trackerCharts'
-import { formatCurrency, formatNumber } from '@/lib/format'
+import { formatCompactCurrency, formatCurrency } from '@/lib/format'
 
 type MonthlyChartMode = 'strategy' | 'net'
 
@@ -109,7 +109,7 @@ export function MonthlyPerformanceChart({
                 tickMargin={8}
               />
               <YAxis
-                tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                tickFormatter={(value) => formatCompactCurrency(Number(value), 'USD', 'usd-thousands')}
                 tickLine={false}
                 axisLine={false}
                 width={72}
@@ -160,7 +160,7 @@ export function MonthlyPerformanceChart({
                 tickMargin={8}
               />
               <YAxis
-                tickFormatter={(value) => formatCompactCurrency(Number(value))}
+                tickFormatter={(value) => formatCompactCurrency(Number(value), 'USD', 'usd-thousands')}
                 tickLine={false}
                 axisLine={false}
                 width={72}
@@ -225,16 +225,4 @@ function toKeyedStackedRows(
 
     return keyedRow
   })
-}
-
-function formatCompactCurrency(value: number) {
-  const absoluteValue = Math.abs(value)
-
-  if (absoluteValue >= 1000) {
-    return `${value < 0 ? '-' : ''}$${formatNumber(absoluteValue / 1000, {
-      maximumFractionDigits: 1,
-    })}k`
-  }
-
-  return formatCurrency(value)
 }

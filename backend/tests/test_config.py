@@ -1,6 +1,6 @@
 import pytest
 
-from app.config import Settings, alpha_vantage_api_key, get_settings
+from app.config import Settings, get_settings
 
 
 @pytest.fixture
@@ -57,22 +57,20 @@ def test_blank_local_token_does_not_fall_back_to_parent(isolated_settings):
     assert not get_settings().ibkr_flex_configured
 
 
-def test_alpha_vantage_api_key_uses_dotenv_not_environment(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text(
+def test_alpha_vantage_api_key_uses_dotenv_not_environment(monkeypatch, isolated_settings):
+    (isolated_settings / ".env").write_text(
         "ALPHA_VANTAGE_API_KEY=file-key\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("ALPHA_VANTAGE_API_KEY", "env-key")
 
-    assert alpha_vantage_api_key() == "file-key"
+    assert get_settings().alpha_vantage_api_key == "file-key"
 
 
-def test_alpha_vantage_api_key_loads_from_dotenv(monkeypatch, tmp_path):
-    monkeypatch.chdir(tmp_path)
-    (tmp_path / ".env").write_text(
+def test_alpha_vantage_api_key_loads_from_dotenv(isolated_settings):
+    (isolated_settings / ".env").write_text(
         "OTHER=value\nALPHA_VANTAGE_API_KEY='file-key'\n",
         encoding="utf-8",
     )
 
-    assert alpha_vantage_api_key() == "file-key"
+    assert get_settings().alpha_vantage_api_key == "file-key"

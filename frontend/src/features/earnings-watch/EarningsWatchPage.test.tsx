@@ -102,6 +102,30 @@ describe('EarningsWatchPage', () => {
     expect(tickerCells()).toEqual(['MSFT', 'AAPL', 'ZZZ'])
   })
 
+  it('uses the current reviewed sort on focus and defers reordering until blur', async () => {
+    const aapl = row('AAPL', '2026-07-30', 'upcoming')
+    const msft = row('MSFT', '2026-08-01', 'upcoming')
+    api.fetchEarningsWatch.mockResolvedValue(response([aapl, msft]))
+    api.setEarningsWatchReviewed.mockResolvedValue({ ...aapl, reviewed: true })
+    render(<EarningsWatchPage />)
+    const checkbox = await screen.findByLabelText('Reviewed AAPL')
+
+    fireEvent.click(screen.getByRole('button', { name: /Reviewed/ }))
+    fireEvent.focus(checkbox)
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(api.setEarningsWatchReviewed).toHaveBeenCalledWith('AAPL', true))
+    expect(tickerCells()).toEqual(['AAPL', 'MSFT'])
+    fireEvent.blur(checkbox)
+    await waitFor(() => expect(tickerCells()).toEqual(['MSFT', 'AAPL']))
+
+    fireEvent.click(screen.getByRole('button', { name: /Ticker/ }))
+    api.setEarningsWatchReviewed.mockResolvedValue({ ...aapl, reviewed: false })
+    fireEvent.focus(checkbox)
+    fireEvent.click(checkbox)
+    await waitFor(() => expect(checkbox.getAttribute('aria-checked')).toBe('false'))
+    expect(tickerCells()).toEqual(['AAPL', 'MSFT'])
+  })
+
   it('rolls back an optimistic checkbox change when persistence fails', async () => {
     api.fetchEarningsWatch.mockResolvedValue(
       response([row('AAPL', '2026-07-30', 'upcoming', false)]),

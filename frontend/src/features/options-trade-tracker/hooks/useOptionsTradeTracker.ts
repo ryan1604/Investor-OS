@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import {
   createOptionsTradeTracker,
@@ -10,29 +10,24 @@ import {
   replaceOptionsTradeStrategyOptions,
   replaceOptionsTradeTrackerTrades,
   updateOptionsTradeTrackerNotes,
-  type OptionsTradeTrackerDetailResponse,
   type OptionsTradeTrackerSummary,
 } from '@/api/optionsTradeTrackers'
-import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 import {
-  newTradeDraftRow,
   normalizeStrategyOption,
-  tradeDraftRowFromStoredRow,
   tradeRequestFromDraftRow,
   validateTradeDraftRows,
-  type TradeDraftField,
-  type TradeDraftRow,
-  type TradeDraftValidationIssue,
 } from '@/features/options-trade-tracker/lib/tradeTracker'
 
-type TrackerMutationKind = 'delete' | 'notes' | 'rename' | 'strategies' | 'trades'
-
-type TrackerMutationRequest = {
-  controller: AbortController
-  kind: TrackerMutationKind
-  requestEpoch: number
-  trackerId: string
-}
+import {
+  runTrackerMutation,
+  useTrackerRequestCoordinator,
+} from '@/features/options-trade-tracker/hooks/useTrackerRequestCoordinator'
+import {
+  tradeDraftRows,
+  useTradeTrackerDraftState,
+} from '@/features/options-trade-tracker/hooks/useTradeTrackerDraftState'
 
 export function useOptionsTradeTracker() {
   const [trackers, setTrackers] = useState<OptionsTradeTrackerSummary[]>([])
@@ -75,7 +70,7 @@ export function useOptionsTradeTracker() {
         drafts.resetTrackerDrafts(initialTrackerId)
       } catch (error) {
         if (!isAbortError(error)) {
-          setLoadError(errorMessage(error))
+          setLoadError(errorMessage(error, 'Options trade tracker request failed.'))
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -119,7 +114,7 @@ export function useOptionsTradeTracker() {
           !isAbortError(error) &&
           requests.isCurrentTrackerRequest(trackerId, requestEpoch)
         ) {
-          setLoadError(errorMessage(error))
+          setLoadError(errorMessage(error, 'Options trade tracker request failed.'))
         }
       } finally {
         if (requests.isCurrentTrackerRequest(trackerId, requestEpoch)) {
@@ -164,7 +159,7 @@ export function useOptionsTradeTracker() {
       drafts.setIsDetailLoading(false)
       return true
     } catch (error) {
-      setSaveError(errorMessage(error))
+      setSaveError(errorMessage(error, 'Options trade tracker request failed.'))
       return false
     } finally {
       setIsCreating(false)
@@ -361,265 +356,8 @@ export function useOptionsTradeTracker() {
   }
 }
 
-function useTrackerRequestCoordinator() {
-  const [savingKinds, setSavingKinds] = useState<Set<TrackerMutationKind>>(
-    () => new Set(),
-  )
-  const selectedTrackerIdRef = useRef<string | null>(null)
-  const trackerRequestEpochRef = useRef(0)
-  const detailControllerRef = useRef<AbortController | null>(null)
-  const mutationControllersRef = useRef(
-    new Map<TrackerMutationKind, AbortController>(),
-  )
-
-  function startTrackerRequest(trackerId: string | null) {
-    trackerRequestEpochRef.current += 1
-    selectedTrackerIdRef.current = trackerId
-  }
-
-  function setSelectedTrackerIdRef(trackerId: string | null) {
-    selectedTrackerIdRef.current = trackerId
-  }
-
-  function invalidateTrackerRequests() {
-    trackerRequestEpochRef.current += 1
-    detailControllerRef.current?.abort()
-    detailControllerRef.current = null
-    mutationControllersRef.current.forEach((controller) => controller.abort())
-    mutationControllersRef.current.clear()
-  }
-
-  function replaceDetailController(controller: AbortController) {
-    detailControllerRef.current?.abort()
-    detailControllerRef.current = controller
-  }
-
-  function clearDetailController(controller: AbortController) {
-    if (detailControllerRef.current === controller) {
-      detailControllerRef.current = null
-    }
-  }
-
-  function isCurrentTrackerRequest(trackerId: string, requestEpoch: number) {
-    return (
-      selectedTrackerIdRef.current === trackerId &&
-      trackerRequestEpochRef.current === requestEpoch
-    )
-  }
-
-  function beginTrackerMutation(
-    kind: TrackerMutationKind,
-    trackerId: string,
-  ): TrackerMutationRequest {
-    mutationControllersRef.current.get(kind)?.abort()
-    const controller = new AbortController()
-    mutationControllersRef.current.set(kind, controller)
-    setSavingKinds((current) => new Set(current).add(kind))
-    return {
-      controller,
-      kind,
-      requestEpoch: trackerRequestEpochRef.current,
-      trackerId,
-    }
-  }
-
-  function isCurrentMutation(request: TrackerMutationRequest) {
-    return (
-      isCurrentTrackerRequest(request.trackerId, request.requestEpoch) &&
-      mutationControllersRef.current.get(request.kind) === request.controller
-    )
-  }
-
-  function finishMutation(request: TrackerMutationRequest) {
-    if (!isCurrentMutation(request)) {
-      return
-    }
-
-    mutationControllersRef.current.delete(request.kind)
-    setSavingKinds((current) => {
-      const next = new Set(current)
-      next.delete(request.kind)
-      return next
-    })
-  }
-
-  function clearSavingKinds() {
-    setSavingKinds(new Set())
-  }
-
-  return {
-    savingKinds,
-    selectedTrackerIdRef,
-    trackerRequestEpochRef,
-    startTrackerRequest,
-    setSelectedTrackerIdRef,
-    invalidateTrackerRequests,
-    replaceDetailController,
-    clearDetailController,
-    isCurrentTrackerRequest,
-    beginTrackerMutation,
-    isCurrentMutation,
-    finishMutation,
-    clearSavingKinds,
-  }
-}
-
-async function runTrackerMutation<Result>(
-  requests: ReturnType<typeof useTrackerRequestCoordinator>,
-  request: TrackerMutationRequest,
-  setSaveError: (error: string | null) => void,
-  action: (signal: AbortSignal) => Promise<Result>,
-  apply: (result: Result) => boolean,
-) {
-  setSaveError(null)
-
-  try {
-    const result = await action(request.controller.signal)
-    if (!requests.isCurrentMutation(request)) {
-      return false
-    }
-    return apply(result)
-  } catch (error) {
-    if (!isAbortError(error) && requests.isCurrentMutation(request)) {
-      setSaveError(errorMessage(error))
-    }
-    return false
-  } finally {
-    requests.finishMutation(request)
-  }
-}
-
-function useTradeTrackerDraftState() {
-  const [detailTrackerId, setDetailTrackerId] = useState<string | null>(null)
-  const [tradeRows, setTradeRows] = useState<TradeDraftRow[]>([])
-  const [notesDraft, setNotesDraft] = useState('')
-  const [tradeIssues, setTradeIssues] = useState<TradeDraftValidationIssue[]>([])
-  const [isDetailLoading, setIsDetailLoading] = useState(false)
-  const tradeRevisionRef = useRef(0)
-  const notesRevisionRef = useRef(0)
-
-  function resetTrackerDrafts(trackerId: string | null) {
-    tradeRevisionRef.current = 0
-    notesRevisionRef.current = 0
-    setDetailTrackerId(null)
-    setTradeRows([])
-    setNotesDraft('')
-    setTradeIssues([])
-    setIsDetailLoading(trackerId !== null)
-  }
-
-  function applyLoadedTrackerDetail(
-    detail: OptionsTradeTrackerDetailResponse,
-    trackerId: string,
-  ) {
-    if (detail.tracker.id !== trackerId) {
-      return
-    }
-
-    setDetailTrackerId(trackerId)
-    setTradeRows(tradeDraftRows(detail))
-    setNotesDraft(detail.notes)
-    setTradeIssues([])
-    tradeRevisionRef.current = 0
-    notesRevisionRef.current = 0
-  }
-
-  const addTradeRow = useCallback(() => {
-    tradeRevisionRef.current += 1
-    setTradeRows((current) => [
-      ...current,
-      newTradeDraftRow(createLocalTradeId()),
-    ])
-    setTradeIssues([])
-  }, [])
-
-  const updateTradeRow = useCallback(
-    (localId: string, field: TradeDraftField, value: string) => {
-      tradeRevisionRef.current += 1
-      setTradeRows((current) =>
-        current.map((row) =>
-          row.localId === localId ? { ...row, [field]: value } : row,
-        ),
-      )
-    },
-    [],
-  )
-
-  const deleteTradeRow = useCallback((localId: string) => {
-    tradeRevisionRef.current += 1
-    setTradeRows((current) =>
-      current.filter((row) => row.localId !== localId),
-    )
-    setTradeIssues((current) =>
-      current.filter((issue) => issue.localId !== localId),
-    )
-  }, [])
-
-  const reorderTradeRow = useCallback(
-    (draggedLocalId: string, targetLocalId: string) => {
-      tradeRevisionRef.current += 1
-      setTradeRows((current) => {
-        const draggedIndex = current.findIndex(
-          (row) => row.localId === draggedLocalId,
-        )
-        const targetIndex = current.findIndex((row) => row.localId === targetLocalId)
-
-        if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) {
-          return current
-        }
-
-        const next = [...current]
-        const [movedRow] = next.splice(draggedIndex, 1)
-        next.splice(targetIndex, 0, movedRow)
-        return next
-      })
-    },
-    [],
-  )
-
-  const updateNotesDraft = useCallback((notes: string) => {
-    notesRevisionRef.current += 1
-    setNotesDraft(notes)
-  }, [])
-
-  return {
-    detailTrackerId,
-    tradeRows,
-    notesDraft,
-    tradeIssues,
-    isDetailLoading,
-    tradeRevisionRef,
-    notesRevisionRef,
-    setTradeRows,
-    setNotesDraft,
-    setTradeIssues,
-    setIsDetailLoading,
-    resetTrackerDrafts,
-    applyLoadedTrackerDetail,
-    addTradeRow,
-    updateTradeRow,
-    deleteTradeRow,
-    reorderTradeRow,
-    updateNotesDraft,
-  }
-}
-
-function tradeDraftRows(detail: OptionsTradeTrackerDetailResponse) {
-  return [...detail.trades]
-    .sort((first, second) => first.display_order - second.display_order)
-    .map(tradeDraftRowFromStoredRow)
-}
-
 function sortTrackers(trackers: OptionsTradeTrackerSummary[]) {
   return [...trackers].sort((first, second) =>
     first.name.localeCompare(second.name),
   )
-}
-
-function errorMessage(error: unknown) {
-  return requestErrorMessage(error, 'Options trade tracker request failed.')
-}
-
-function createLocalTradeId() {
-  return `draft-${Date.now()}-${Math.random().toString(36).slice(2)}`
 }

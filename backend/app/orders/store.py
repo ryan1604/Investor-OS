@@ -1,4 +1,3 @@
-import sqlite3
 from pathlib import Path
 
 from app.schemas import OrderRecord

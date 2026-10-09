@@ -1,7 +1,8 @@
+import { newYorkDateParts } from '@/lib/dates'
 import type { EarningsWatchRefreshState, EarningsWatchRow } from '@/api/earningsWatch'
 
 export type EarningsWatchSortKey = 'ticker' | 'earnings_date' | 'status' | 'reviewed'
-export type EarningsWatchSortDirection = 'asc' | 'desc'
+type EarningsWatchSortDirection = 'asc' | 'desc'
 
 export type EarningsWatchSort = {
   key: EarningsWatchSortKey
@@ -73,16 +74,8 @@ function compareRows(
     return Number(left.reviewed) - Number(right.reviewed)
   }
 
-  if (left.earnings_date === null && right.earnings_date === null) {
-    return 0
-  }
-  if (left.earnings_date === null) {
-    return 1
-  }
-  if (right.earnings_date === null) {
-    return -1
-  }
-  return left.earnings_date.localeCompare(right.earnings_date)
+  return compareNullableDates(left, right) ||
+    (left.earnings_date ?? '').localeCompare(right.earnings_date ?? '')
 }
 
 export function nextSort(current: EarningsWatchSort, key: EarningsWatchSortKey) {
@@ -134,7 +127,7 @@ export function safeErrorMessage(category: string | null) {
   return category ? (errorLabels[category] ?? 'Earnings dates are unavailable.') : null
 }
 
-export function formatDateTime(value: string) {
+function formatDateTime(value: string) {
   return new Intl.DateTimeFormat(undefined, {
     dateStyle: 'medium',
     timeStyle: 'short',
@@ -147,16 +140,7 @@ export function millisecondsUntil(value: string, now = new Date()) {
 
 export function millisecondsUntilNextNewYorkMidnight(now = new Date()) {
   const timeZone = 'America/New_York'
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  })
-  const parts = Object.fromEntries(
-    formatter.formatToParts(now).map((part) => [part.type, part.value]),
-  )
+  const parts = newYorkDateParts(now)
   const targetUtc = zonedDateTimeToUtc(
     timeZone,
     Number(parts.year),

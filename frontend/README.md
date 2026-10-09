@@ -40,9 +40,9 @@ If the variable is not set, the app uses `http://127.0.0.1:8000`.
 
 ## Application Loading
 
-`src/App.tsx` eagerly imports page modules into the current production bundle and conditionally mounts only the active page. Feature hooks and live subscriptions are therefore active only for the selected workflow. Portfolio is the default page; Options mounts Portfolio and Orders state because its tickets and chart overlays require them.
+`src/lib/pages.ts` defines the sidebar order, labels, icons, and `AppPage` IDs; `src/App.tsx` uses those IDs for its typed page lookup and eagerly imports page modules into the current production bundle. Portfolio is the default page. Most pages mount only while active; Options mounts on its first visit and then stays mounted but hidden when another page is selected, retaining its workspace while pausing its chain and chart streams. App owns the shared Portfolio state and one Orders subscription used by both Options and Orders.
 
-On load, the Portfolio page fetches the current snapshot from:
+The Portfolio Refresh action fetches the current snapshot from:
 
 ```text
 GET /portfolio
@@ -122,6 +122,8 @@ The stock ticket supports explicit account selection, whole-share quantities, bu
 
 CSP, CC, and CS screeners share one provider for durable settings, active jobs, completed snapshots, live progress, warnings, table sorting, and quote refresh before ticket opening.
 
+`useOptionsScreeners` exposes a typed `screeners` record with `csp`, `cc`, and `cs` slices. Each slice keeps its filter draft, confirmed filters, validation/save status, sort, tickers, and scan actions. The shared filter hook retains the 350 ms autosave debounce; the provider retains the initial REST load and one scan WebSocket while pages change.
+
 ```text
 GET  /options-screeners/settings
 PUT  /options-screeners/settings/ticker-lists/{list_name}
@@ -134,7 +136,7 @@ POST /options-screeners/quotes/refresh-spread
 WS   /options-screeners/scans/ws
 ```
 
-CSP and CC share a ticker list and single-leg result table patterns. CS has its own ticker list, spread filters, spread table columns, and two-leg ticket mapping. All three open the shared option-strategy ticket only after refreshing the selected row.
+The three pages use a shared screener shell and scan/cancel button, retaining their existing alerts, refresh notices, and screener-specific controls. Screener result and contract types live in `src/api/optionsScreeners.ts`. CSP and CC share a ticker list and single-leg result table patterns. CS has its own ticker list, spread filters, spread table columns, and two-leg ticket mapping. All three open the shared option-strategy ticket only after refreshing the selected row.
 
 ## Orders View
 
@@ -150,7 +152,7 @@ Order state stays live through:
 WS /orders/ws
 ```
 
-The order WebSocket mounts only while the Options or Orders page is active.
+App opens one order WebSocket when Orders is active or Options has been visited. Before the first Options visit, leaving Orders closes it. After Options has been visited, the connection stays open across page changes to keep its retained workspace current; Options and Orders share the same order state.
 
 Order tickets and controls call:
 
@@ -229,10 +231,17 @@ PUT    /options-trade-trackers/{tracker_id}/notes
 
 Trades and notes save independently so one response cannot discard unrelated drafts. Tracker loads and mutations are guarded against stale responses. Completed valid trades drive row P&L, totals, stats, monthly charts, and strategy execution data through one shared projection.
 
+Shared account selection, the strategy ticket used by Options and screeners, and presentational ticket form parts live in `src/components/`. Order review/transmit state stays in `features/orders/hooks/useOrderTicketFlow.ts`; features may share hooks and pure helpers, while components shared across features live in `src/components/`.
+
+Shared error fallbacks, local/New York dates, draft number text, and local row IDs live in `src/lib/`. Number formatters in `src/lib/format.ts` cache Intl instances by their options, retaining Portfolio compact notation and the tracker's lowercase `k` labels. `src/components/EditableTableCells.tsx` shares numeric inputs and validation messages while preserving each tracker's formatting and layout.
+
 ## Feature Structure
+
+Orders composes `components/OrderSection.tsx` with grouping helpers in `lib/orderGroups.ts`. Rank Stocks builds all scenario/metric rankings in `lib/rankings.ts`, calculating valuation once per saved model. Day Trading separates month loading and saves into `hooks/useDayTradingMonth.ts` and its editable rows into `components/DayTradeTable.tsx`. Earnings Watch keeps refresh effects and mutations in `hooks/useEarningsWatch.ts`; its page retains the current-sort focus behavior. The Options Trade Tracker hook composes separate request coordination and draft-state hooks, retaining request cancellation and independent trade/notes revisions.
 
 ```text
 src/features/
+├── day-trading-tracker/    Calendar-based daily trade rows and save workflow
 ├── earnings-watch/         Earnings calendar watchlist, review state, and refresh workflow
 ├── options/                Options analysis, live chain/chart state, and tickets
 ├── options-screeners/      CSP, CC, and CS scan pages, settings, live jobs, and result tables

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { fetchNav, fetchNavAccounts, type NavHistory } from '@/api/portfolioNav'
-import { errorMessage } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 
 export function useNavHistory(account: string | undefined) {
   const [state, setState] = useState<{ account?: string; data: NavHistory | null; error: string | null }>({ data: null, error: null })

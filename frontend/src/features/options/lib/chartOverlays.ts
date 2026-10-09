@@ -4,7 +4,7 @@ import type { DraftOptionLeg } from '@/features/options/lib/strategyLegs'
 
 export type ChartOptionOverlaySource = 'draft' | 'working' | 'held'
 
-export type ChartOptionStrikeOverlay = {
+type ChartOptionStrikeOverlay = {
   type: 'option-strike'
   key: string
   ticker: string
@@ -16,7 +16,7 @@ export type ChartOptionStrikeOverlay = {
   label: string
 }
 
-export type ChartCostBasisOverlay = {
+type ChartCostBasisOverlay = {
   type: 'stock-cost-basis'
   key: string
   price: number

@@ -3,7 +3,7 @@ import { CircleDot, RefreshCw } from 'lucide-react'
 import type { IbStatus } from '@/api/portfolio'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { AccountSelector } from '@/features/portfolio/components/AccountSelector'
+import { AccountSelector } from '@/components/AccountSelector'
 
 type PortfolioHeaderProps = {
   accounts: string[]

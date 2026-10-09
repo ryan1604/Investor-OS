@@ -5,21 +5,42 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as api from '@/api/optionsScreeners'
 import { CspScreenerPage } from '@/features/options-screeners/CspScreenerPage'
-import type { CashSecuredPutCandidate } from '@/features/options-screeners/lib/screenerResults'
+import type { CashSecuredPutCandidate } from '@/api/optionsScreeners'
 
 vi.mock('@/api/optionsScreeners', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/api/optionsScreeners')>()
   return { ...actual, refreshOptionsScreenerQuote: vi.fn() }
 })
 
-vi.mock('@/features/options-screeners/OptionsScreenersProvider', async (importOriginal) => {
+vi.mock('@/features/options-screeners/hooks/useOptionsScreeners', async (importOriginal) => {
   const actual =
     await importOriginal<
-      typeof import('@/features/options-screeners/OptionsScreenersProvider')
+      typeof import('@/features/options-screeners/hooks/useOptionsScreeners')
     >()
   return {
     ...actual,
-    useOptionsScreeners: () => state,
+    useOptionsScreeners: () => ({
+      ...state,
+      screeners: {
+        csp: {
+          tickers: state.cspTickers,
+          filterDraft: state.cspFilterDraft,
+          filters: state.cspFilters,
+          filterError: state.cspFilterError,
+          filterSaveStatus: state.cspFilterSaveStatus,
+          snapshot: state.cspSnapshot,
+          sort: state.cspSort,
+          addTickers: state.addCspTickers,
+          removeTicker: state.removeCspTicker,
+          clearTickers: state.clearCspTickers,
+          updateFilterDraft: state.updateCspFilterDraft,
+          resetFilters: state.resetCspFilters,
+          startScan: state.startCspScan,
+          setSort: state.setCspSort,
+          latestJob: state.latestCspJob,
+        },
+      },
+    }),
   }
 })
 

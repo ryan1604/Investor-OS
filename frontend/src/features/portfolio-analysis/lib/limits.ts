@@ -9,7 +9,7 @@ export type LimitBand = 'green' | 'amber' | 'red'
 
 // Upper limits are "at most"; lower limits are "at least". The realistic-path
 // P&L floor is kept as an upper limit on the loss (P&L >= -limit%).
-export type LimitDefinition = {
+type LimitDefinition = {
   key: RiskLimitKey
   label: string
   direction: 'upper' | 'lower'

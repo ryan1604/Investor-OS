@@ -1,12 +1,13 @@
-from collections.abc import Hashable, Iterable
+from collections.abc import Hashable, Iterable, Sequence
 from datetime import date, datetime
 import math
 import re
 from typing import Annotated, Any, Literal, NotRequired, Self, TypeVar, TypedDict
-from zoneinfo import ZoneInfo
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     StrictInt,
@@ -15,9 +16,19 @@ from pydantic import (
     model_validator,
 )
 
+from app.sessions import US_MARKET_TIME_ZONE as ORDER_SECTION_TIME_ZONE
 from app.tickers import require_ticker
 
 DuplicateValue = TypeVar("DuplicateValue", bound=Hashable)
+
+
+def finite_number(value: float) -> float:
+    if not math.isfinite(value):
+        raise ValueError("numeric values must be finite.")
+    return value
+
+
+FiniteNumber = Annotated[float, AfterValidator(finite_number)]
 
 
 class IbStatus(BaseModel):
@@ -369,7 +380,7 @@ OPTIONS_TRADE_MONTHS = {
 class PortfolioChartValueRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     month: str
-    amount_invested: float | None = None
+    amount_invested: FiniteNumber | None = None
 
     @field_validator("month")
     @classmethod
@@ -378,13 +389,6 @@ class PortfolioChartValueRequest(BaseModel):
         if not MONTH_KEY_PATTERN.fullmatch(normalized_value):
             raise ValueError("month must use YYYY-MM format.")
         return normalized_value
-
-    @field_validator("amount_invested")
-    @classmethod
-    def finite_number(cls, value: float | None) -> float | None:
-        if value is not None and not math.isfinite(value):
-            raise ValueError("numeric values must be finite.")
-        return value
 
     @model_validator(mode="after")
     def reject_blank_row(self):
@@ -431,6 +435,9 @@ def normalize_optional_text(value: str | None) -> str | None:
     return normalized_value or None
 
 
+OptionalText = Annotated[str | None, BeforeValidator(normalize_optional_text)]
+
+
 def normalize_optional_upper_text(value: str | None) -> str | None:
     normalized_value = normalize_optional_text(value)
     return normalized_value.upper() if normalized_value is not None else None
@@ -457,25 +464,25 @@ def duplicate_values(
     return sorted(duplicates)
 
 
+def validate_trade_row_ordering(
+    rows: Sequence["DayTradingRowRequest | OptionsTradeRowRequest"],
+) -> None:
+    row_ids = [row.id for row in rows if row.id is not None]
+    if duplicate_values(row_ids):
+        raise ValueError("Duplicate trade row ids are not allowed.")
+
+    display_orders = [row.display_order for row in rows]
+    if duplicate_values(display_orders):
+        raise ValueError("Duplicate trade row display_order values are not allowed.")
+
+
 class DayTradingRowRequest(BaseModel):
-    id: str | None = None
+    id: OptionalText = None
     display_order: int = Field(ge=0)
-    buy: float | None = None
-    sell: float | None = None
+    buy: FiniteNumber | None = None
+    sell: FiniteNumber | None = None
     size: StrictInt | None = None
-    fee: float | None = None
-
-    @field_validator("id", mode="before")
-    @classmethod
-    def optional_text(cls, value: str | None) -> str | None:
-        return normalize_optional_text(value)
-
-    @field_validator("buy", "sell", "fee")
-    @classmethod
-    def finite_price(cls, value: float | None) -> float | None:
-        if value is not None and not math.isfinite(value):
-            raise ValueError("numeric values must be finite.")
-        return value
+    fee: FiniteNumber | None = None
 
     @field_validator("fee")
     @classmethod
@@ -497,16 +504,7 @@ class DayTradingRowsReplaceRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_row_ordering(self) -> Self:
-        row_ids = [row.id for row in self.trades if row.id is not None]
-        duplicate_row_ids = duplicate_values(row_ids)
-        if duplicate_row_ids:
-            raise ValueError("Duplicate trade row ids are not allowed.")
-
-        display_orders = [row.display_order for row in self.trades]
-        duplicate_orders = duplicate_values(display_orders)
-        if duplicate_orders:
-            raise ValueError("Duplicate trade row display_order values are not allowed.")
-
+        validate_trade_row_ordering(self.trades)
         return self
 
 
@@ -559,22 +557,17 @@ class OptionsTradeTrackerListResponse(BaseModel):
 
 
 class OptionsTradeRowRequest(BaseModel):
-    id: str | None = None
+    id: OptionalText = None
     display_order: int = Field(ge=0)
     status: OptionsTradeStatus = "In Progress"
     strategy: str | None = None
     ticker: str | None = None
     month: str | None = None
     expiry_date: date | None = None
-    size: float | None = None
-    strike_price: float | None = None
-    credit_debit: float | None = None
-    exit: float | None = None
-
-    @field_validator("id", mode="before")
-    @classmethod
-    def optional_text(cls, value: str | None) -> str | None:
-        return normalize_optional_text(value)
+    size: FiniteNumber | None = None
+    strike_price: FiniteNumber | None = None
+    credit_debit: FiniteNumber | None = None
+    exit: FiniteNumber | None = None
 
     @field_validator("strategy", mode="before")
     @classmethod
@@ -601,13 +594,6 @@ class OptionsTradeRowRequest(BaseModel):
                 raise ValueError("month must be jan-dec.")
             return tracker_month
         return normalized_value
-
-    @field_validator("size", "strike_price", "credit_debit", "exit")
-    @classmethod
-    def finite_number(cls, value: float | None) -> float | None:
-        if value is not None and not math.isfinite(value):
-            raise ValueError("numeric values must be finite.")
-        return value
 
     @model_validator(mode="after")
     def validate_completed_row(self) -> Self:
@@ -649,16 +635,7 @@ class OptionsTradeRowsReplaceRequest(BaseModel):
 
     @model_validator(mode="after")
     def validate_row_ordering(self) -> Self:
-        row_ids = [row.id for row in self.trades if row.id is not None]
-        duplicate_row_ids = duplicate_values(row_ids)
-        if duplicate_row_ids:
-            raise ValueError("Duplicate trade row ids are not allowed.")
-
-        display_orders = [row.display_order for row in self.trades]
-        duplicate_orders = duplicate_values(display_orders)
-        if duplicate_orders:
-            raise ValueError("Duplicate trade row display_order values are not allowed.")
-
+        validate_trade_row_ordering(self.trades)
         return self
 
 
@@ -1169,37 +1146,25 @@ OrderReconciliationStatus = Literal["pending", "confirmed", "stale"]
 OptionRight = Literal["CALL", "PUT"]
 OPEN_ORDER_STATUSES = {"submitted", "working", "partially_filled"}
 TERMINAL_ORDER_STATUSES = {"filled", "cancelled", "rejected"}
-ORDER_SECTION_TIME_ZONE = ZoneInfo("America/New_York")
 
 
-def normalize_required_text(value: str, message: str) -> str:
+def normalize_required_uppercase_text(value: str, message: str) -> str:
     normalized_value = value.strip().upper()
     if not normalized_value:
         raise ValueError(message)
     return normalized_value
 
 
-def normalize_required_ticker(value: str) -> str:
-    try:
-        return require_ticker(value)
-    except ValueError as error:
-        raise ValueError("Ticker is required.") from error
-
-
 def normalize_required_account(value: str) -> str:
-    return normalize_required_text(value, "Account is required.")
+    return normalize_required_uppercase_text(value, "Account is required.")
 
 
-def parse_order_section_time(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=ORDER_SECTION_TIME_ZONE)
-    return parsed.astimezone(ORDER_SECTION_TIME_ZONE)
+RequiredAccount = Annotated[str, AfterValidator(normalize_required_account)]
+
+
+def validate_positive_price(value: float | None, field_name: str) -> None:
+    if value is not None and value <= 0:
+        raise ValueError(f"{field_name} must be greater than zero.")
 
 
 class StockOrderRequest(BaseModel):
@@ -1215,7 +1180,7 @@ class StockOrderRequest(BaseModel):
     @field_validator("account", "ticker")
     @classmethod
     def non_empty_text(cls, value: str) -> str:
-        return normalize_required_text(value, "Value is required.")
+        return normalize_required_uppercase_text(value, "Value is required.")
 
     @field_validator("quantity", mode="before")
     @classmethod
@@ -1251,7 +1216,7 @@ class OptionStrategyLegRequest(BaseModel):
     @field_validator("ticker")
     @classmethod
     def normalize_ticker(cls, value: str) -> str:
-        return normalize_required_ticker(value)
+        return require_ticker(value)
 
     @field_validator("expiration")
     @classmethod
@@ -1272,7 +1237,7 @@ class OptionStrategyLegRequest(BaseModel):
 
 class OptionStrategyOrderRequest(BaseModel):
     order_kind: Literal["option_strategy"] = "option_strategy"
-    account: str
+    account: RequiredAccount
     legs: list[OptionStrategyLegRequest] = Field(min_length=1)
     strategy_quantity: StrictInt = 1
     limit_price: float
@@ -1280,19 +1245,12 @@ class OptionStrategyOrderRequest(BaseModel):
     stop_loss_price: float | None = None
     time_in_force: OrderTimeInForce = "DAY"
 
-    @field_validator("account")
-    @classmethod
-    def non_empty_account(cls, value: str) -> str:
-        return normalize_required_account(value)
-
     @model_validator(mode="after")
     def validate_exit_prices(self):
         if self.strategy_quantity <= 0:
             raise ValueError("strategy_quantity must be greater than zero.")
-        if self.take_profit_price is not None and self.take_profit_price <= 0:
-            raise ValueError("take_profit_price must be greater than zero.")
-        if self.stop_loss_price is not None and self.stop_loss_price <= 0:
-            raise ValueError("stop_loss_price must be greater than zero.")
+        validate_positive_price(self.take_profit_price, "take_profit_price")
+        validate_positive_price(self.stop_loss_price, "stop_loss_price")
         return self
 
 
@@ -1365,14 +1323,15 @@ class OrderRecord(BaseModel):
         if self.status not in TERMINAL_ORDER_STATUSES:
             return False
         timestamp = self.execution_time or self.completed_time or self.terminal_at
-        parsed = parse_order_section_time(timestamp)
-        if parsed is None:
-            return False
-        today = datetime.now(ORDER_SECTION_TIME_ZONE).date()
-        if parsed.date() == today:
-            return True
         stored = parse_order_section_time_without_conversion(timestamp)
-        return stored is not None and stored.date() == today
+        if stored is None:
+            return False
+        parsed = stored
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=ORDER_SECTION_TIME_ZONE)
+        parsed = parsed.astimezone(ORDER_SECTION_TIME_ZONE)
+        today = datetime.now(ORDER_SECTION_TIME_ZONE).date()
+        return parsed.date() == today or stored.date() == today
 
 
 def parse_order_section_time_without_conversion(value: str | None) -> datetime | None:
@@ -1391,37 +1350,24 @@ class OrderSubmissionResponse(BaseModel):
 
 
 class OrderCancellationRequest(BaseModel):
-    account: str
-
-    @field_validator("account")
-    @classmethod
-    def non_empty_account(cls, value: str) -> str:
-        return normalize_required_account(value)
+    account: RequiredAccount
 
 
 class OrderAmendmentRequest(BaseModel):
-    account: str
+    account: RequiredAccount
     quantity: StrictInt | None = None
     limit_price: float | None = None
     take_profit_price: float | None = None
     stop_loss_price: float | None = None
     time_in_force: OrderTimeInForce | None = None
 
-    @field_validator("account")
-    @classmethod
-    def non_empty_account(cls, value: str) -> str:
-        return normalize_required_account(value)
-
     @model_validator(mode="after")
     def validate_amendment_values(self):
         if self.quantity is not None and self.quantity <= 0:
             raise ValueError("quantity must be greater than zero.")
-        if self.limit_price is not None and self.limit_price <= 0:
-            raise ValueError("limit_price must be greater than zero.")
-        if self.take_profit_price is not None and self.take_profit_price <= 0:
-            raise ValueError("take_profit_price must be greater than zero.")
-        if self.stop_loss_price is not None and self.stop_loss_price <= 0:
-            raise ValueError("stop_loss_price must be greater than zero.")
+        validate_positive_price(self.limit_price, "limit_price")
+        validate_positive_price(self.take_profit_price, "take_profit_price")
+        validate_positive_price(self.stop_loss_price, "stop_loss_price")
         return self
 
 

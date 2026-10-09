@@ -8,14 +8,14 @@ from datetime import UTC, date, datetime, timedelta
 from time import monotonic
 from typing import Literal
 
-from app.options.client import (
+from app.options.types import (
     HistoricalDailyBarProvider,
     OptionsDataUnavailable,
-    fetch_chunked_daily_bars,
 )
+from app.options.domain import fetch_chunked_daily_bars
 from app.options.store import CompletedDailyBar
 from app.portfolio_analysis.beta_store import BetaEstimate, BetaStore
-from app.portfolio_analysis.sessions import us_session_date
+from app.sessions import us_session_date
 from app.tickers import normalize_ticker
 
 logger = logging.getLogger(__name__)

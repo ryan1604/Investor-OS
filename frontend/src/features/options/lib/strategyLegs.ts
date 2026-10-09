@@ -60,7 +60,7 @@ export function mergeOptionQuoteSelection(
     .filter((leg) => leg.signedQuantity !== 0)
 }
 
-export function sameOptionLeg(
+function sameOptionLeg(
   first: Pick<DraftOptionLeg, 'ticker' | 'expiration' | 'right' | 'strike'>,
   second: Pick<DraftOptionLeg, 'ticker' | 'expiration' | 'right' | 'strike'>,
 ) {

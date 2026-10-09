@@ -1,46 +1,35 @@
-import { LoaderCircle, Radar, Square } from 'lucide-react'
-
-import { errorMessage as requestErrorMessage } from '@/api/client'
 import type { PortfolioResponse } from '@/api/portfolio'
-import { refreshOptionsScreenerSpreadQuote } from '@/api/optionsScreeners'
-import { Alert } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { refreshOptionsScreenerSpreadQuote, type CreditSpreadCandidate } from '@/api/optionsScreeners'
+import { OptionStrategyTicket } from '@/features/orders/components/OptionStrategyTicket'
 import { CsFilterControls } from '@/features/options-screeners/components/CsFilterControls'
 import { CsResultsTable } from '@/features/options-screeners/components/CsResultsTable'
-import { ScreenerResultsStatus } from '@/features/options-screeners/components/ScreenerResultsStatus'
+import { ScanActionButton } from '@/features/options-screeners/components/ScanActionButton'
+import { ScreenerPageShell } from '@/features/options-screeners/components/ScreenerPageShell'
 import { TickerListEditor } from '@/features/options-screeners/components/TickerListEditor'
-import {
-  csCandidates,
-  useOptionsScreeners,
-} from '@/features/options-screeners/OptionsScreenersProvider'
-import { daysToExpiration } from '@/features/options-screeners/lib/expiration'
-import type { CreditSpreadCandidate } from '@/features/options-screeners/lib/screenerResults'
+import { useOptionsScreeners } from '@/features/options-screeners/hooks/useOptionsScreeners'
+import { csCandidates } from '@/features/options-screeners/lib/screenerResults'
+import { refreshedCandidateWarning } from '@/features/options-screeners/lib/refreshedCandidateWarning'
 import { useScreenerTicketRefresh } from '@/features/options-screeners/hooks/useScreenerTicketRefresh'
-import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
+import { errorMessage } from '@/lib/errors'
 
 export function CsScreenerPage({
   portfolio,
   selectedAccount,
-  onCandidateActivate,
 }: {
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
-  onCandidateActivate?: (candidate: CreditSpreadCandidate) => void
 }) {
   const state = useOptionsScreeners()
+  const slice = state.screeners.cs
   const ticket = useScreenerTicketRefresh({
     refresh: refreshTicket,
-    errorMessage,
+    errorMessage: (error) => errorMessage(error, 'The selected credit spread could not be refreshed.'),
   })
-  const activeCsJob =
-    state.activeJob?.screener === 'cs' ? state.activeJob : null
-  const snapshotCandidates = state.csSnapshot
-    ? csCandidates(state.csSnapshot.candidates)
-    : []
+  const activeCsJob = state.activeJob?.screener === 'cs' ? state.activeJob : null
+  const snapshotCandidates = slice.snapshot ? csCandidates(slice.snapshot.candidates) : []
   const scanDisabled =
-    !state.csTickers.length ||
-    Boolean(state.csFilterError) ||
+    !slice.tickers.length ||
+    Boolean(slice.filterError) ||
     Boolean(state.activeJob) ||
     state.isLoading
 
@@ -77,98 +66,67 @@ export function CsScreenerPage({
           ask: refreshed.long_ask,
         },
       ],
-      warning: refreshedCandidateWarning(refreshed, candidate, state.csFilters),
+      warning: refreshedCandidateWarning(refreshed, candidate, slice.filters),
     }
   }
 
   return (
-    <main className="w-full space-y-5">
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          Credit Spread Screener
-        </h1>
-      </header>
-
-      {state.loadError ? <Alert variant="destructive">{state.loadError}</Alert> : null}
-      {state.scanActionError ? (
-        <Alert variant="destructive">{state.scanActionError}</Alert>
-      ) : null}
-      <Card className="pt-2">
-        <CardContent className="space-y-6">
-          <TickerListEditor
-            tickers={state.csTickers}
-            error={state.tickerSaveError}
-            isPending={state.isTickerUpdatePending}
-            clearTitle="Clear the CS ticker list?"
-            clearDescription="This removes every saved ticker from the credit-spread screener only. Completed scan snapshots are not changed."
-            clearActionLabel="Clear CS list"
-            onAdd={state.addCsTickers}
-            onRemove={state.removeCsTicker}
-            onClear={state.clearCsTickers}
-          />
-          <CsFilterControls
-            draft={state.csFilterDraft}
-            error={state.csFilterError}
-            saveStatus={state.csFilterSaveStatus}
-            onChange={state.updateCsFilterDraft}
-            onToggleStrategy={state.toggleCsStrategyType}
-            onToggleWidth={state.toggleCsSpreadWidth}
-            onReset={state.resetCsFilters}
-            action={
-              activeCsJob ? (
-                <Button
-                  variant="destructive"
-                  className="cursor-pointer"
-                  onClick={() => void state.cancelActiveScan()}
-                >
-                  <Square className="fill-current" />
-                  Cancel scan
-                </Button>
-              ) : (
-                <Button
-                  className="cursor-pointer disabled:cursor-not-allowed"
-                  disabled={scanDisabled}
-                  onClick={() => void state.startCsScan()}
-                >
-                  <Radar />
-                  Scan {state.csTickers.length || ''} ticker
-                  {state.csTickers.length === 1 ? '' : 's'}
-                </Button>
-              )
-            }
-          />
-        </CardContent>
-      </Card>
-
-      <section className="space-y-3" aria-labelledby="cs-results-heading">
-        <ScreenerResultsStatus
-          activeJob={activeCsJob}
-          snapshot={state.csSnapshot}
-          visibleCount={snapshotCandidates.length}
-          headingId="cs-results-heading"
+    <ScreenerPageShell
+      title="Credit Spread Screener"
+      loadError={state.loadError}
+      scanActionError={state.scanActionError}
+      headingId="cs-results-heading"
+      activeJob={activeCsJob}
+      snapshot={slice.snapshot}
+      visibleCount={snapshotCandidates.length}
+      ticketError={ticket.ticketError}
+      isRefreshingTicket={ticket.isRefreshingTicket}
+      refreshMessage="Refreshing both spread legs and net credit..."
+      tickerEditor={
+        <TickerListEditor
+          tickers={slice.tickers}
+          error={state.tickerSaveError}
+          isPending={state.isTickerUpdatePending}
+          clearTitle="Clear the CS ticker list?"
+          clearDescription="This removes every saved ticker from the credit-spread screener only. Completed scan snapshots are not changed."
+          clearActionLabel="Clear CS list"
+          onAdd={slice.addTickers}
+          onRemove={slice.removeTicker}
+          onClear={slice.clearTickers}
         />
-        {ticket.ticketError ? (
-          <Alert variant="destructive">{ticket.ticketError}</Alert>
-        ) : null}
-        {ticket.isRefreshingTicket ? (
-          <Alert className="flex items-center gap-2">
-            <LoaderCircle className="size-4 shrink-0 animate-spin" />
-            <span>Refreshing both spread legs and net credit...</span>
-          </Alert>
-        ) : null}
+      }
+      filters={
+        <CsFilterControls
+          draft={slice.filterDraft}
+          error={slice.filterError}
+          saveStatus={slice.filterSaveStatus}
+          onChange={slice.updateFilterDraft}
+          onToggleStrategy={slice.toggleStrategyType}
+          onToggleWidth={slice.toggleSpreadWidth}
+          onReset={slice.resetFilters}
+          action={
+            <ScanActionButton
+              activeJob={activeCsJob}
+              disabled={scanDisabled}
+              tickerCount={slice.tickers.length}
+              onStartScan={slice.startScan}
+              onCancelScan={state.cancelActiveScan}
+            />
+          }
+        />
+      }
+      results={
         <CsResultsTable
           candidates={snapshotCandidates}
-          emptyMessage={
-            state.csSnapshot ? 'No matching spreads' : 'Start a scan'
-          }
-          sort={state.csSort}
-          onSort={state.setCsSort}
+          emptyMessage={slice.snapshot ? 'No matching spreads' : 'Start a scan'}
+          sort={slice.sort}
+          onSort={slice.setSort}
           onActivate={(candidate) => {
-            onCandidateActivate?.(candidate)
             void ticket.refreshTicket(candidate)
           }}
         />
-      </section>
+      }
+    >
       {ticket.ticketLegs.length ? (
         <OptionStrategyTicket
           key={`${ticket.ticketLegs[0].ticker}-${ticket.ticketLegs[0].expiration}-${ticket.ticketLegs[0].strike}-${ticket.ticketLegs[1]?.strike}`}
@@ -183,53 +141,6 @@ export function CsScreenerPage({
           onOpenChange={ticket.setIsTicketOpen}
         />
       ) : null}
-    </main>
-  )
-}
-
-function refreshedCandidateWarning(
-  refreshed: Awaited<ReturnType<typeof refreshOptionsScreenerSpreadQuote>>,
-  candidate: CreditSpreadCandidate,
-  filters: {
-    minimum_dte: number
-    maximum_dte: number
-    minimum_absolute_delta: number
-    maximum_absolute_delta: number
-    minimum_annualized_return: number
-  },
-) {
-  const refreshedDte = daysToExpiration(refreshed.expiration)
-  const absoluteDelta =
-    refreshed.short_delta === null ? null : Math.abs(refreshed.short_delta)
-  const width = Math.abs(refreshed.short_strike - refreshed.long_strike)
-  const expectedWidth = Math.abs(candidate.short_strike - candidate.long_strike)
-  const annualizedReturn =
-    refreshedDte > 0 && refreshed.maximum_loss > 0
-      ? (refreshed.net_midpoint / refreshed.maximum_loss) *
-        (365 / refreshedDte) *
-        100
-      : null
-  const matches =
-    refreshedDte >= filters.minimum_dte &&
-    refreshedDte <= filters.maximum_dte &&
-    absoluteDelta !== null &&
-    absoluteDelta >= filters.minimum_absolute_delta &&
-    absoluteDelta <= filters.maximum_absolute_delta &&
-    annualizedReturn !== null &&
-    annualizedReturn >= filters.minimum_annualized_return &&
-    Math.abs(width - expectedWidth) <= 1e-6 &&
-    refreshed.net_midpoint > 0 &&
-    refreshed.net_midpoint < width &&
-    refreshed.maximum_loss > 0
-
-  return matches
-    ? null
-    : 'The refreshed spread no longer satisfies the current CS scan filters, exact width, or maximum-loss rules.'
-}
-
-function errorMessage(error: unknown) {
-  return requestErrorMessage(
-    error,
-    'The selected credit spread could not be refreshed.',
+    </ScreenerPageShell>
   )
 }

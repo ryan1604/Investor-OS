@@ -7,19 +7,8 @@ export function mergeLiveChainRows(
   rows: OptionChainRow[],
   message: string | null,
 ): OptionChainResponse {
-  if (!rows.length) {
-    return {
-      ticker,
-      expiration,
-      underlying_price: chain?.underlying_price ?? null,
-      rows: chain?.rows ?? [],
-      message: message ?? chain?.message ?? null,
-      warning: chain?.warning ?? null,
-    }
-  }
-
   const currentRows = chain?.rows ?? []
-  const nextRows = [...currentRows]
+  const nextRows = rows.length ? [...currentRows] : currentRows
   const rowIndexes = createStrikeIndex(nextRows)
   let didAppendRow = false
 
@@ -71,16 +60,6 @@ export function mergeLiveChainSnapshot(
     message: message ?? chain?.message ?? null,
     warning,
   }
-}
-
-export function mergeLiveChainRow(
-  chain: OptionChainResponse | null,
-  ticker: string,
-  expiration: string,
-  row: OptionChainRow,
-  message: string | null,
-): OptionChainResponse {
-  return mergeLiveChainRows(chain, ticker, expiration, [row], message)
 }
 
 function createStrikeIndex(rows: OptionChainRow[]) {

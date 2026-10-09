@@ -191,7 +191,7 @@ export type AnalysisRiskSnapshot = {
   margin_call_beyond_path: boolean
 }
 
-export type PortfolioAnalysisHistoryResponse = {
+type PortfolioAnalysisHistoryResponse = {
   account: string
   snapshots: AnalysisRiskSnapshot[]
 }
@@ -246,7 +246,7 @@ export type RiskLimit = {
   updated_at: string
 }
 
-export type RiskLimitsResponse = {
+type RiskLimitsResponse = {
   account: string
   limits: RiskLimit[]
 }

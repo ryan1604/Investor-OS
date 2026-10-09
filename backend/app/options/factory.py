@@ -2,13 +2,15 @@ import threading
 from typing import Protocol
 
 from app.config import Settings
-from app.ib.options import (
+from app.ib.daily_bars import (
     IbHistoricalDailyBarProvider,
     IbHistoricalDailyBarStreamProvider,
+)
+from app.ib.option_scanner import IbOptionScannerProvider
+from app.ib.options import (
     IbOptionChainSnapshotProvider,
     IbOptionChainStreamProvider,
     IbOptionMetadataProvider,
-    IbOptionScannerProvider,
 )
 from app.ib.portfolio import PortfolioClient
 from app.options.client import OptionsClient
@@ -21,6 +23,9 @@ from app.schemas import (
 
 
 class OptionsAnalysisClient(Protocol):
+    def shutdown(self) -> None:
+        ...
+
     def get_analysis(self, ticker: str) -> OptionsAnalysisResponse:
         ...
 

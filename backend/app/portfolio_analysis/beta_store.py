@@ -113,4 +113,5 @@ class BetaStore(RowDatabase):
                 "DELETE FROM beta_overrides WHERE ticker = ?",
                 (ticker,),
             )
-        return cursor.rowcount > 0
+            row_count = cursor.rowcount
+        return row_count > 0

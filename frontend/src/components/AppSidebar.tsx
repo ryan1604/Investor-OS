@@ -1,89 +1,9 @@
-import {
-  BriefcaseBusiness,
-  CalendarClock,
-  CalendarDays,
-  ChartCandlestick,
-  ChartNoAxesCombined,
-  ClipboardList,
-  Gauge,
-  ListOrdered,
-  ListChecks,
-  Radar,
-} from 'lucide-react'
-
-import type { AppPage } from '@/App'
+import { pages as navigationItems, type AppPage } from '@/lib/pages'
 
 type AppSidebarProps = {
   activePage: AppPage
   onPageChange: (page: AppPage) => void
 }
-
-const navigationItems: {
-  page: AppPage
-  label: string
-  icon: typeof BriefcaseBusiness
-}[] = [
-  {
-    page: 'portfolio',
-    label: 'Portfolio',
-    icon: BriefcaseBusiness,
-  },
-  {
-    page: 'portfolio-analysis',
-    label: 'Portfolio Analysis',
-    icon: Gauge,
-  },
-  {
-    page: 'options',
-    label: 'Options',
-    icon: ChartCandlestick,
-  },
-  {
-    page: 'orders',
-    label: 'Orders',
-    icon: ListChecks,
-  },
-  {
-    page: 'csp-screener',
-    label: 'CSP Screener',
-    icon: Radar,
-  },
-  {
-    page: 'cc-screener',
-    label: 'CC Screener',
-    icon: Radar,
-  },
-  {
-    page: 'cs-screener',
-    label: 'CS Screener',
-    icon: Radar,
-  },
-  {
-    page: 'options-trade-tracker',
-    label: 'Options Trade Tracker',
-    icon: ClipboardList,
-  },
-  {
-    page: 'day-trading-tracker',
-    label: 'Day Trading Tracker',
-    icon: CalendarDays,
-  },
-  {
-    page: 'stock-analysis',
-    label: 'Stock Analysis',
-    icon: ChartNoAxesCombined,
-  },
-  {
-    page: 'earnings-watch',
-    label: 'Earnings Watch',
-    icon: CalendarClock,
-  },
-  {
-    page: 'rank-stocks',
-    label: 'Rank Stocks',
-    icon: ListOrdered,
-  },
-]
 
 export function AppSidebar({ activePage, onPageChange }: AppSidebarProps) {
   return (
@@ -100,12 +20,12 @@ export function AppSidebar({ activePage, onPageChange }: AppSidebarProps) {
             const Icon = item.icon
 
             return (
-              <li key={item.page}>
+              <li key={item.id}>
                 <button
                   type="button"
-                  aria-current={activePage === item.page ? 'page' : undefined}
+                  aria-current={activePage === item.id ? 'page' : undefined}
                   className="flex h-8 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm ring-sidebar-ring outline-hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:cursor-pointer active:bg-sidebar-accent active:text-sidebar-accent-foreground aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium aria-[current=page]:text-sidebar-accent-foreground [&_svg]:size-4 [&_svg]:shrink-0 [&>span:last-child]:truncate"
-                  onClick={() => onPageChange(item.page)}
+                  onClick={() => onPageChange(item.id)}
                 >
                   <Icon />
                   <span>{item.label}</span>

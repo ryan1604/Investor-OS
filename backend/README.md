@@ -2,6 +2,8 @@
 
 FastAPI backend for the Investor OS local dashboard. It connects to Interactive Brokers TWS through `ibapi` and serves portfolio, portfolio analysis, options, screeners, orders, stock analysis, portfolio history, trade trackers, and Earnings Watch.
 
+Options analysis keeps orchestration and caches in `app/options/client.py`, shared provider types in `app/options/types.py`, live chain rotation in `app/options/rotation.py`, and calculation helpers in `app/options/domain.py`.
+
 ## Local Setup
 
 Install or update dependencies:
@@ -29,11 +31,28 @@ Settings.ib_client_id = 0
 Settings.options_database_path = "data/options.sqlite3"
 Settings.options_screeners_database_path = "data/options_screeners.sqlite3"
 Settings.options_trade_trackers_database_path = "data/options_trade_trackers.sqlite3"
+Settings.day_trading_tracker_database_path = "data/day_trading_tracker.sqlite3"
 Settings.orders_database_path = "data/orders.sqlite3"
 Settings.stock_analysis_database_path = "data/stock_analysis.sqlite3"
 Settings.portfolio_chart_values_database_path = "data/portfolio_chart_values.sqlite3"
 Settings.earnings_watch_database_path = "data/earnings_watch.sqlite3"
 Settings.portfolio_analysis_database_path = "data/portfolio_analysis.sqlite3"
+Settings.ib_request_queue_timeout_seconds = 0.25
+Settings.max_concurrent_options_analysis = 2
+Settings.max_concurrent_option_chains = 2
+Settings.max_concurrent_order_writes = 1
+Settings.max_concurrent_stock_analysis_reads = 4
+Settings.max_concurrent_stock_analysis_writes = 2
+Settings.max_concurrent_options_screener_tickers = 4
+Settings.options_screener_job_retention_minutes = 30
+Settings.options_screener_subscriber_queue_size = 64
+Settings.option_chain_context_workers = 2
+Settings.max_option_chain_strikes = 80
+Settings.max_option_chain_stream_strikes = 32
+Settings.max_market_data_lines = 100
+Settings.market_data_line_reserve = 5
+Settings.option_chain_rotation_lines = 10
+Settings.order_subscriber_queue_size = 32
 Settings.risk_free_rate = 0.04
 Settings.alpha_vantage_api_key = ALPHA_VANTAGE_API_KEY from .env
 Settings.ibkr_flex_token = IBKR_FLEX_TOKEN from .env (secret, excluded from settings serialization)
@@ -60,7 +79,7 @@ Settings.allowed_origins = [
 
 `Settings.portfolio_analysis_database_path` stores per-session beta cache rows, beta overrides, per-account risk limits, and daily risk snapshots. `Settings.risk_free_rate` is the fixed rate used by the Portfolio Analysis Black-Scholes model.
 
-All seven local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization is handled by the stores.
+All nine local SQLite stores use Python's standard `sqlite3` module directly. The backend does not carry SQLAlchemy or Alembic; local schema initialization is handled by the stores.
 
 ## Portfolio API
 
@@ -125,6 +144,8 @@ Analysis is read-only and built from the cached portfolio snapshot. It returns e
 Each WebSocket connection registers an analysis viewer. While one exists, position quotes stay subscribed and the stocks underlying option positions that are not held are quoted in the portfolio market-data line group; they are released when the last viewer disconnects.
 
 Beta is a one-year daily regression against SPY, cached per ticker per US session; overrides (`{"beta": x}`, |x| <= 10) take precedence. Limits are replaced as a whole set (`{"limits": {...}}`; an empty object clears them). A risk snapshot is saved at most once a minute while a viewer has been connected for at least a minute; `post_close` snapshots replace `intraday` ones for the same session.
+
+Shared New York session dates and snapshot keys live in `app/sessions.py`. Weekend rollback does not account for market holidays.
 
 ## Options API
 

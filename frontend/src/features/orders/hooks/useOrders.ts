@@ -6,20 +6,19 @@ import {
   type OrderRecord,
   type OrderStatusUpdate,
 } from '@/api/orders'
-import { errorMessage } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
+import { connectWithBackoff } from '@/lib/connectWithBackoff'
 
-const INITIAL_RECONNECT_DELAY_MS = 1_000
-const MAX_RECONNECT_DELAY_MS = 10_000
-
-export function useOrders() {
+export function useOrders(isEnabled = true) {
   const [orders, setOrders] = useState<OrderRecord[]>([])
   const [warning, setWarning] = useState<string | null>(null)
 
   useEffect(() => {
+    if (!isEnabled) {
+      return
+    }
+
     let ignore = false
-    let reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-    let socket: WebSocket | null = null
     let hasStreamUpdate = false
 
     void fetchOrders()
@@ -35,18 +34,8 @@ export function useOrders() {
         }
       })
 
-    const connect = () => {
-      socket = new WebSocket(ORDERS_WS_URL)
-
-      socket.onopen = () => {
-        reconnectDelay = INITIAL_RECONNECT_DELAY_MS
-      }
-
-      socket.onmessage = (event) => {
-        if (ignore) {
-          return
-        }
-
+    const disconnect = connectWithBackoff(ORDERS_WS_URL, {
+      onMessage: (event) => {
         const update = JSON.parse(event.data as string) as OrderStatusUpdate
         hasStreamUpdate = true
         if (update.type === 'snapshot') {
@@ -59,28 +48,14 @@ export function useOrders() {
           setOrders((currentOrders) => upsertOrder(currentOrders, order))
           setWarning(null)
         }
-      }
-
-      socket.onclose = () => {
-        if (ignore) {
-          return
-        }
-
-        reconnectTimer = setTimeout(connect, reconnectDelay)
-        reconnectDelay = Math.min(reconnectDelay * 2, MAX_RECONNECT_DELAY_MS)
-      }
-    }
-
-    connect()
+      },
+    })
 
     return () => {
       ignore = true
-      if (reconnectTimer !== null) {
-        clearTimeout(reconnectTimer)
-      }
-      socket?.close()
+      disconnect()
     }
-  }, [])
+  }, [isEnabled])
 
   return { orders, warning }
 }

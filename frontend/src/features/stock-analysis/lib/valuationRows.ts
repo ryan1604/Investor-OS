@@ -1,4 +1,4 @@
-export const VALUATION_ROW_REGISTRY = [
+const VALUATION_ROW_REGISTRY = [
   {
     key: 'amountOfShares',
     label: 'Amount of shares',
@@ -205,7 +205,7 @@ export const VALUATION_ROW_REGISTRY = [
   },
 ] as const
 
-export type ValuationRowDefinition = (typeof VALUATION_ROW_REGISTRY)[number]
+type ValuationRowDefinition = (typeof VALUATION_ROW_REGISTRY)[number]
 export type ValuationRowKey = ValuationRowDefinition['key']
 export type EditableRowKey = Extract<
   ValuationRowDefinition,
@@ -219,7 +219,6 @@ export type SharePriceRowKey = Extract<
   ValuationRowDefinition,
   { hasMultiplier: true }
 >['key']
-export type ValuationFormatKind = ValuationRowDefinition['formatKind']
 
 export const EDITABLE_ROW_DEFINITIONS = VALUATION_ROW_REGISTRY.filter(
   (row): row is Extract<ValuationRowDefinition, { source: 'editable' }> =>

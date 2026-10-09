@@ -1,6 +1,4 @@
 import json
-import re
-import sqlite3
 from pathlib import Path
 from typing import cast
 
@@ -11,9 +9,7 @@ from app.schemas import (
     OptionsScreenerTickerList,
 )
 from app.sqlite import RowDatabase
-
-TICKER_PATTERN = re.compile(r"^[A-Z0-9.-]+$")
-TICKER_SEPARATOR_PATTERN = re.compile(r"[\s,]+")
+from app.tickers import parse_ticker_tokens
 
 
 class OptionsScreenerSettingsStore(RowDatabase):
@@ -151,15 +147,13 @@ def normalize_tickers(values: list[str]) -> list[str]:
     normalized_tickers: list[str] = []
     seen: set[str] = set()
     for value in values:
-        for token in TICKER_SEPARATOR_PATTERN.split(value.strip()):
-            ticker = token.upper()
-            if not ticker:
-                continue
-            if not TICKER_PATTERN.fullmatch(ticker):
-                raise ValueError(
-                    f"Invalid ticker '{token}'. "
-                    "Tickers may contain only letters, numbers, '.' and '-'."
-                )
+        tickers, rejected = parse_ticker_tokens(value)
+        if rejected:
+            raise ValueError(
+                f"Invalid ticker '{rejected[0]}'. "
+                "Tickers may contain only letters, numbers, '.' and '-'."
+            )
+        for ticker in tickers:
             if ticker not in seen:
                 seen.add(ticker)
                 normalized_tickers.append(ticker)

@@ -6,7 +6,7 @@ export type PortfolioChartValue = {
   updated_at: string
 }
 
-export type PortfolioChartValuesResponse = {
+type PortfolioChartValuesResponse = {
   account: string
   rows: PortfolioChartValue[]
 }

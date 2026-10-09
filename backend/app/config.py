@@ -57,14 +57,10 @@ class Settings(BaseModel):
 @lru_cache
 def get_settings() -> Settings:
     return Settings(
-        alpha_vantage_api_key=alpha_vantage_api_key(),
+        alpha_vantage_api_key=dotenv_value("ALPHA_VANTAGE_API_KEY"),
         ibkr_flex_token=dotenv_value("IBKR_FLEX_TOKEN"),
         ibkr_flex_query_id=dotenv_value("IBKR_FLEX_QUERY_ID"),
     )
-
-
-def alpha_vantage_api_key() -> str | None:
-    return dotenv_value("ALPHA_VANTAGE_API_KEY")
 
 
 def dotenv_value(key: str) -> str | None:

@@ -1,7 +1,5 @@
 from fastapi import APIRouter, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
 
 from app.portfolio.chart_values_store import PortfolioChartValue
 from app.portfolio.nav_store import DailyNavResponse
@@ -27,19 +25,7 @@ def portfolio_nav(request: Request, account: str = Query(...)) -> DailyNavRespon
         required_account(account),
         configured=request.app.state.settings.ibkr_flex_configured,
     )
-    service = request.app.state.portfolio_nav_sync
-    if result.sync.configured:
-        result.sync.error = service.error or result.sync.error
-        target = datetime.now(ZoneInfo("America/New_York")).date() - timedelta(days=1)
-        while target.weekday() > 4:
-            target -= timedelta(days=1)
-        result.sync.state = (
-            "syncing" if service.syncing else
-            "failed" if result.sync.error else
-            "pending" if not result.latest_report_date else
-            "current" if result.latest_report_date >= target.isoformat() else "stale"
-        )
-    return result
+    return request.app.state.portfolio_nav_sync.update_status(result)
 
 
 @router.get("/portfolio", response_model=PortfolioResponse)

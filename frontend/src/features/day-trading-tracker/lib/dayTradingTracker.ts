@@ -1,9 +1,11 @@
+import { draftNumberText } from '@/lib/drafts'
+import { isoDate } from '@/lib/dates'
 import type {
   DayTradingRow,
   DayTradingRowRequest,
 } from '@/api/dayTradingTracker'
 
-export const DAY_TRADING_MIN_DATE = '2026-08-01'
+const DAY_TRADING_MIN_DATE = '2026-08-01'
 
 export type DayTradeDraftRow = {
   localId: string
@@ -32,7 +34,7 @@ export type CalendarDay = {
   isAllowed: boolean
 }
 
-export type CompletedDayTrade = {
+type CompletedDayTrade = {
   row: DayTradeDraftRow
   buy: number
   sell: number
@@ -41,7 +43,7 @@ export type CompletedDayTrade = {
   grossPnl: number
 }
 
-export type DayTradingStats = {
+type DayTradingStats = {
   completedTrades: number
   wins: number
   losses: number
@@ -49,7 +51,7 @@ export type DayTradingStats = {
   pnl: number
 }
 
-export type MonthlyDayTradingStats = DayTradingStats & {
+type MonthlyDayTradingStats = DayTradingStats & {
   winDays: number
   lossDays: number
 }
@@ -58,7 +60,7 @@ export function currentIsoDate() {
   return isoDate(new Date())
 }
 
-export function currentMonthKey(today = currentIsoDate()) {
+function currentMonthKey(today = currentIsoDate()) {
   return today.slice(0, 7)
 }
 
@@ -324,17 +326,6 @@ function parseOptionalNonNegativeDecimal(value: string) {
 function validNonNegativeDecimal(value: string) {
   const parsedValue = parseOptionalNonNegativeDecimal(value)
   return parsedValue === 'invalid' ? null : parsedValue
-}
-
-function draftNumberText(value: number | null) {
-  return value === null ? '' : String(value)
-}
-
-function isoDate(date: Date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(
-    2,
-    '0',
-  )}-${String(date.getDate()).padStart(2, '0')}`
 }
 
 function monthKey(date: Date) {

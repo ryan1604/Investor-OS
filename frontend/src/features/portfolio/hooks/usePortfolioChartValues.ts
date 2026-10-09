@@ -6,7 +6,8 @@ import {
   type PortfolioChartValueRequest,
   type PortfolioChartValue,
 } from '@/api/portfolioChartValues'
-import { errorMessage, isAbortError } from '@/api/client'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 
 function portfolioChartValuesErrorMessage(error: unknown) {
   return errorMessage(error, 'Portfolio chart values request failed')

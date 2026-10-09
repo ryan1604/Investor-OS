@@ -154,12 +154,13 @@ class OptionsTradeTrackerStore(RowDatabase):
                     """,
                     (name.strip(), updated_at, tracker_id),
                 )
+                row_count = cursor.rowcount
         except sqlite3.IntegrityError as error:
             raise OptionsTradeTrackerDuplicateNameError(
                 "Tracker name already exists."
             ) from error
 
-        if cursor.rowcount == 0:
+        if row_count == 0:
             raise OptionsTradeTrackerNotFoundError("Tracker not found.")
 
         tracker = self.get_tracker(tracker_id)
@@ -174,8 +175,9 @@ class OptionsTradeTrackerStore(RowDatabase):
                 "DELETE FROM options_trade_trackers WHERE id = ?",
                 (tracker_id,),
             )
+            row_count = cursor.rowcount
 
-        if cursor.rowcount == 0:
+        if row_count == 0:
             raise OptionsTradeTrackerNotFoundError("Tracker not found.")
 
     def list_trades(self, tracker_id: str) -> list[OptionsTrade]:
@@ -298,8 +300,9 @@ class OptionsTradeTrackerStore(RowDatabase):
                 """,
                 (notes, updated_at, tracker_id),
             )
+            row_count = cursor.rowcount
 
-        if cursor.rowcount == 0:
+        if row_count == 0:
             raise OptionsTradeTrackerNotFoundError("Tracker not found.")
 
         tracker = self.get_tracker(tracker_id)

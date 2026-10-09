@@ -12,7 +12,7 @@ from app.portfolio_analysis.beta import BetaService
 from app.portfolio_analysis.exposure import build_account_exposure
 from app.portfolio_analysis.pairing import is_supported_position
 from app.portfolio_analysis.realised import NavPoint, build_realised_stats
-from app.portfolio_analysis.sessions import snapshot_session
+from app.sessions import snapshot_session
 from app.portfolio_analysis.snapshot_store import RiskSnapshotStore
 from app.portfolio_analysis.stress import build_stress_grid
 from app.schemas import (

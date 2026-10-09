@@ -1,4 +1,4 @@
-import { errorMessage } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
 
 export function parsePositiveNumber(value: string) {
   if (!value.trim()) {

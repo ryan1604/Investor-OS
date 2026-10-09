@@ -9,19 +9,20 @@ import {
   upsertStockAnalysisModel,
   type StockAnalysisPayload,
 } from '@/api/stockAnalysis'
-import { errorMessage as requestErrorMessage, isAbortError } from '@/api/client'
-import type { EditingCell } from '@/features/stock-analysis/components/ScenarioValuationTable'
+import { isAbortError } from '@/api/client'
+import { errorMessage } from '@/lib/errors'
+import type { EditingCell } from '@/features/stock-analysis/lib/editingCell'
 import {
   calculateValuationModel,
   createEmptyValuationModel,
   SCENARIO_KEYS,
   stockAnalysisValuationModelFromPayload,
-  type EditableRowKey,
   type ScenarioKey,
   type StockAnalysisValuationModel,
   type ValuationYearValues,
   type YearIndex,
 } from '@/features/stock-analysis/lib/valuationModel'
+import type { EditableRowKey } from '@/features/stock-analysis/lib/valuationRows'
 
 export type SaveStatus = 'idle' | 'loading' | 'saved' | 'saving' | 'unsaved' | 'error'
 
@@ -111,7 +112,7 @@ export function useStockAnalysisModel() {
           }
 
           setSaveStatus('error')
-          setError(errorMessage(requestError))
+          setError(errorMessage(requestError, 'Stock analysis request failed.'))
         })
         .finally(() => {
           savePromisesRef.current.delete(savePromise)
@@ -192,7 +193,7 @@ export function useStockAnalysisModel() {
       setFirstForecastYearInput('')
       setCurrentPriceStatus('unavailable')
       setSaveStatus('error')
-      setError(errorMessage(requestError))
+      setError(errorMessage(requestError, 'Stock analysis request failed.'))
     } finally {
       if (loadRequestControllerRef.current === loadController) {
         loadRequestControllerRef.current = null
@@ -273,7 +274,7 @@ export function useStockAnalysisModel() {
 
       setHasUnsavedChanges(previousHasUnsavedChanges)
       setSaveStatus(previousSaveStatus)
-      setError(errorMessage(requestError))
+      setError(errorMessage(requestError, 'Stock analysis request failed.'))
       return false
     } finally {
       deleteInProgressRef.current = false
@@ -318,7 +319,7 @@ function parseFirstForecastYear(value: string) {
 }
 
 function parseCellValue(value: string) {
-  const trimmedValue = value.replace(/[$,%]/g, '').replaceAll(',', '').trim()
+  const trimmedValue = value.replace(/[$,%]/g, '').trim()
   if (!trimmedValue) {
     return null
   }
@@ -388,8 +389,4 @@ function toStockAnalysisPayload(
     firstForecastYear: model.firstForecastYear,
     ...model.scenarios,
   }
-}
-
-function errorMessage(error: unknown) {
-  return requestErrorMessage(error, 'Stock analysis request failed.')
 }

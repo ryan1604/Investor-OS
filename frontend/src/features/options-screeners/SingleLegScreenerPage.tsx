@@ -1,15 +1,13 @@
-import { LoaderCircle, Radar, Square } from 'lucide-react'
-
 import type { PortfolioResponse } from '@/api/portfolio'
-import { errorMessage as requestErrorMessage } from '@/api/client'
 import {
   refreshOptionsScreenerQuote,
   type OptionsScreenerFilters,
   type OptionsScreenerQuoteRefreshResponse,
+  type ScreenerCandidate,
 } from '@/api/optionsScreeners'
-import { Alert } from '@/components/ui/alert'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
+import { OptionStrategyTicket } from '@/features/orders/components/OptionStrategyTicket'
+import { ScanActionButton } from '@/features/options-screeners/components/ScanActionButton'
+import { ScreenerPageShell } from '@/features/options-screeners/components/ScreenerPageShell'
 import {
   SingleLegResultsTable,
   type SingleLegCandidate,
@@ -17,18 +15,16 @@ import {
   type SingleLegSortKey,
 } from '@/features/options-screeners/components/SingleLegResultsTable'
 import { ScreenerFilterControls } from '@/features/options-screeners/components/ScreenerFilterControls'
-import { ScreenerResultsStatus } from '@/features/options-screeners/components/ScreenerResultsStatus'
 import { TickerListEditor } from '@/features/options-screeners/components/TickerListEditor'
 import { useScreenerTicketRefresh } from '@/features/options-screeners/hooks/useScreenerTicketRefresh'
-import { useOptionsScreeners } from '@/features/options-screeners/OptionsScreenersProvider'
-import type { ScreenerFilterDraft } from '@/features/options-screeners/lib/screenerSettings'
-import { OptionStrategyTicket } from '@/features/options/components/OptionStrategyTicket'
+import { useOptionsScreeners } from '@/features/options-screeners/hooks/useOptionsScreeners'
+import { errorMessage } from '@/lib/errors'
 
 export type SingleLegScreenerConfig<Candidate extends SingleLegCandidate> = {
   title: string
   headingId: string
   right: 'PUT' | 'CALL'
-  invalidSortKey: SingleLegSortKey
+  selectCandidates: (candidates: ScreenerCandidate[]) => Candidate[]
   finalColumn: SingleLegColumn<Candidate>
   warning: (
     refreshed: OptionsScreenerQuoteRefreshResponse,
@@ -38,55 +34,37 @@ export type SingleLegScreenerConfig<Candidate extends SingleLegCandidate> = {
 }
 
 export function SingleLegScreenerPage<Candidate extends SingleLegCandidate>({
+  screener,
   config,
-  activeJob,
-  snapshot,
-  candidates,
-  filterDraft,
-  filterError,
-  filterSaveStatus,
-  updateFilterDraft,
-  resetFilters,
-  filters,
-  sort,
-  setSort,
-  startScan,
   portfolio,
   selectedAccount,
-  onCandidateActivate,
 }: {
+  screener: 'csp' | 'cc'
   config: SingleLegScreenerConfig<Candidate>
-  activeJob: ReturnType<typeof useOptionsScreeners>['activeJob']
-  snapshot: ReturnType<typeof useOptionsScreeners>['cspSnapshot']
-  candidates: Candidate[]
-  filterDraft: ScreenerFilterDraft
-  filterError: string | null
-  filterSaveStatus: ReturnType<typeof useOptionsScreeners>['cspFilterSaveStatus']
-  updateFilterDraft: ReturnType<
-    typeof useOptionsScreeners
-  >['updateCspFilterDraft']
-  resetFilters: () => void
-  filters: OptionsScreenerFilters
-  sort: {
-    key: SingleLegSortKey
-    direction: 'asc' | 'desc'
-  }
-  setSort: (key: SingleLegSortKey) => void
-  startScan: () => Promise<void>
   portfolio: PortfolioResponse | null
   selectedAccount: string | null
-  onCandidateActivate?: (candidate: Candidate) => void
 }) {
   const state = useOptionsScreeners()
+  const slice = state.screeners[screener]
+  const activeJob = state.activeJob?.screener === screener ? state.activeJob : null
+  const candidates = slice.snapshot ? config.selectCandidates(slice.snapshot.candidates) : []
   const ticket = useScreenerTicketRefresh({
     refresh: refreshTicket,
-    errorMessage,
+    errorMessage: (error) => errorMessage(error, 'The selected option contract could not be refreshed.'),
   })
   const scanDisabled =
-    !state.cspTickers.length ||
-    Boolean(filterError) ||
+    !slice.tickers.length ||
+    Boolean(slice.filterError) ||
     Boolean(state.activeJob) ||
     state.isLoading
+
+  function setSort(key: SingleLegSortKey) {
+    if (screener === 'csp' && key !== 'gain_percentage') {
+      state.screeners.csp.setSort(key)
+    } else if (screener === 'cc' && key !== 'discount_percentage') {
+      state.screeners.cc.setSort(key)
+    }
+  }
 
   async function refreshTicket(candidate: Candidate) {
     const refreshed = await refreshOptionsScreenerQuote({
@@ -109,96 +87,63 @@ export function SingleLegScreenerPage<Candidate extends SingleLegCandidate>({
           ask: refreshed.ask,
         },
       ],
-      warning: config.warning(refreshed, candidate, filters),
+      warning: config.warning(refreshed, candidate, slice.filters),
     }
   }
 
   return (
-    <main className="w-full space-y-5">
-      <header>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">
-          {config.title}
-        </h1>
-      </header>
-
-      {state.loadError ? <Alert variant="destructive">{state.loadError}</Alert> : null}
-      {state.scanActionError ? (
-        <Alert variant="destructive">{state.scanActionError}</Alert>
-      ) : null}
-      <Card className="pt-2">
-        <CardContent className="space-y-6">
-          <TickerListEditor
-            tickers={state.cspTickers}
-            error={state.tickerSaveError}
-            isPending={state.isTickerUpdatePending}
-            onAdd={state.addCspTickers}
-            onRemove={state.removeCspTicker}
-            onClear={state.clearCspTickers}
-          />
-          <ScreenerFilterControls
-            draft={filterDraft}
-            error={filterError}
-            saveStatus={filterSaveStatus}
-            onChange={updateFilterDraft}
-            onReset={resetFilters}
-            action={
-              activeJob ? (
-                <Button
-                  variant="destructive"
-                  className="cursor-pointer"
-                  onClick={() => void state.cancelActiveScan()}
-                >
-                  <Square className="fill-current" />
-                  Cancel scan
-                </Button>
-              ) : (
-                <Button
-                  className="cursor-pointer disabled:cursor-not-allowed"
-                  disabled={scanDisabled}
-                  onClick={() => void startScan()}
-                >
-                  <Radar />
-                  Scan {state.cspTickers.length || ''} ticker
-                  {state.cspTickers.length === 1 ? '' : 's'}
-                </Button>
-              )
-            }
-          />
-        </CardContent>
-      </Card>
-
-      <section className="space-y-3" aria-labelledby={config.headingId}>
-        <ScreenerResultsStatus
-          activeJob={activeJob}
-          snapshot={snapshot}
-          visibleCount={candidates.length}
-          headingId={config.headingId}
+    <ScreenerPageShell
+      title={config.title}
+      loadError={state.loadError}
+      scanActionError={state.scanActionError}
+      headingId={config.headingId}
+      activeJob={activeJob}
+      snapshot={slice.snapshot}
+      visibleCount={candidates.length}
+      ticketError={ticket.ticketError}
+      isRefreshingTicket={ticket.isRefreshingTicket}
+      refreshMessage="Refreshing the selected contract and quote..."
+      tickerEditor={
+        <TickerListEditor
+          tickers={slice.tickers}
+          error={state.tickerSaveError}
+          isPending={state.isTickerUpdatePending}
+          onAdd={slice.addTickers}
+          onRemove={slice.removeTicker}
+          onClear={slice.clearTickers}
         />
-        {ticket.ticketError ? (
-          <Alert variant="destructive">{ticket.ticketError}</Alert>
-        ) : null}
-        {ticket.isRefreshingTicket ? (
-          <Alert className="flex items-center gap-2">
-            <LoaderCircle className="size-4 shrink-0 animate-spin" />
-            <span>Refreshing the selected contract and quote...</span>
-          </Alert>
-        ) : null}
+      }
+      filters={
+        <ScreenerFilterControls
+          draft={slice.filterDraft}
+          error={slice.filterError}
+          saveStatus={slice.filterSaveStatus}
+          onChange={slice.updateFilterDraft}
+          onReset={slice.resetFilters}
+          action={
+            <ScanActionButton
+              activeJob={activeJob}
+              disabled={scanDisabled}
+              tickerCount={slice.tickers.length}
+              onStartScan={slice.startScan}
+              onCancelScan={state.cancelActiveScan}
+            />
+          }
+        />
+      }
+      results={
         <SingleLegResultsTable
           candidates={candidates}
-          emptyMessage={snapshot ? 'No matching contracts' : 'Start a scan'}
+          emptyMessage={slice.snapshot ? 'No matching contracts' : 'Start a scan'}
           finalColumn={config.finalColumn}
-          sort={sort}
-          onSort={(key) => {
-            if (key !== config.invalidSortKey) {
-              setSort(key)
-            }
-          }}
+          sort={slice.sort}
+          onSort={setSort}
           onActivate={(candidate) => {
-            onCandidateActivate?.(candidate)
             void ticket.refreshTicket(candidate)
           }}
         />
-      </section>
+      }
+    >
       {ticket.ticketLegs.length ? (
         <OptionStrategyTicket
           key={`${ticket.ticketLegs[0].ticker}-${ticket.ticketLegs[0].expiration}-${ticket.ticketLegs[0].strike}`}
@@ -213,13 +158,6 @@ export function SingleLegScreenerPage<Candidate extends SingleLegCandidate>({
           onOpenChange={ticket.setIsTicketOpen}
         />
       ) : null}
-    </main>
-  )
-}
-
-function errorMessage(error: unknown) {
-  return requestErrorMessage(
-    error,
-    'The selected option contract could not be refreshed.',
+    </ScreenerPageShell>
   )
 }

@@ -4,12 +4,10 @@ import {
   VirtualizedResultsTable,
   type ResultsTableColumn,
 } from '@/features/options-screeners/components/VirtualizedResultsTable'
+import type { CashSecuredPutCandidate, CoveredCallCandidate } from '@/api/optionsScreeners'
 import {
-  formatScreenerDelta,
   formatScreenerPercentage,
   formatScreenerPrice,
-  type CashSecuredPutCandidate,
-  type CoveredCallCandidate,
 } from '@/features/options-screeners/lib/screenerResults'
 
 export type SingleLegSortKey =
@@ -59,7 +57,7 @@ const sharedColumns: SingleLegColumn<SingleLegCandidate>[] = [
   {
     key: 'delta',
     label: 'Delta',
-    render: (row) => formatOptional(row.delta, formatScreenerDelta),
+    render: (row) => formatOptional(row.delta, formatScreenerPrice),
   },
   {
     key: 'bid',

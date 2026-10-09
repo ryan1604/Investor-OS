@@ -1,4 +1,6 @@
 import sqlite3
+from collections.abc import Iterator
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 
@@ -7,8 +9,11 @@ class RowDatabase:
         self.database_path = Path(database_path)
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _connect(self) -> sqlite3.Connection:
-        return connect_row_database(self.database_path)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        with closing(connect_row_database(self.database_path)) as connection:
+            with connection:
+                yield connection
 
 
 def connect_row_database(database_path: str | Path) -> sqlite3.Connection:

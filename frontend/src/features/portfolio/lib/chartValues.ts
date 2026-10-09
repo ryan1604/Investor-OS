@@ -1,4 +1,3 @@
-import { formatCurrency, formatNumber } from '@/lib/format'
 
 export type PortfolioChartMetricKey = 'amount_invested'
 
@@ -16,18 +15,18 @@ export type PortfolioChartValueDraftRow = {
   amount_invested?: string | number | null
 }
 
-export type PortfolioChartValueValidationField =
+type PortfolioChartValueValidationField =
   | 'month'
   | 'amount_invested'
   | 'row'
 
-export type PortfolioChartValueValidationIssue = {
+type PortfolioChartValueValidationIssue = {
   index: number
   field: PortfolioChartValueValidationField
   message: string
 }
 
-export type ParsedPortfolioChartValueDraftRow = {
+type ParsedPortfolioChartValueDraftRow = {
   month: string
   amount_invested: number | null
 }
@@ -128,34 +127,12 @@ export function parsePortfolioChartValueDraftRows(
     .sort(compareChartMonths)
 }
 
-export function isValidChartMonth(month: string) {
+function isValidChartMonth(month: string) {
   return MONTH_KEY_PATTERN.test(month.trim())
 }
 
 export function formatMonthLabel(month: string) {
   return shortMonthFormatter.format(monthDate(month))
-}
-
-export function formatCompactCurrency(value: number | null, currency = 'USD') {
-  if (value === null) {
-    return '-'
-  }
-
-  return formatNumber(value, {
-    compactDisplay: 'short',
-    currency,
-    maximumFractionDigits: 1,
-    notation: 'compact',
-    style: 'currency',
-  })
-}
-
-export function formatTooltipCurrency(value: number | null, currency = 'USD') {
-  if (value === null) {
-    return '-'
-  }
-
-  return formatCurrency(value, currency)
 }
 
 function compareChartMonths(

@@ -2,7 +2,7 @@ import type {
   OptionsScreenerFilters,
   OptionsScreenerQuoteRefreshResponse,
 } from '@/api/optionsScreeners'
-import { daysToExpiration } from '@/features/options-screeners/lib/expiration'
+import { daysToExpiration } from '@/lib/dates'
 
 export function singleLegRefreshedContractWarning({
   refreshed,
@@ -40,9 +40,18 @@ function refreshedContractMatchesFilters(
         100
       : null
 
+  return refreshedValuesMatchFilters(refreshedDte, absoluteDelta, annualizedReturn, filters)
+}
+
+export function refreshedValuesMatchFilters(
+  dte: number,
+  absoluteDelta: number | null,
+  annualizedReturn: number | null,
+  filters: OptionsScreenerFilters,
+) {
   return (
-    refreshedDte >= filters.minimum_dte &&
-    refreshedDte <= filters.maximum_dte &&
+    dte >= filters.minimum_dte &&
+    dte <= filters.maximum_dte &&
     absoluteDelta !== null &&
     absoluteDelta >= filters.minimum_absolute_delta &&
     absoluteDelta <= filters.maximum_absolute_delta &&

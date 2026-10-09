@@ -1,6 +1,6 @@
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect
 
-from app.orders.service import OrderServiceUnavailable, OrderServiceValidationError
+from app.http import service_errors_as_http
 from app.request_limits import request_limit_slot
 from app.schemas import (
     OrderAmendmentRequest,
@@ -28,13 +28,9 @@ def transmit_order(
     request: Request,
     order_request: OrderPreviewableRequest,
 ) -> OrderSubmissionResponse:
-    try:
+    with service_errors_as_http():
         with request_limit_slot(request, "order_write"):
             return request.app.state.order_service.submit(order_request)
-    except OrderServiceUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except OrderServiceValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
 
 @router.get("/orders", response_model=list[OrderRecord])
@@ -44,12 +40,8 @@ def orders_snapshot(request: Request) -> list[OrderRecord]:
 
 @router.post("/orders/reconcile")
 def reconcile_orders(request: Request) -> dict[str, str]:
-    try:
+    with service_errors_as_http():
         request.app.state.order_service.reconcile_from_ib()
-    except OrderServiceUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except OrderServiceValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
     return {"message": "Requested IB open-order reconciliation."}
 
 
@@ -59,13 +51,9 @@ def amend_order(
     order_id: int,
     amendment: OrderAmendmentRequest,
 ) -> OrderSubmissionResponse:
-    try:
+    with service_errors_as_http():
         with request_limit_slot(request, "order_write"):
             order = request.app.state.order_service.amend(order_id, amendment)
-    except OrderServiceUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except OrderServiceValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
     return OrderSubmissionResponse(
         order=order,
@@ -79,13 +67,9 @@ def cancel_order(
     order_id: int,
     cancellation: OrderCancellationRequest,
 ) -> OrderSubmissionResponse:
-    try:
+    with service_errors_as_http():
         with request_limit_slot(request, "order_write"):
             order = request.app.state.order_service.cancel(order_id, cancellation)
-    except OrderServiceUnavailable as error:
-        raise HTTPException(status_code=503, detail=str(error)) from error
-    except OrderServiceValidationError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
 
     return OrderSubmissionResponse(
         order=order,

@@ -1,6 +1,6 @@
 import type { NavRow } from '@/api/portfolioNav'
 
-export const NAV_RANGES = ['1M', '3M', 'YTD', '1Y', '3Y', '5Y', 'All'] as const
+const NAV_RANGES = ['1M', '3M', 'YTD', '1Y', '3Y', '5Y', 'All'] as const
 export type NavRange = typeof NAV_RANGES[number]
 
 export function navRangeRows(rows: NavRow[], range: NavRange, today = new Date()) {

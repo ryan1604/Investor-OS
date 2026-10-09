@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from '@/App'
+import { fetchOrders } from '@/api/orders'
 import type { PortfolioResponse } from '@/api/portfolio'
 
 const mocks = vi.hoisted(() => ({
@@ -34,8 +35,9 @@ vi.mock('@/features/portfolio/hooks/usePortfolio', () => ({
   }),
 }))
 
-vi.mock('@/features/orders/hooks/useOrders', () => ({
-  useOrders: () => [],
+vi.mock('@/api/orders', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/orders')>(),
+  fetchOrders: vi.fn(() => new Promise(() => undefined)),
 }))
 
 vi.mock('@/features/portfolio/PortfolioPage', () => ({
@@ -141,13 +143,75 @@ vi.mock('@/features/options-screeners/CsScreenerPage', () => ({
   CsScreenerPage: () => <main>CS screener route</main>,
 }))
 
+class FakeWebSocket {
+  static sockets: FakeWebSocket[] = []
+  onopen: (() => void) | null = null
+  onmessage: ((event: MessageEvent) => void) | null = null
+  onclose: (() => void) | null = null
+  closed = false
+  url: string
+
+  constructor(url: string) {
+    this.url = url
+    FakeWebSocket.sockets.push(this)
+  }
+
+  close() {
+    this.closed = true
+    this.onclose?.()
+  }
+}
+
+beforeEach(() => {
+  FakeWebSocket.sockets = []
+  vi.stubGlobal('WebSocket', FakeWebSocket)
+  vi.mocked(fetchOrders).mockClear()
+})
+
 afterEach(() => {
   cleanup()
+  vi.unstubAllGlobals()
   mocks.portfolio = null
   mocks.loadPortfolio.mockClear()
 })
 
 describe('App', () => {
+  it('shares one order connection when Options has been visited and Orders is active', () => {
+    const { unmount } = render(<App />)
+    expect(FakeWebSocket.sockets).toHaveLength(0)
+    expect(fetchOrders).not.toHaveBeenCalled()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Options' }))
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    const [socket] = FakeWebSocket.sockets
+    expect(new URL(socket.url).pathname).toBe('/orders/ws')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Orders' }))
+    expect(screen.getByTestId('options-workspace').hasAttribute('hidden')).toBe(true)
+    expect(screen.getByText('Orders route')).toBeTruthy()
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(socket.closed).toBe(false)
+    expect(fetchOrders).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Portfolio' }))
+    expect(socket.closed).toBe(false)
+    unmount()
+    expect(socket.closed).toBe(true)
+  })
+
+  it('opens orders only while Orders is active before the first Options visit', () => {
+    render(<App />)
+    fireEvent.click(screen.getByRole('button', { name: 'Orders' }))
+    expect(FakeWebSocket.sockets).toHaveLength(1)
+    expect(fetchOrders).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Portfolio' }))
+    expect(FakeWebSocket.sockets[0].closed).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Orders' }))
+    expect(FakeWebSocket.sockets).toHaveLength(2)
+    expect(fetchOrders).toHaveBeenCalledTimes(2)
+  })
+
   it('renders Portfolio first and navigates between pages', async () => {
     render(<App />)
 

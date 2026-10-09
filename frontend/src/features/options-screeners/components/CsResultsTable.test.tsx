@@ -4,7 +4,7 @@ import { cleanup, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { CsResultsTable } from '@/features/options-screeners/components/CsResultsTable'
-import type { CreditSpreadCandidate } from '@/features/options-screeners/lib/screenerResults'
+import type { CreditSpreadCandidate } from '@/api/optionsScreeners'
 
 vi.mock('@tanstack/react-virtual', () => ({
   useVirtualizer: ({ count }: { count: number }) => ({

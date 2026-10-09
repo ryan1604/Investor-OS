@@ -3,7 +3,7 @@ import { apiWebSocketUrl, jsonRequest, requestJson } from '@/api/client'
 export type OrderAction = 'BUY' | 'SELL'
 export type OrderTimeInForce = 'DAY' | 'GTC'
 export type OrderType = 'MARKET' | 'LIMIT'
-export type OrderStatus =
+type OrderStatus =
   | 'submitted'
   | 'working'
   | 'partially_filled'
@@ -11,7 +11,7 @@ export type OrderStatus =
   | 'filled'
   | 'cancelled'
   | 'rejected'
-export type OrderReconciliationStatus = 'pending' | 'confirmed' | 'stale'
+type OrderReconciliationStatus = 'pending' | 'confirmed' | 'stale'
 export type OptionRight = 'CALL' | 'PUT'
 
 export type StockOrderRequest = {
@@ -25,7 +25,7 @@ export type StockOrderRequest = {
   time_in_force?: OrderTimeInForce
 }
 
-export type OptionStrategyLegRequest = {
+type OptionStrategyLegRequest = {
   con_id?: number | null
   ticker: string
   expiration: string
@@ -91,16 +91,16 @@ export type OrderRecord = {
   preview: OrderPreviewResponse
 }
 
-export type OrderSubmissionResponse = {
+type OrderSubmissionResponse = {
   order: OrderRecord
   message: string
 }
 
-export type OrderCancellationRequest = {
+type OrderCancellationRequest = {
   account: string
 }
 
-export type OrderAmendmentRequest = {
+type OrderAmendmentRequest = {
   account: string
   quantity?: number | null
   limit_price?: number | null

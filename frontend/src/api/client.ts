@@ -1,7 +1,7 @@
-export const API_BASE_URL =
+const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? 'http://127.0.0.1:8000'
 
-export function apiUrl(path: string) {
+function apiUrl(path: string) {
   return `${API_BASE_URL}${path}`
 }
 
@@ -20,10 +20,10 @@ export function encodePathSegment(value: string, emptyMessage: string) {
 }
 
 export function tickerPathSegment(ticker: string) {
-  return encodePathSegment(ticker.trim().toUpperCase(), 'Ticker is required.')
+  return encodePathSegment(ticker.toUpperCase(), 'Ticker is required.')
 }
 
-export async function responseErrorMessage(response: Response, label: string) {
+async function responseErrorMessage(response: Response, label: string) {
   try {
     const payload = (await response.json()) as { detail?: unknown }
 
@@ -56,8 +56,7 @@ export async function requestJson<TResponse>(
 }
 
 export async function requestOk(path: string, label: string, init?: RequestInit) {
-  const response =
-    init === undefined ? await fetch(apiUrl(path)) : await fetch(apiUrl(path), init)
+  const response = await fetch(apiUrl(path), init)
 
   if (!response.ok) {
     throw new Error(await responseErrorMessage(response, label))
@@ -83,8 +82,4 @@ export function jsonRequest<TResponse>(
 
 export function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
-}
-
-export function errorMessage(error: unknown, fallback: string) {
-  return error instanceof Error ? error.message : fallback
 }

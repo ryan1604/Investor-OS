@@ -35,12 +35,12 @@ export type StockAnalysisModelRequest = {
   payload: StockAnalysisPayload
 }
 
-export type StockAnalysisCurrentPriceResponse = {
+type StockAnalysisCurrentPriceResponse = {
   ticker: string
   current_price: number
 }
 
-export type StockAnalysisPriceRefreshStatus =
+type StockAnalysisPriceRefreshStatus =
   | 'refreshed'
   | 'stale'
   | 'missing'
@@ -53,7 +53,7 @@ export type StockAnalysisPriceRefreshResult = {
   message: string | null
 }
 
-export type StockAnalysisPriceRefreshResponse = {
+type StockAnalysisPriceRefreshResponse = {
   results: StockAnalysisPriceRefreshResult[]
 }
 

@@ -7,7 +7,7 @@ import type {
 import { formatMultiple, formatWholeCurrency } from '@/features/portfolio-analysis/lib/format'
 import { formatOptionalPercent } from '@/lib/format'
 
-export type HistoryMetricKey =
+type HistoryMetricKey =
   | 'beta_weighted_delta_multiple'
   | 'margin_utilisation_percent'
   | 'assignment_exposure_percent'
